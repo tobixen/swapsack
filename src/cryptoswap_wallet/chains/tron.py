@@ -24,7 +24,7 @@ from eth_account.signers.local import LocalAccount
 
 from cryptoswap_wallet.chains.base import BalanceReport
 from cryptoswap_wallet.net import HttpClient
-from cryptoswap_wallet.swap import Prepared, SwapRequest
+from cryptoswap_wallet.swap import BroadcastError, Prepared, SwapRequest
 from cryptoswap_wallet.thorchain import Quote
 from cryptoswap_wallet.verify import TronSwapPlan, verify_tron_swap
 
@@ -231,8 +231,35 @@ class TronAdapter(HttpClient):
         return [built.tx.sign(built.priv)]
 
     def broadcast(self, raws: list) -> str:  # noqa: ANN001 (list of tronpy tx)
+        from tronpy.exceptions import (
+            ApiError,
+            TaposError,
+            TransactionError,
+            TvmError,
+            UnknownError,
+            ValidationError,
+        )
+
+        tron_errors = (
+            ApiError,
+            TaposError,
+            TransactionError,
+            TvmError,
+            UnknownError,
+            ValidationError,
+        )
         txid = ""
         for tx in raws:
-            tx.broadcast()
+            try:
+                tx.broadcast()
+            except tron_errors as exc:
+                msg = str(exc)
+                if "not sufficient" in msg.lower():
+                    msg += (
+                        " — a TRON transfer also needs spare TRX for the network fee "
+                        "(bandwidth/energy), which is NOT part of the sent amount; "
+                        "leave some TRX headroom below your balance (~1 TRX)."
+                    )
+                raise BroadcastError(msg) from exc
             txid = tx.txid
         return txid

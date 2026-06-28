@@ -22,7 +22,13 @@ from pathlib import Path
 from cryptoswap_wallet.addresses import validate_destination_address
 from cryptoswap_wallet.keystore import HdKey, Keystore
 from cryptoswap_wallet.net import HTTP_ERRORS
-from cryptoswap_wallet.swap import SwapAborted, SwapRequest, execute_swap, prepare_swap
+from cryptoswap_wallet.swap import (
+    BroadcastError,
+    SwapAborted,
+    SwapRequest,
+    execute_swap,
+    prepare_swap,
+)
 from cryptoswap_wallet.thorchain import THORCHAIN_UNIT, ThorchainClient
 
 try:
@@ -109,6 +115,13 @@ def _load_mnemonic(args: argparse.Namespace) -> str:
         if isinstance(entry, HdKey) and (args.key is None or entry.label == args.key):
             return entry.mnemonic.reveal()
     raise SystemExit("no matching HD key in keystore")
+
+
+def _warn(header: str, *bullets: str) -> None:
+    """Print a warning header followed by indented bullet lines (to stderr)."""
+    print(header, file=sys.stderr)
+    for bullet in bullets:
+        print(f"  - {bullet}", file=sys.stderr)
 
 
 # --- handlers ---------------------------------------------------------------
@@ -399,7 +412,11 @@ def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  #
     if expiry is not None and time.time() >= expiry:
         print("ABORTED: quote expired while confirming; re-run.", file=sys.stderr)
         return 1
-    result = execute_swap(prepared, adapter, confirm=True)
+    try:
+        result = execute_swap(prepared, adapter, confirm=True)
+    except (BroadcastError, *HTTP_ERRORS) as exc:
+        print(f"BROADCAST FAILED: {exc}", file=sys.stderr)
+        return 1
     print(f"\nBROADCAST txid: {result.txid}")
     print(f"track: cryptoswap-wallet status {result.txid}")
     return 0
@@ -506,10 +523,10 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
         print("--amount max is not supported for token sources yet", file=sys.stderr)
         return 2
     if is_token:
-        print(
-            "token source: 2 txs (approve + deposit). If the deposit fails after the "
-            "approve, an exact-amount allowance to the router remains.",
-            file=sys.stderr,
+        _warn(
+            "token source — 2 transactions (approve + deposit):",
+            "if the deposit fails after the approve, an exact-amount allowance to "
+            "the router remains",
         )
     with _eth_adapter(args) as adapter:
         from_address = adapter.derive_address(mnemonic)
@@ -624,7 +641,8 @@ def _swap_from_tron(args: argparse.Namespace) -> int:
         print(f"send:    {prepared.plan.amount_sun} sun to {vault}")
         print(f"expect:  {out:.8f} {args.to_} -> {dest}")
         print(f"memo:    {prepared.quote.memo}")
-        print("trx fee: paid in bandwidth/energy (not deducted from the transfer)")
+        print("trx fee: paid from spare TRX/bandwidth, NOT the sent amount")
+        print("         -> keep some TRX headroom below your balance (~1 TRX)")
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -647,12 +665,12 @@ def cmd_withdraw_liquidity(args: argparse.Namespace) -> int:
 def _liquidity(
     args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
 ) -> int:
-    print(
-        "EXPERIMENTAL liquidity op. Risk (impermanent loss, RUNE price, protocol) "
-        "and fee yield both scale with size; what penalises small positions is the "
-        "~fixed round-trip cost (add + withdraw + outbound). Only LP what you can "
-        "afford to lose.",
-        file=sys.stderr,
+    _warn(
+        "EXPERIMENTAL liquidity op — only LP what you can afford to lose:",
+        "risk (impermanent loss, RUNE price, protocol) scales with size",
+        "fee yield also scales with size",
+        "small positions are penalised by the ~fixed round-trip cost "
+        "(add + withdraw trigger + outbound)",
     )
     if "-" in ASSET[args.asset]:
         print("liquidity for tokens is not supported yet", file=sys.stderr)
@@ -802,7 +820,8 @@ def _liquidity_tron(
         vault = prepared.plan.inbound_address
         print(f"send:    {prepared.plan.amount_sun} sun to {vault}")
         print(f"memo:    {memo}")
-        print("trx fee: paid in bandwidth/energy (not deducted from the transfer)")
+        print("trx fee: paid from spare TRX/bandwidth, NOT the sent amount")
+        print("         -> keep some TRX headroom below your balance (~1 TRX)")
         return _confirm_and_execute(prepared, adapter, args)
 
 

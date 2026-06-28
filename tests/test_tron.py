@@ -120,6 +120,27 @@ def test_tron_deposit_gate_flags_tampered_amount(monkeypatch):
     assert not prepared.safe
 
 
+def test_broadcast_translates_tronpy_error_with_headroom_hint():
+    from tronpy.exceptions import ValidationError
+
+    from cryptoswap_wallet.swap import BroadcastError
+
+    class _FakeTx:
+        txid = "deadbeef"
+
+        def broadcast(self):
+            raise ValidationError(
+                "Contract validate error : Validate TransferContract error, "
+                "balance is not sufficient."
+            )
+
+    adapter = TronAdapter()
+    with pytest.raises(BroadcastError) as exc:
+        adapter.broadcast([_FakeTx()])
+    # The opaque node error is wrapped and given an actionable hint.
+    assert "headroom" in str(exc.value).lower()
+
+
 @pytest.mark.network
 def test_tron_build_unsigned_transfer_live():
     """Build (no broadcast) a real memo-carrying TRX transfer against the keyless

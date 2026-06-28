@@ -23,6 +23,14 @@ class SwapAborted(RuntimeError):
     """Raised when a swap must not proceed (halted chain, too small, unsafe tx)."""
 
 
+class BroadcastError(RuntimeError):
+    """Raised when broadcasting a signed tx is rejected by the network/node.
+
+    Adapters wrap their library-specific broadcast errors in this so the CLI can
+    report a clean message instead of leaking a traceback.
+    """
+
+
 @dataclasses.dataclass(frozen=True)
 class SwapRequest:
     from_asset: str
