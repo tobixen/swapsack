@@ -62,8 +62,9 @@ Status: ✅ done · ◑ destination only · ☐ planned. Listed in recommended o
 | 15 | **ATOM** | Cosmos Hub (GAIA) | Cosmos | ☐ | new adapter (cosmpy) |
 | 16 | **XRP** | XRP Ledger | XRP | ☐ | new adapter (xrpl-py) |
 | 17 | **SOL** | Solana | Solana | ☐ | new adapter (ed25519 / solders); THORChain-supported |
-| 18 | **XMR** | Monero | Monero | ☐ | nearing THORChain mainnet; heaviest (Monero stack, `tx_extra` memo) |
-| 19 | **TCY** | THORChain reward token | THOR token | ☐ | niche; low priority |
+| 18 | **XMR (dest)** | Monero, receive-only | — | ☐ | easy: asset entry + external `--dest`, no Monero code. Caveat: ~95-char addr exceeds BTC OP_RETURN, so BTC→XMR needs a THORName; ETH→XMR fits. Pending live pool |
+| 19 | **XMR (source)** | Monero, spend | Monero | ☐ | heaviest: full Monero signing stack (`tx_extra` memo) |
+| 20 | **TCY** | THORChain reward token | THOR token | ☐ | niche; low priority |
 
 Order rationale: EVM family (6–9) is the most coverage for least risk (reuses ETH
 signing, no new deps); UTXO (10–12) next; TRON sources (4–5) are code-ready but
