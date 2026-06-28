@@ -91,6 +91,18 @@ def test_withdraw_liquidity_defaults_to_full():
     assert args.bps == 10000
 
 
+def test_swap_backend_defaults_to_auto():
+    args = build_parser().parse_args(["swap", "--amount", "0.001"])
+    assert args.backend == "auto"
+
+
+def test_quote_backend_choice():
+    args = build_parser().parse_args(
+        ["quote", "--amount", "0.001", "--backend", "maya"]
+    )
+    assert args.backend == "maya"
+
+
 def test_status_takes_txid():
     args = build_parser().parse_args(["status", "ABC123"])
     assert args.txid == "ABC123"

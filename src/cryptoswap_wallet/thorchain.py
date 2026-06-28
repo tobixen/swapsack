@@ -147,28 +147,36 @@ def parse_quote(payload: dict[str, Any]) -> Quote:
 
 
 class ThorchainClient(HttpClient):
-    """Thin wrapper around the THORChain REST endpoints."""
+    """Thin wrapper around a thornode-style REST API.
+
+    Used for both THORChain (``path_prefix="thorchain"``) and its fork Maya
+    (``path_prefix="mayachain"``) — the API shape and ``=:`` memos are identical.
+    """
 
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
         client_id: str | None = None,
         timeout: float = 20.0,
+        path_prefix: str = "thorchain",
     ) -> None:
         super().__init__(timeout)
         self.base_url = base_url.rstrip("/")
+        self.path_prefix = path_prefix
         self._headers = {"x-client-id": client_id} if client_id else {}
 
     def inbound_addresses(self) -> dict[str, ChainStatus]:
         resp = self._get(
-            f"{self.base_url}/thorchain/inbound_addresses", headers=self._headers
+            f"{self.base_url}/{self.path_prefix}/inbound_addresses",
+            headers=self._headers,
         )
         resp.raise_for_status()
         return parse_inbound_addresses(resp.json())
 
     def tx_status(self, txid: str) -> dict[str, Any]:
         resp = self._get(
-            f"{self.base_url}/thorchain/tx/status/{txid}", headers=self._headers
+            f"{self.base_url}/{self.path_prefix}/tx/status/{txid}",
+            headers=self._headers,
         )
         resp.raise_for_status()
         return resp.json()
@@ -199,7 +207,7 @@ class ThorchainClient(HttpClient):
         if tolerance_bps is not None:
             params["tolerance_bps"] = tolerance_bps
         resp = self._get(
-            f"{self.base_url}/thorchain/quote/swap",
+            f"{self.base_url}/{self.path_prefix}/quote/swap",
             params=params,
             headers=self._headers,
         )

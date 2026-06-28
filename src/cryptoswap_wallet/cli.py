@@ -241,10 +241,43 @@ def _resolve_destination(args: argparse.Namespace, mnemonic: str | None) -> str 
     return None  # unknown target chain: caller must pass --dest
 
 
+def _backends_for(args: argparse.Namespace):  # noqa: ANN202 (list[Backend], lazy import)
+    from cryptoswap_wallet.backends import default_backends, get_backend
+
+    if args.backend == "auto":
+        return default_backends()
+    return [get_backend(args.backend)]
+
+
+def _select_backend(  # noqa: ANN202 (Backend, lazy import)
+    args: argparse.Namespace,
+    *,
+    from_asset: str,
+    to_asset: str,
+    amount: int,
+    destination: str | None,
+):
+    """Pick the backend (lowest price when --backend auto)."""
+    from cryptoswap_wallet.backends import best_quote, gather_quotes
+
+    backends = _backends_for(args)
+    if len(backends) == 1:
+        return backends[0]
+    results = gather_quotes(backends, from_asset, to_asset, amount, destination)
+    if not results:
+        raise SwapAborted("no swap backend can serve this pair/amount")
+    backend, _ = best_quote(results)
+    if len(results) > 1:
+        print(f"routing via {backend.name} (best of {len(results)})", file=sys.stderr)
+    return backend
+
+
 def cmd_quote(args: argparse.Namespace) -> int:
     if args.amount == "max":
         print("quote needs a numeric amount ('max' is only for swap)", file=sys.stderr)
         return 2
+    from cryptoswap_wallet.backends import best_quote, gather_quotes
+
     amount = int(round(args.amount * THORCHAIN_UNIT))
     # Only decrypt the keystore if we actually need to derive the destination.
     mnemonic = (
@@ -253,17 +286,18 @@ def cmd_quote(args: argparse.Namespace) -> int:
         else None
     )
     dest = _resolve_destination(args, mnemonic)
-    with ThorchainClient() as thor:
-        quote = thor.quote_swap(ASSET[args.from_], ASSET[args.to_], amount, dest)
-    out = quote.expected_amount_out / THORCHAIN_UNIT
-    min_in = quote.recommended_min_amount_in / THORCHAIN_UNIT
-    print(f"in:     {args.amount} {args.from_}")
-    print(f"expect: {out:.8f} {args.to_}")
-    print(f"fees:   {quote.fees.total_bps} bps ({quote.fees.slippage_bps} bps slip)")
-    print(f"min in: {min_in:.8f} {args.from_}")
-    print(f"vault:  {quote.inbound_address}")
-    if quote.memo:
-        print(f"memo:      {quote.memo}")
+    results = gather_quotes(
+        _backends_for(args), ASSET[args.from_], ASSET[args.to_], amount, dest
+    )
+    if not results:
+        print("no backend can serve this swap", file=sys.stderr)
+        return 1
+    chosen, _ = best_quote(results)
+    print(f"in:     {args.amount} {args.from_}  ->  {args.to_}")
+    for backend, quote in sorted(results, key=lambda p: -p[1].expected_amount_out):
+        out = quote.expected_amount_out / THORCHAIN_UNIT
+        mark = "  <- best" if backend is chosen else ""
+        print(f"  {backend.name:9} {out:.8f}  ({quote.fees.total_bps} bps){mark}")
     return 0
 
 
@@ -311,7 +345,7 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
         return 2
 
     sweep = args.amount == "max"
-    with _btc_adapter(args) as adapter, ThorchainClient() as thor:
+    with _btc_adapter(args) as adapter:
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(mnemonic, p),
             probe=adapter.address_info,
@@ -348,28 +382,41 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
             destination=dest,
         )
         try:
-            prepared = prepare_swap(
-                thorchain=thor,
-                adapter=adapter,
-                request=request,
-                now=int(time.time()),
-                mnemonic=mnemonic,
-                scanned_utxos=utxos,
-                fee_rate=fee_rate,
-                change_address=change_address,
-                max_fee=args.max_fee,
-                sweep=sweep,
+            backend = _select_backend(
+                args,
+                from_asset=request.from_asset,
+                to_asset=request.to_asset,
+                amount=amount,
+                destination=dest,
             )
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
+        with backend.client as thor:
+            try:
+                prepared = prepare_swap(
+                    thorchain=thor,
+                    adapter=adapter,
+                    request=request,
+                    now=int(time.time()),
+                    mnemonic=mnemonic,
+                    scanned_utxos=utxos,
+                    fee_rate=fee_rate,
+                    change_address=change_address,
+                    max_fee=args.max_fee,
+                    sweep=sweep,
+                )
+            except SwapAborted as exc:
+                print(f"ABORTED: {exc}", file=sys.stderr)
+                return 1
 
-        out = prepared.quote.expected_amount_out / THORCHAIN_UNIT
-        print(f"send:      {amount} sats to {prepared.quote.inbound_address}")
-        print(f"expect:    {out:.8f} {args.to_} -> {dest}")
-        print(f"memo:      {prepared.quote.memo}")
-        print(f"btc fee:   {prepared.built.fee} sats @ {fee_rate} sat/vB")
-        return _confirm_and_execute(prepared, adapter, args)
+            out = prepared.quote.expected_amount_out / THORCHAIN_UNIT
+            print(f"via:     {backend.name}")
+            print(f"send:    {amount} sats to {prepared.quote.inbound_address}")
+            print(f"expect:  {out:.8f} {args.to_} -> {dest}")
+            print(f"memo:    {prepared.quote.memo}")
+            print(f"btc fee: {prepared.built.fee} sats @ {fee_rate} sat/vB")
+            return _confirm_and_execute(prepared, adapter, args)
 
 
 def _swap_from_eth(args: argparse.Namespace) -> int:
@@ -388,7 +435,7 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
     if sweep and is_token:
         print("--amount max is not supported for token sources yet", file=sys.stderr)
         return 2
-    with _eth_adapter(args) as adapter, ThorchainClient() as thor:
+    with _eth_adapter(args) as adapter:
         from_address = adapter.derive_address(mnemonic)
         nonce = adapter.get_nonce(from_address)
         max_fee_per_gas, max_priority_fee_per_gas = adapter.fetch_fees()
@@ -411,31 +458,44 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
             destination=dest,
         )
         try:
-            prepared = prepare_swap(
-                thorchain=thor,
-                adapter=adapter,
-                request=request,
-                now=int(time.time()),
-                mnemonic=mnemonic,
-                nonce=nonce,
-                gas=args.eth_gas,
-                max_fee_per_gas=max_fee_per_gas,
-                max_priority_fee_per_gas=max_priority_fee_per_gas,
-                max_fee_wei=ETH_MAX_FEE_WEI,
+            backend = _select_backend(
+                args,
+                from_asset=from_asset,
+                to_asset=request.to_asset,
+                amount=amount,
+                destination=dest,
             )
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
+        with backend.client as thor:
+            try:
+                prepared = prepare_swap(
+                    thorchain=thor,
+                    adapter=adapter,
+                    request=request,
+                    now=int(time.time()),
+                    mnemonic=mnemonic,
+                    nonce=nonce,
+                    gas=args.eth_gas,
+                    max_fee_per_gas=max_fee_per_gas,
+                    max_priority_fee_per_gas=max_priority_fee_per_gas,
+                    max_fee_wei=ETH_MAX_FEE_WEI,
+                )
+            except SwapAborted as exc:
+                print(f"ABORTED: {exc}", file=sys.stderr)
+                return 1
 
-        out = prepared.quote.expected_amount_out / THORCHAIN_UNIT
-        amount_in = amount / THORCHAIN_UNIT
-        max_fee_eth = prepared.built.fee / 10**18
-        vault = prepared.quote.inbound_address
-        print(f"send:    {amount_in:.8f} {args.from_} to {vault}")
-        print(f"expect:    {out:.8f} {args.to_} -> {dest}")
-        print(f"memo:      {prepared.quote.memo}")
-        print(f"max fee:   {max_fee_eth:.6f} ETH ({len(prepared.built.txs)} tx)")
-        return _confirm_and_execute(prepared, adapter, args)
+            amount_in = amount / THORCHAIN_UNIT
+            out = prepared.quote.expected_amount_out / THORCHAIN_UNIT
+            max_fee_eth = prepared.built.fee / 10**18
+            vault = prepared.quote.inbound_address
+            print(f"via:     {backend.name}")
+            print(f"send:    {amount_in:.8f} {args.from_} to {vault}")
+            print(f"expect:  {out:.8f} {args.to_} -> {dest}")
+            print(f"memo:    {prepared.quote.memo}")
+            print(f"max fee: {max_fee_eth:.6f} ETH ({len(prepared.built.txs)} tx)")
+            return _confirm_and_execute(prepared, adapter, args)
 
 
 def cmd_add_liquidity(args: argparse.Namespace) -> int:
@@ -576,6 +636,12 @@ def _add_swap_args(sub: argparse.ArgumentParser) -> None:
     )
     sub.add_argument("--dest", help="destination address (default: derived from seed)")
     sub.add_argument("--key", help="keystore HD key label (default: first)")
+    sub.add_argument(
+        "--backend",
+        choices=["thorchain", "maya", "auto"],
+        default="auto",
+        help="swap backend (auto = lowest price across all)",
+    )
 
 
 def _add_broadcast_args(sub: argparse.ArgumentParser) -> None:
