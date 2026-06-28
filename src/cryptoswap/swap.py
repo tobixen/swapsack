@@ -189,6 +189,7 @@ def prepare_btc_swap(
         amount=request.amount,
         memo=quote.memo,
         expiry=quote.expiry,
+        destination=request.destination,
     )
     problems = verify_btc_swap(
         built.outputs,
@@ -250,6 +251,7 @@ def prepare_eth_swap(
         amount_wei=request.amount * WEI_PER_THORCHAIN_UNIT,
         memo=quote.memo,
         expiry=quote.expiry,
+        destination=request.destination,
     )
     problems = verify_eth_swap(
         to=built.to,

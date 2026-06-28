@@ -38,6 +38,7 @@ class SwapPlan:
     amount: int
     memo: str
     expiry: int
+    destination: str = ""  # our payout address; must appear in the memo when set
 
 
 def verify_btc_swap(
@@ -102,6 +103,12 @@ def verify_btc_swap(
         if o.address not in owned_addresses:
             problems.append(f"change output to non-owned address {o.address}")
 
+    # The quoted memo must actually pay our own destination.
+    if plan.destination and plan.destination.lower() not in plan.memo.lower():
+        problems.append(
+            f"quoted memo {plan.memo!r} does not pay destination {plan.destination}"
+        )
+
     if fee < 0:
         problems.append(f"negative fee {fee}")
     elif fee > max_fee:
@@ -119,6 +126,7 @@ class EthSwapPlan:
     memo: str
     expiry: int
     chain_id: int = 1
+    destination: str = ""  # our payout address; must appear in the memo when set
 
 
 def verify_eth_swap(
@@ -151,6 +159,10 @@ def verify_eth_swap(
         problems.append(f"calldata {data!r} != memo-encoded {expected_data!r}")
     if chain_id != plan.chain_id:
         problems.append(f"chainId {chain_id} != {plan.chain_id}")
+    if plan.destination and plan.destination.lower() not in plan.memo.lower():
+        problems.append(
+            f"quoted memo {plan.memo!r} does not pay destination {plan.destination}"
+        )
     total_fee = gas * max_fee_per_gas
     if total_fee > max_fee_wei:
         problems.append(f"max fee {total_fee} wei exceeds limit {max_fee_wei}")

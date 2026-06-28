@@ -16,9 +16,11 @@ Security notes:
 from __future__ import annotations
 
 import base64
+import contextlib
 import dataclasses
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -163,10 +165,7 @@ class Keystore:
             "ciphertext": base64.b64encode(ciphertext).decode(),
         }
         data = json.dumps(envelope, indent=2).encode()
-        # Create with 0600 from the start so secrets are never briefly world-readable.
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
+        _atomic_write(Path(path), data)
 
     @classmethod
     def load(cls, path: str | os.PathLike[str], passphrase: str) -> Keystore:
@@ -187,6 +186,27 @@ class Keystore:
 
         payload = json.loads(plaintext)
         return cls(entries=[_entry_from_dict(d) for d in payload["entries"]])
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` atomically (temp file in same dir + os.replace).
+
+    A crash, full disk, or ^C can no longer leave a truncated/corrupt keystore:
+    the old file stays intact until the fully-written, fsync'd temp is renamed
+    over it. The temp is created 0600 so secrets are never world-readable.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        os.chmod(tmp, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _derive_key(

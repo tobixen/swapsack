@@ -74,6 +74,15 @@ def test_file_permissions_are_0600(tmp_path):
     assert (path.stat().st_mode & 0o777) == 0o600
 
 
+def test_save_is_atomic_and_leaves_no_temp_files(tmp_path):
+    path = tmp_path / "ks.json"
+    make().save(path, PW, n=LOW_N)
+    make().save(path, PW, n=LOW_N)  # overwrite an existing keystore
+    assert Keystore.load(path, PW).labels() == ["trustwallet", "paper-btc"]
+    # No temp/partial files left behind in the directory.
+    assert [p.name for p in tmp_path.iterdir()] == ["ks.json"]
+
+
 def test_duplicate_label_rejected():
     ks = Keystore()
     ks.add_hd("dup", MNEMONIC)

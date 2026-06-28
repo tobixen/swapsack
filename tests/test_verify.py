@@ -143,3 +143,65 @@ def test_eth_expired():
 
 def test_eth_fee_too_high():
     assert any("fee" in p.lower() for p in eth_verify(max_fee_per_gas=10**15))
+
+
+# --- M1: the memo must pay our own destination ---
+
+
+def test_btc_rejects_memo_not_paying_destination():
+    memo = "=:e:0x1111111111111111111111111111111111111111:6700000"
+    plan = SwapPlan(
+        inbound_address=VAULT,
+        amount=178100,
+        memo=memo,
+        expiry=2000,
+        destination="0x2222222222222222222222222222222222222222",
+    )
+    outs = [
+        TxOutput(address=VAULT, value=178100),
+        TxOutput(address=CHANGE, value=50000),
+        TxOutput(address=None, value=0, op_return_data=memo.encode()),
+    ]
+    problems = verify_btc_swap(
+        outs, fee=600, plan=plan, owned_addresses=OWNED, now=1000, max_fee=10000
+    )
+    assert any("destination" in p.lower() for p in problems)
+
+
+def test_btc_accepts_memo_paying_destination():
+    dest = "0x1111111111111111111111111111111111111111"
+    memo = f"=:e:{dest}:6700000"
+    plan = SwapPlan(
+        inbound_address=VAULT, amount=178100, memo=memo, expiry=2000, destination=dest
+    )
+    outs = [
+        TxOutput(address=VAULT, value=178100),
+        TxOutput(address=CHANGE, value=50000),
+        TxOutput(address=None, value=0, op_return_data=memo.encode()),
+    ]
+    problems = verify_btc_swap(
+        outs, fee=600, plan=plan, owned_addresses=OWNED, now=1000, max_fee=10000
+    )
+    assert problems == []
+
+
+def test_eth_rejects_memo_not_paying_destination():
+    plan = EthSwapPlan(
+        inbound_address=ETH_VAULT,
+        amount_wei=10**16,
+        memo=ETH_MEMO,
+        expiry=2000,
+        destination="bc1qsomeoneelse",
+    )
+    assert any("destination" in p.lower() for p in eth_verify(plan=plan))
+
+
+def test_eth_accepts_memo_paying_destination():
+    plan = EthSwapPlan(
+        inbound_address=ETH_VAULT,
+        amount_wei=10**16,
+        memo=ETH_MEMO,
+        expiry=2000,
+        destination="bc1qexampledest",
+    )
+    assert eth_verify(plan=plan) == []
