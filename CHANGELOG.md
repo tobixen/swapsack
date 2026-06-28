@@ -13,7 +13,8 @@ automatically from git tags (PEP 440 / SemVer).
   TRON (address + balance).
 - Swaps: BTC, ETH (native), TRX (native) and USDT-ETH (ERC-20) as sources; BTC,
   ETH, TRX, USDT-TRON, USDT-ETH and (external-`--dest`-only) LTC, DOGE, BCH as
-  destinations. `--amount max` sweep for BTC/ETH. TRX source signs a native
+  destinations. `--amount max` sweep for BTC/ETH (swap and add-liquidity). TRX
+  source signs a native
   TransferContract with the memo in tx data (tronpy), via a keyless public node.
 - Permissive `--dest` sanity check (network/format) to catch gross typos before
   a swap is quoted or broadcast.

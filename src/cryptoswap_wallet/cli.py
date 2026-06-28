@@ -632,8 +632,9 @@ def cmd_add_liquidity(args: argparse.Namespace) -> int:
     from cryptoswap_wallet.liquidity import add_liquidity_memo
 
     pool = ASSET[args.asset]
-    amount = int(round(args.amount * THORCHAIN_UNIT))
-    return _liquidity(args, memo=add_liquidity_memo(pool), amount=amount)
+    sweep = args.amount == "max"
+    amount = None if sweep else int(round(args.amount * THORCHAIN_UNIT))
+    return _liquidity(args, memo=add_liquidity_memo(pool), amount=amount, sweep=sweep)
 
 
 def cmd_withdraw_liquidity(args: argparse.Namespace) -> int:
@@ -643,7 +644,9 @@ def cmd_withdraw_liquidity(args: argparse.Namespace) -> int:
     return _liquidity(args, memo=withdraw_liquidity_memo(pool, args.bps), amount=None)
 
 
-def _liquidity(args: argparse.Namespace, *, memo: str, amount: int | None) -> int:
+def _liquidity(
+    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
+) -> int:
     print(
         "EXPERIMENTAL liquidity op. Risk (impermanent loss, RUNE price, protocol) "
         "and fee yield both scale with size; what penalises small positions is the "
@@ -656,16 +659,18 @@ def _liquidity(args: argparse.Namespace, *, memo: str, amount: int | None) -> in
         return 2
     chain = ASSET[args.asset].split(".", 1)[0]
     if chain == "BTC":
-        return _liquidity_btc(args, memo=memo, amount=amount)
+        return _liquidity_btc(args, memo=memo, amount=amount, sweep=sweep)
     if chain == "ETH":
-        return _liquidity_eth(args, memo=memo, amount=amount)
+        return _liquidity_eth(args, memo=memo, amount=amount, sweep=sweep)
     if chain == "TRON":
-        return _liquidity_tron(args, memo=memo, amount=amount)
+        return _liquidity_tron(args, memo=memo, amount=amount, sweep=sweep)
     print(f"liquidity on {chain} is not implemented", file=sys.stderr)
     return 2
 
 
-def _liquidity_btc(args: argparse.Namespace, *, memo: str, amount: int | None) -> int:
+def _liquidity_btc(
+    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
+) -> int:
     from cryptoswap_wallet.chains.scan import scan_account
     from cryptoswap_wallet.swap import prepare_liquidity
 
@@ -691,6 +696,17 @@ def _liquidity_btc(args: argparse.Namespace, *, memo: str, amount: int | None) -
             return 1
         change_address = adapter.derive_address(mnemonic, BTC_CHANGE_PATH)
         fee_rate = adapter.fetch_fee_rate()
+        if sweep:
+            from cryptoswap_wallet.chains.coins import InsufficientFunds, sweep_amount
+
+            total = sum(u.value for u in utxos)
+            try:
+                amount, _ = sweep_amount(
+                    total, len(utxos), fee_rate, memo_len=len(memo.encode())
+                )
+            except InsufficientFunds as exc:
+                print(f"ABORTED: {exc}", file=sys.stderr)
+                return 1
         try:
             prepared = prepare_liquidity(
                 thorchain=thor,
@@ -703,6 +719,7 @@ def _liquidity_btc(args: argparse.Namespace, *, memo: str, amount: int | None) -
                 fee_rate=fee_rate,
                 change_address=change_address,
                 max_fee=args.max_fee,
+                sweep=sweep,
             )
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
@@ -714,7 +731,11 @@ def _liquidity_btc(args: argparse.Namespace, *, memo: str, amount: int | None) -
         return _confirm_and_execute(prepared, adapter, args)
 
 
-def _liquidity_eth(args: argparse.Namespace, *, memo: str, amount: int | None) -> int:
+def _liquidity_eth(
+    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
+) -> int:
+    from cryptoswap_wallet.chains.coins import InsufficientFunds
+    from cryptoswap_wallet.chains.eth import eth_sweep_amount
     from cryptoswap_wallet.swap import prepare_liquidity
 
     mnemonic = _load_mnemonic(args)
@@ -722,6 +743,16 @@ def _liquidity_eth(args: argparse.Namespace, *, memo: str, amount: int | None) -
         from_address = adapter.derive_address(mnemonic)
         nonce = adapter.get_nonce(from_address)
         max_fee_per_gas, max_priority_fee_per_gas = adapter.fetch_fees()
+        if sweep:
+            try:
+                amount = eth_sweep_amount(
+                    adapter.fetch_balance(from_address),
+                    gas=args.eth_gas,
+                    max_fee_per_gas=max_fee_per_gas,
+                )
+            except InsufficientFunds as exc:
+                print(f"ABORTED: {exc}", file=sys.stderr)
+                return 1
         try:
             prepared = prepare_liquidity(
                 thorchain=thor,
@@ -746,9 +777,14 @@ def _liquidity_eth(args: argparse.Namespace, *, memo: str, amount: int | None) -
         return _confirm_and_execute(prepared, adapter, args)
 
 
-def _liquidity_tron(args: argparse.Namespace, *, memo: str, amount: int | None) -> int:
+def _liquidity_tron(
+    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
+) -> int:
     from cryptoswap_wallet.swap import prepare_liquidity
 
+    if sweep:
+        print("--amount max is not supported for TRON liquidity yet", file=sys.stderr)
+        return 2
     mnemonic = _load_mnemonic(args)
     with _tron_adapter(args) as adapter, ThorchainClient() as thor:
         try:
@@ -891,7 +927,12 @@ def build_parser() -> argparse.ArgumentParser:
         "add-liquidity", help="EXPERIMENTAL: add single-sided liquidity to a pool"
     )
     s.add_argument("--asset", required=True, choices=list(ASSET))
-    s.add_argument("--amount", type=float, required=True, help="amount of --asset")
+    s.add_argument(
+        "--amount",
+        type=_amount,
+        required=True,
+        help="amount of --asset, or 'max' to add the whole balance (BTC/ETH)",
+    )
     _add_broadcast_args(s)
     s.set_defaults(func=cmd_add_liquidity)
 

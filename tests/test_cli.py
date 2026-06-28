@@ -78,6 +78,13 @@ def test_add_liquidity_parses():
     assert args.amount == 0.001
 
 
+def test_add_liquidity_amount_max_parses():
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "BTC", "--amount", "max"]
+    )
+    assert args.amount == "max"
+
+
 def test_withdraw_liquidity_parses():
     args = build_parser().parse_args(
         ["withdraw-liquidity", "--asset", "ETH", "--bps", "5000"]

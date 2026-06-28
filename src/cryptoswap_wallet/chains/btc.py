@@ -226,6 +226,7 @@ class BtcAdapter(HttpClient):
         fee_rate: float,
         change_address: str,
         max_fee: int,
+        sweep: bool = False,
     ) -> Prepared:
         built = self.build_unsigned_swap(
             mnemonic=mnemonic,
@@ -235,6 +236,7 @@ class BtcAdapter(HttpClient):
             memo=memo,
             fee_rate=fee_rate,
             change_address=change_address,
+            sweep=sweep,
         )
         owned = {change_address} | {u.address for u in scanned_utxos}
         plan = SwapPlan(
