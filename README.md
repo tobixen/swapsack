@@ -44,33 +44,48 @@ it needs full nodes, so it's future work.)
 
 ## Currency support
 
-Reach is bounded by THORChain's pools. Support: **full** = source + destination,
-**partial** = destination/balance only, **none** = planned. Listed in
-recommended implementation order.
+Reach is bounded by THORChain's pools. **Support**: full = most features
+working, partial = some features working, none = planned. Listed in recommended
+implementation order.
 
-| Currency | Support | Notes |
-|---|:--:|---|
-| BTC | full | UTXO; source + destination + LP |
-| ETH | full | EVM; source + destination + LP |
-| USDT-ETH | full | ERC-20; source (approve+router) + destination |
-| TRX | partial | destination + balance; source needs tronpy + a TRON endpoint |
-| USDT-TRON | partial | destination only; source = TRC-20 transfer + memo |
-| BSC / BNB | none | EVM family (next): same address/signing as ETH |
-| AVAX | none | EVM family |
-| BASE | none | EVM family |
-| USDC (ETH/BSC/AVAX/BASE) | none | EVM family stablecoins |
-| LTC | none | UTXO family (generalize the BTC adapter) |
-| DOGE | none | UTXO family |
-| BCH | none | UTXO family |
-| RUNE | none | THORChain-native; gateway to LP |
-| ATOM | none | Cosmos (new adapter) |
-| XRP | none | XRP Ledger (new adapter) |
-| SOL | none | Solana (new adapter); THORChain-supported |
-| XMR | none | Monero, nearing THORChain mainnet; receive-only is cheap once live |
-| TCY | none | THORChain reward token; niche |
+| Currency | What it is | Family | Support | Notes |
+|---|---|---|:--:|---|
+| BTC | Bitcoin | UTXO | full | |
+| ETH | Ethereum | EVM | full | |
+| USDT-ETH | Tether | ERC-20 token | full | |
+| TRX | TRON | TRON | partial | |
+| USDT-TRON | Tether | TRC-20 token | partial | |
+| BSC / BNB | BNB Smart Chain | EVM | none | |
+| AVAX | Avalanche C-Chain | EVM | none | |
+| BASE | Base (ETH L2) | EVM | none | |
+| USDC | USD Coin (ETH/BSC/AVAX/BASE) | ERC-20 token | none | |
+| LTC | Litecoin | UTXO | none | |
+| DOGE | Dogecoin | UTXO | none | |
+| BCH | Bitcoin Cash | UTXO | none | |
+| RUNE | THORChain native | THORChain | none | |
+| ATOM | Cosmos Hub | Cosmos | none | |
+| XRP | XRP Ledger | XRP | none | |
+| SOL | Solana | Solana | none | |
+| XMR | Monero | Monero | none | no live THORChain pool yet |
+| TCY | THORChain reward token | THORChain token | none | niche; low priority |
 
 EVM is the recommended next family (most coverage, least risk); then UTXO; TRON
 sources are code-ready but need a working endpoint. See `docs/TODO.md` for detail.
+
+### Per-feature support
+
+What works for the currencies with any support today. ✅ = working, ◑ = partial,
+blank = not yet. Currencies with **Support = none** above support no features yet.
+`send` (to an external address) is planned for all and so is omitted as it would
+be entirely blank.
+
+| Currency | Hold | Show balance | Swap to | Swap from | Liquidity |
+|---|:--:|:--:|:--:|:--:|:--:|
+| BTC | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ETH | ✅ | ✅ | ✅ | ✅ | ✅ |
+| USDT-ETH | ✅ | | ✅ | ✅ | |
+| TRX | ✅ | ✅ | ✅ | ◑ | |
+| USDT-TRON | ✅ | | ✅ | | |
 
 ## Usage
 
