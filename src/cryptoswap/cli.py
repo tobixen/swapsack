@@ -21,13 +21,7 @@ from pathlib import Path
 
 from cryptoswap.keystore import HdKey, Keystore
 from cryptoswap.net import HTTP_ERRORS
-from cryptoswap.swap import (
-    SwapAborted,
-    SwapRequest,
-    execute_swap,
-    prepare_btc_swap,
-    prepare_eth_swap,
-)
+from cryptoswap.swap import SwapAborted, SwapRequest, execute_swap, prepare_swap
 from cryptoswap.thorchain import THORCHAIN_UNIT, ThorchainClient
 
 DEFAULT_KEYSTORE = "~/.config/cryptoswap/keystore.json"
@@ -346,15 +340,15 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
             destination=dest,
         )
         try:
-            prepared = prepare_btc_swap(
+            prepared = prepare_swap(
                 thorchain=thor,
                 adapter=adapter,
-                mnemonic=mnemonic,
                 request=request,
+                now=int(time.time()),
+                mnemonic=mnemonic,
                 scanned_utxos=utxos,
                 fee_rate=fee_rate,
                 change_address=change_address,
-                now=int(time.time()),
                 max_fee=args.max_fee,
                 sweep=sweep,
             )
@@ -404,16 +398,16 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
             destination=dest,
         )
         try:
-            prepared = prepare_eth_swap(
+            prepared = prepare_swap(
                 thorchain=thor,
                 adapter=adapter,
-                mnemonic=mnemonic,
                 request=request,
+                now=int(time.time()),
+                mnemonic=mnemonic,
                 nonce=nonce,
                 gas=args.eth_gas,
                 max_fee_per_gas=max_fee_per_gas,
                 max_priority_fee_per_gas=max_priority_fee_per_gas,
-                now=int(time.time()),
                 max_fee_wei=ETH_MAX_FEE_WEI,
             )
         except SwapAborted as exc:

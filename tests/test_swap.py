@@ -1,29 +1,29 @@
-"""Tests for the swap orchestrator, using fake THORChain client and adapter."""
+"""Tests for the chain-agnostic swap orchestrator (prepare_swap / execute_swap).
+
+A fake adapter supplies build_and_verify so these exercise only the
+chain-agnostic flow; the real build+verify integration lives in the per-chain
+adapter tests.
+"""
 
 from types import SimpleNamespace
 
 import pytest
 
-from cryptoswap.chains.coins import Utxo
 from cryptoswap.swap import (
+    Prepared,
     SwapAborted,
     SwapRequest,
     execute_swap,
-    prepare_btc_swap,
-    prepare_eth_swap,
+    prepare_swap,
 )
 from cryptoswap.thorchain import ChainStatus, Quote, SwapFees
-from cryptoswap.verify import TxOutput
 
 VAULT = "bc1qvault"
-CHANGE = "bc1qchange"
-MINE = "bc1qmine"
-MEMO = "=:ETH.ETH:0xdest:0"
 
 
 def make_quote(
-    min_in: int = 7761, memo: str | None = MEMO, expiry: int = 10**12
-) -> Quote:
+    min_in: int = 7761, memo: str | None = "=:e:0xdest", expiry: int = 10**12
+):
     return Quote(
         inbound_address=VAULT,
         expected_amount_out=6768430,
@@ -42,9 +42,9 @@ def make_quote(
     )
 
 
-def make_status(tradable: bool = True) -> ChainStatus:
+def make_status(chain="BTC", tradable=True):
     return ChainStatus(
-        chain="BTC",
+        chain=chain,
         gas_rate=3,
         gas_rate_units="satsperbyte",
         outbound_fee=1058,
@@ -56,47 +56,32 @@ def make_status(tradable: bool = True) -> ChainStatus:
 
 
 class FakeThor:
-    def __init__(self, quote=None, tradable=True):
+    def __init__(self, quote=None, tradable=True, chain="BTC"):
         self._quote = quote or make_quote()
         self._tradable = tradable
+        self._chain = chain
 
     def inbound_addresses(self):
-        return {"BTC": make_status(self._tradable)}
+        return {self._chain: make_status(self._chain, self._tradable)}
 
     def quote_swap(self, *args, **kwargs):
         return self._quote
 
 
 class FakeAdapter:
-    chain = "BTC"
-
-    def __init__(self, outputs=None, fee=400):
-        self._outputs = outputs
-        self._fee = fee
+    def __init__(self, chain="BTC", problems=None):
+        self.chain = chain
+        self._problems = problems or []
         self.signed = False
         self.broadcasted = False
+        self.build_kwargs = None
 
-    def build_unsigned_swap(
-        self,
-        *,
-        mnemonic,
-        utxos,
-        vault_address,
-        amount,
-        memo,
-        fee_rate,
-        change_address,
-        sweep=False,
-    ):
-        outputs = self._outputs
-        if outputs is None:
-            outputs = [
-                TxOutput(address=vault_address, value=amount),
-                TxOutput(address=None, value=0, op_return_data=memo.encode()),
-                TxOutput(address=change_address, value=10000),
-            ]
-        return SimpleNamespace(
-            outputs=outputs, fee=self._fee, change_address=change_address
+    def build_and_verify(self, *, quote, request, now, **kwargs):
+        self.build_kwargs = kwargs
+        plan = SimpleNamespace(expiry=quote.expiry, destination=request.destination)
+        built = SimpleNamespace(fee=400)
+        return Prepared(
+            quote=quote, built=built, plan=plan, problems=list(self._problems)
         )
 
     def sign(self, built):
@@ -108,37 +93,32 @@ class FakeAdapter:
         return "txid123"
 
 
-def make_request(amount: int = 178100) -> SwapRequest:
+def make_request(amount=178100, from_asset="BTC.BTC", to_asset="ETH.ETH"):
     return SwapRequest(
-        from_asset="BTC.BTC", to_asset="ETH.ETH", amount=amount, destination="0xdest"
+        from_asset=from_asset, to_asset=to_asset, amount=amount, destination="0xdest"
     )
 
 
-def make_utxos():
-    return [
-        Utxo(txid="aa" * 32, vout=0, value=200000, address=MINE, path="m/84'/0'/0'/0/0")
-    ]
-
-
-def prepare(thor=None, adapter=None, amount=178100, now=0):
-    return prepare_btc_swap(
+def prepare(thor=None, adapter=None, amount=178100):
+    return prepare_swap(
         thorchain=thor or FakeThor(),
         adapter=adapter or FakeAdapter(),
-        mnemonic="m",
         request=make_request(amount),
-        scanned_utxos=make_utxos(),
-        fee_rate=2,
-        change_address=CHANGE,
-        now=now,
-        max_fee=100000,
+        now=0,
+        mnemonic="m",  # forwarded via build_kwargs, ignored by the fake
     )
 
 
 def test_prepare_clean_passes_gate():
     p = prepare()
     assert p.safe
-    assert p.problems == []
     assert p.quote.inbound_address == VAULT
+
+
+def test_prepare_forwards_build_kwargs_to_adapter():
+    adapter = FakeAdapter()
+    prepare(adapter=adapter)
+    assert adapter.build_kwargs == {"mnemonic": "m"}
 
 
 def test_prepare_aborts_when_chain_halted():
@@ -156,13 +136,13 @@ def test_prepare_aborts_without_memo():
         prepare(thor=FakeThor(quote=make_quote(memo=None)))
 
 
-def test_prepare_flags_mismatched_build():
-    bad = [
-        TxOutput(address=VAULT, value=999),  # wrong amount
-        TxOutput(address=None, value=0, op_return_data=MEMO.encode()),
-        TxOutput(address=CHANGE, value=10000),
-    ]
-    p = prepare(adapter=FakeAdapter(outputs=bad))
+def test_prepare_works_for_eth_chain_too():
+    p = prepare(thor=FakeThor(chain="ETH"), adapter=FakeAdapter(chain="ETH"))
+    assert p.safe
+
+
+def test_prepare_surfaces_adapter_problems():
+    p = prepare(adapter=FakeAdapter(problems=["vault mismatch"]))
     assert not p.safe
 
 
@@ -183,141 +163,7 @@ def test_execute_confirm_signs_and_broadcasts():
 
 
 def test_execute_blocks_unsafe_transaction():
-    adapter = FakeAdapter(outputs=[TxOutput(address=VAULT, value=999)])
-    prepared = prepare(adapter=adapter)
+    adapter = FakeAdapter(problems=["bad"])
     with pytest.raises(SwapAborted):
-        execute_swap(prepared, adapter, confirm=True)
+        execute_swap(prepare(adapter=adapter), adapter, confirm=True)
     assert adapter.broadcasted is False
-
-
-# --- ETH source orchestration ---
-
-ETH_VAULT = "0x85034887f6656d610c38ef1710208495791fb146"
-ETH_BTC_MEMO = "=:BTC.BTC:bc1qdest:123"
-
-
-def make_eth_quote(min_in=98391, memo=ETH_BTC_MEMO, expiry=10**12):
-    return Quote(
-        inbound_address=ETH_VAULT,
-        expected_amount_out=170000,
-        memo=memo,
-        fees=SwapFees("BTC.BTC", 1058, 0, 500, 1558, 20, 50),
-        recommended_min_amount_in=min_in,
-        expiry=expiry,
-        dust_threshold=10000,
-        recommended_gas_rate=15,
-        gas_rate_units="gwei",
-        router="0xrouter",
-        max_streaming_quantity=1,
-        streaming_swap_blocks=1,
-        total_swap_seconds=30,
-        raw={},
-    )
-
-
-def eth_status(tradable=True):
-    return ChainStatus(
-        chain="ETH",
-        gas_rate=15,
-        gas_rate_units="gwei",
-        outbound_fee=15821,
-        dust_threshold=0,
-        halted=not tradable,
-        global_trading_paused=False,
-        chain_trading_paused=False,
-    )
-
-
-class FakeEthThor:
-    def __init__(self, quote=None, tradable=True):
-        self._quote = quote or make_eth_quote()
-        self._tradable = tradable
-
-    def inbound_addresses(self):
-        return {"ETH": eth_status(self._tradable)}
-
-    def quote_swap(self, *args, **kwargs):
-        return self._quote
-
-
-class FakeEthAdapter:
-    chain = "ETH"
-
-    def __init__(self):
-        self.signed = False
-        self.broadcasted = False
-
-    def build_unsigned_swap(
-        self,
-        *,
-        mnemonic,
-        vault_address,
-        amount,
-        memo,
-        nonce,
-        gas,
-        max_fee_per_gas,
-        max_priority_fee_per_gas,
-    ):
-        return SimpleNamespace(
-            to=vault_address,
-            value=amount * 10**10,
-            data="0x" + memo.encode().hex(),
-            chain_id=1,
-            gas=gas,
-            max_fee_per_gas=max_fee_per_gas,
-            fee=gas * max_fee_per_gas,
-        )
-
-    def sign(self, built):
-        self.signed = True
-        return "0x02ff"
-
-    def broadcast(self, raw_hex):
-        self.broadcasted = True
-        return "0xhash"
-
-
-def eth_request(amount=2580000):
-    return SwapRequest(
-        from_asset="ETH.ETH", to_asset="BTC.BTC", amount=amount, destination="bc1qdest"
-    )
-
-
-def prepare_eth(thor=None, adapter=None, amount=2580000):
-    return prepare_eth_swap(
-        thorchain=thor or FakeEthThor(),
-        adapter=adapter or FakeEthAdapter(),
-        mnemonic="m",
-        request=eth_request(amount),
-        nonce=0,
-        gas=60000,
-        max_fee_per_gas=20_000_000_000,
-        max_priority_fee_per_gas=1_000_000_000,
-        now=0,
-        max_fee_wei=10**17,
-    )
-
-
-def test_prepare_eth_clean_passes_gate():
-    p = prepare_eth()
-    assert p.safe
-    assert p.quote.inbound_address == ETH_VAULT
-
-
-def test_prepare_eth_aborts_when_halted():
-    with pytest.raises(SwapAborted):
-        prepare_eth(thor=FakeEthThor(tradable=False))
-
-
-def test_prepare_eth_aborts_below_min():
-    with pytest.raises(SwapAborted):
-        prepare_eth(thor=FakeEthThor(quote=make_eth_quote(min_in=99999999)))
-
-
-def test_execute_eth_confirm_broadcasts():
-    adapter = FakeEthAdapter()
-    result = execute_swap(prepare_eth(adapter=adapter), adapter, confirm=True)
-    assert result.broadcast is True
-    assert result.txid == "0xhash"
-    assert adapter.signed is True

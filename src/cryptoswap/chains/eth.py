@@ -21,7 +21,9 @@ from eth_account.signers.local import LocalAccount
 from cryptoswap.chains.base import BalanceReport
 from cryptoswap.chains.coins import InsufficientFunds
 from cryptoswap.net import HttpClient
-from cryptoswap.verify import WEI_PER_THORCHAIN_UNIT
+from cryptoswap.swap import Prepared, SwapRequest
+from cryptoswap.thorchain import Quote
+from cryptoswap.verify import WEI_PER_THORCHAIN_UNIT, EthSwapPlan, verify_eth_swap
 
 DEFAULT_ETH_DERIVATION = "m/44'/60'/0'/0/0"
 DEFAULT_RPC = "https://ethereum-rpc.publicnode.com"
@@ -180,3 +182,46 @@ class EthAdapter(HttpClient):
         if raw is None:
             raw = signed.rawTransaction
         return "0x" + raw.hex()
+
+    def build_and_verify(
+        self,
+        *,
+        quote: Quote,
+        request: SwapRequest,
+        now: int,
+        mnemonic: str,
+        nonce: int,
+        gas: int,
+        max_fee_per_gas: int,
+        max_priority_fee_per_gas: int,
+        max_fee_wei: int,
+    ) -> Prepared:
+        built = self.build_unsigned_swap(
+            mnemonic=mnemonic,
+            vault_address=quote.inbound_address,
+            amount=request.amount,
+            memo=quote.memo or "",
+            nonce=nonce,
+            gas=gas,
+            max_fee_per_gas=max_fee_per_gas,
+            max_priority_fee_per_gas=max_priority_fee_per_gas,
+        )
+        plan = EthSwapPlan(
+            inbound_address=quote.inbound_address,
+            amount_wei=request.amount * WEI_PER_THORCHAIN_UNIT,
+            memo=quote.memo or "",
+            expiry=quote.expiry,
+            destination=request.destination,
+        )
+        problems = verify_eth_swap(
+            to=built.to,
+            value=built.value,
+            data=built.data,
+            chain_id=built.chain_id,
+            gas=built.gas,
+            max_fee_per_gas=built.max_fee_per_gas,
+            plan=plan,
+            now=now,
+            max_fee_wei=max_fee_wei,
+        )
+        return Prepared(quote=quote, built=built, plan=plan, problems=problems)

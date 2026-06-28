@@ -72,3 +72,42 @@ def test_eth_sweep_amount_insufficient():
 
     with pytest.raises(InsufficientFunds):
         eth_sweep_amount(1000, gas=60000, max_fee_per_gas=20_000_000_000)
+
+
+def test_eth_build_and_verify_clean():
+    from cryptoswap.swap import SwapRequest
+    from cryptoswap.thorchain import Quote, SwapFees
+
+    a = EthAdapter()
+    dest = "bc1qexampledest"
+    quote = Quote(
+        inbound_address=VAULT,
+        expected_amount_out=170000,
+        memo=f"=:b:{dest}",
+        fees=SwapFees("BTC.BTC", 1058, 0, 500, 1558, 20, 50),
+        recommended_min_amount_in=1000,
+        expiry=9_999_999_999,
+        dust_threshold=1000,
+        recommended_gas_rate=15,
+        gas_rate_units="gwei",
+        router=None,
+        max_streaming_quantity=1,
+        streaming_swap_blocks=1,
+        total_swap_seconds=30,
+        raw={},
+    )
+    request = SwapRequest(
+        from_asset="ETH.ETH", to_asset="BTC.BTC", amount=100000, destination=dest
+    )
+    prepared = a.build_and_verify(
+        quote=quote,
+        request=request,
+        now=0,
+        mnemonic=MNEMONIC,
+        nonce=0,
+        gas=60000,
+        max_fee_per_gas=20_000_000_000,
+        max_priority_fee_per_gas=1_000_000_000,
+        max_fee_wei=10**17,
+    )
+    assert prepared.problems == []

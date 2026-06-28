@@ -158,3 +158,69 @@ def test_parse_address_info_unused():
     assert info.has_history is False
     assert info.confirmed == 0
     assert info.pending == 0
+
+
+def _quote(memo, *, inbound=VAULT, expiry=9_999_999_999, min_in=1000):
+    from cryptoswap.thorchain import Quote, SwapFees
+
+    return Quote(
+        inbound_address=inbound,
+        expected_amount_out=6768430,
+        memo=memo,
+        fees=SwapFees("ETH.ETH", 15820, 0, 13590, 29410, 19, 43),
+        recommended_min_amount_in=min_in,
+        expiry=expiry,
+        dust_threshold=1000,
+        recommended_gas_rate=4,
+        gas_rate_units="satsperbyte",
+        router=None,
+        max_streaming_quantity=1,
+        streaming_swap_blocks=1,
+        total_swap_seconds=600,
+        raw={},
+    )
+
+
+def test_btc_build_and_verify_clean():
+    from cryptoswap.swap import SwapRequest
+
+    a = BtcAdapter()
+    addr = a.derive_address(MNEMONIC, PATH)
+    utxos = [Utxo(txid="aa" * 32, vout=0, value=200000, address=addr, path=PATH)]
+    dest = "0x1111111111111111111111111111111111111111"
+    request = SwapRequest(
+        from_asset="BTC.BTC", to_asset="ETH.ETH", amount=178100, destination=dest
+    )
+    prepared = a.build_and_verify(
+        quote=_quote(f"=:e:{dest}:6700000"),
+        request=request,
+        now=0,
+        mnemonic=MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=2,
+        change_address=addr,
+        max_fee=100000,
+    )
+    assert prepared.problems == []
+
+
+def test_btc_build_and_verify_flags_wrong_destination():
+    from cryptoswap.swap import SwapRequest
+
+    a = BtcAdapter()
+    addr = a.derive_address(MNEMONIC, PATH)
+    utxos = [Utxo(txid="aa" * 32, vout=0, value=200000, address=addr, path=PATH)]
+    request = SwapRequest(
+        from_asset="BTC.BTC", to_asset="ETH.ETH", amount=178100, destination="0xmine"
+    )
+    prepared = a.build_and_verify(
+        quote=_quote("=:e:0xsomeoneelse"),
+        request=request,
+        now=0,
+        mnemonic=MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=2,
+        change_address=addr,
+        max_fee=100000,
+    )
+    assert not prepared.safe

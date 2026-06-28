@@ -26,7 +26,9 @@ from cryptoswap.chains.coins import (
     select_coins,
 )
 from cryptoswap.net import HttpClient
-from cryptoswap.verify import TxOutput
+from cryptoswap.swap import Prepared, SwapRequest
+from cryptoswap.thorchain import Quote
+from cryptoswap.verify import SwapPlan, TxOutput, verify_btc_swap
 
 DEFAULT_ESPLORA = "https://blockstream.info/api"
 DEFAULT_DERIVATION = "m/84'/0'/0'/0/0"
@@ -158,6 +160,47 @@ class BtcAdapter(HttpClient):
         # matches, so don't error on the non-matching ones.
         built.tx.sign(built.keys, fail_on_unknown_key=False)
         return built.tx.raw_hex()
+
+    def build_and_verify(
+        self,
+        *,
+        quote: Quote,
+        request: SwapRequest,
+        now: int,
+        mnemonic: str,
+        scanned_utxos: list[Utxo],
+        fee_rate: float,
+        change_address: str,
+        max_fee: int,
+        sweep: bool = False,
+    ) -> Prepared:
+        built = self.build_unsigned_swap(
+            mnemonic=mnemonic,
+            utxos=scanned_utxos,
+            vault_address=quote.inbound_address,
+            amount=request.amount,
+            memo=quote.memo or "",
+            fee_rate=fee_rate,
+            change_address=change_address,
+            sweep=sweep,
+        )
+        owned = {change_address} | {u.address for u in scanned_utxos}
+        plan = SwapPlan(
+            inbound_address=quote.inbound_address,
+            amount=request.amount,
+            memo=quote.memo or "",
+            expiry=quote.expiry,
+            destination=request.destination,
+        )
+        problems = verify_btc_swap(
+            built.outputs,
+            fee=built.fee,
+            plan=plan,
+            owned_addresses=owned,
+            now=now,
+            max_fee=max_fee,
+        )
+        return Prepared(quote=quote, built=built, plan=plan, problems=problems)
 
     # --- network via Esplora; covered by manual/integration testing, not units ---
 
