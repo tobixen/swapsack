@@ -134,6 +134,67 @@ def verify_btc_swap(
 
 
 @dataclasses.dataclass(frozen=True)
+class SendPlan:
+    """What we intend a plain BTC send transaction to do.
+
+    Unlike a swap there is no THORChain vault, no memo and no quote/expiry: just
+    pay ``amount`` sats to ``recipient`` and return any change to ourselves.
+    """
+
+    recipient: str
+    amount: int  # sats to the recipient
+
+
+def verify_btc_send(
+    outputs: list[TxOutput],
+    fee: int,
+    plan: SendPlan,
+    owned_addresses: set[str],
+    *,
+    max_fee: int,
+) -> list[str]:
+    """Return reasons a plain send tx does not match ``plan``; empty means safe.
+
+    A send pays exactly ``plan.amount`` sats to ``plan.recipient`` and returns
+    any change to an owned address. It carries no swap memo, so an OP_RETURN
+    output here is unexpected and blocks (it would burn value and signals a
+    misconstructed tx). ``fee`` and ``max_fee`` are in satoshis.
+    """
+    problems: list[str] = []
+
+    # Exactly one output to the recipient, for the exact amount.
+    recipient_outs = [o for o in outputs if o.address == plan.recipient]
+    if len(recipient_outs) != 1:
+        problems.append(
+            f"expected exactly one output to recipient {plan.recipient}, "
+            f"found {len(recipient_outs)}"
+        )
+    elif recipient_outs[0].value != plan.amount:
+        problems.append(
+            f"recipient output amount {recipient_outs[0].value} != "
+            f"intended {plan.amount}"
+        )
+
+    # A plain send must not carry data outputs.
+    if any(o.op_return_data is not None for o in outputs):
+        problems.append("plain send must not carry an OP_RETURN output")
+
+    # Every non-recipient, non-data output (i.e. change) must return to us.
+    for o in outputs:
+        if o.op_return_data is not None or o.address == plan.recipient:
+            continue
+        if o.address not in owned_addresses:
+            problems.append(f"change output to non-owned address {o.address}")
+
+    if fee < 0:
+        problems.append(f"negative fee {fee}")
+    elif fee > max_fee:
+        problems.append(f"fee {fee} exceeds max_fee {max_fee}")
+
+    return problems
+
+
+@dataclasses.dataclass(frozen=True)
 class EthSwapPlan:
     """What we intend an ETH deposit transaction to do (from a THORChain quote)."""
 

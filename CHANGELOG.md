@@ -15,5 +15,7 @@ automatically from git tags (PEP 440 / SemVer).
   USDT-TRON and USDT-ETH as destinations. `--amount max` sweep for BTC/ETH.
 - Registry-based multi-chain `balance`; `quote`, `status`, `address`.
 - Experimental `add-liquidity` / `withdraw-liquidity` (BTC, ETH, single-sided).
+- `send` to an external address (BTC; plain transfer, no swap/memo), with
+  `--amount max` to sweep. Guarded by a dedicated verify gate.
 - Packaging: Hatch + hatch-vcs, `make install`, `--version`, CI, and PyPI
   trusted-publishing gated on the live integration tests.

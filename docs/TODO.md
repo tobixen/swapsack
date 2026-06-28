@@ -4,11 +4,11 @@
 
 Owner's requested order; two-sided liquidity comes *after* these.
 
-1. **`send` to an external address — BTC first.** A plain on-chain transfer (no
-   swap, no memo) to a user-supplied address. Reuse the BTC spending path (UTXO
-   scan, fee/change, sign, broadcast) minus the vault+memo. Other chains
-   (ETH/TRX/…) can follow later. Supersedes the older "send" note under *Swap
-   backends* below.
+1. ~~**`send` to an external address — BTC first.**~~ **DONE for BTC.** Plain
+   on-chain transfer (no swap, no memo) via `cryptoswap-wallet send <addr>
+   --amount <btc|max>`, reusing the BTC spending path with a dedicated
+   `verify_btc_send` gate. ETH/TRX sends still to do (need account-model transfer
+   builders; ETH is mostly a value-transfer of the existing signing path).
 
 2. **TRX liquidity.** `_liquidity` currently handles only BTC and ETH (TRON
    falls through to "not implemented"). Adding it needs TRON as a swap *source*
@@ -47,6 +47,10 @@ Owner's requested order; two-sided liquidity comes *after* these.
    symmetric mainly buys *no entry slip* in exchange for sourcing and holding
    RUNE. Sensible sub-phasing: (a) `thor1` derivation + RUNE balance (read-only,
    testable now); (b) `MsgDeposit` sign/broadcast; (c) symmetric add/withdraw.
+
+## Integration tests towards testnet / stagenet
+
+...
 
 ## Spend unconfirmed inbound via CPFP (`--allow-unconfirmed`)
 

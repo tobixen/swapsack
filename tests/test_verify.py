@@ -7,14 +7,17 @@ non-owned address, an expired quote, or an absurd fee.
 
 from cryptoswap_wallet.verify import (
     EthSwapPlan,
+    SendPlan,
     SwapPlan,
     TxOutput,
+    verify_btc_send,
     verify_btc_swap,
     verify_eth_swap,
 )
 
 VAULT = "bc1qct4mxayrdy96d4py20l4u02mu06r667f42p9fp"
 CHANGE = "bc1qchange00000000000000000000000000000000"
+RECIPIENT = "bc1qrecipient000000000000000000000000000000"
 MEMO = "=:ETH.ETH:0x1111111111111111111111111111111111111111:6700000"
 
 PLAN = SwapPlan(inbound_address=VAULT, amount=178100, memo=MEMO, expiry=2000)
@@ -87,6 +90,67 @@ def test_memo_too_long_for_op_return():
         outs, fee=600, plan=plan, owned_addresses=OWNED, now=1000, max_fee=10000
     )
     assert any("80" in p for p in problems)
+
+
+# --- BTC plain-send verify gate (no vault, no memo) ---
+
+SEND_PLAN = SendPlan(recipient=RECIPIENT, amount=100_000)
+
+
+def send_outputs():
+    return [
+        TxOutput(address=RECIPIENT, value=100_000),
+        TxOutput(address=CHANGE, value=50_000),
+    ]
+
+
+def verify_send(outputs, fee=600, max_fee=10000):
+    return verify_btc_send(
+        outputs, fee=fee, plan=SEND_PLAN, owned_addresses=OWNED, max_fee=max_fee
+    )
+
+
+def test_valid_send_has_no_problems():
+    assert verify_send(send_outputs()) == []
+
+
+def test_send_without_change_is_fine():
+    assert verify_send([TxOutput(address=RECIPIENT, value=100_000)]) == []
+
+
+def test_send_wrong_recipient_amount():
+    outs = send_outputs()
+    outs[0] = TxOutput(address=RECIPIENT, value=99_999)
+    assert any("amount" in p for p in verify_send(outs))
+
+
+def test_send_missing_recipient_output():
+    assert any(
+        "recipient" in p.lower()
+        for p in verify_send([TxOutput(address=CHANGE, value=150_000)])
+    )
+
+
+def test_send_change_to_unowned_address_blocks():
+    outs = send_outputs()
+    outs[1] = TxOutput(address="bc1qattacker00000000000000000000000000", value=50_000)
+    assert any("non-owned" in p for p in verify_send(outs))
+
+
+def test_send_rejects_op_return():
+    outs = send_outputs()
+    outs.append(TxOutput(address=None, value=0, op_return_data=b"=:ETH.ETH:sneaky"))
+    assert any("op_return" in p.lower() for p in verify_send(outs))
+
+
+def test_send_fee_over_max_blocks():
+    assert any(
+        "max_fee" in p for p in verify_send(send_outputs(), fee=20_000, max_fee=10_000)
+    )
+
+
+def test_send_negative_fee_blocks():
+    assert any("negative" in p for p in verify_send(send_outputs(), fee=-1))
 
 
 # --- ETH swap verify gate ---

@@ -1,8 +1,8 @@
 """Command-line interface for cryptoswap_wallet.
 
 Commands: init / add-hd / add-raw / list / address / balance / quote / swap /
-status. Swaps default to a dry run that builds + verifies + prints without
-broadcasting; ``--confirm`` is required to actually send funds.
+send / status. Swaps and sends default to a dry run that builds + verifies +
+prints without broadcasting; ``--confirm`` is required to actually send funds.
 
 bitcoinlib-backed adapters are imported lazily inside handlers so simple
 invocations (and argument-parsing tests) stay light.
@@ -311,6 +311,65 @@ def cmd_swap(args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_send(args: argparse.Namespace) -> int:
+    chain = ASSET[args.asset].split(".", 1)[0]
+    if chain == "BTC":
+        return _send_btc(args)
+    print(f"send for {args.asset} is not implemented yet (BTC only)", file=sys.stderr)
+    return 2
+
+
+def _send_btc(args: argparse.Namespace) -> int:
+    from cryptoswap_wallet.chains.coins import InsufficientFunds, sweep_amount
+    from cryptoswap_wallet.chains.scan import scan_account
+
+    mnemonic = _load_mnemonic(args)
+    recipient = args.address
+    sweep = args.amount == "max"
+    with _btc_adapter(args) as adapter:
+        records = scan_account(
+            derive_address=lambda p: adapter.derive_address(mnemonic, p),
+            probe=adapter.address_info,
+            account=BTC_ACCOUNT,
+        )
+        utxos = [
+            dataclasses.replace(u, path=path)
+            for path, address, info in records
+            if info.confirmed > 0
+            for u in adapter.fetch_utxos(address)
+        ]
+        if not utxos:
+            print("no confirmed UTXOs found for this wallet", file=sys.stderr)
+            return 1
+
+        change_address = adapter.derive_address(mnemonic, BTC_CHANGE_PATH)
+        fee_rate = adapter.fetch_fee_rate()
+        try:
+            if sweep:
+                total = sum(u.value for u in utxos)
+                amount, _ = sweep_amount(total, len(utxos), fee_rate, memo_len=0)
+            else:
+                amount = int(round(args.amount * THORCHAIN_UNIT))
+            prepared = adapter.build_and_verify_send(
+                recipient=recipient,
+                amount=amount,
+                now=int(time.time()),
+                mnemonic=mnemonic,
+                scanned_utxos=utxos,
+                fee_rate=fee_rate,
+                change_address=change_address,
+                max_fee=args.max_fee,
+                sweep=sweep,
+            )
+        except InsufficientFunds as exc:
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
+
+        print(f"send:    {amount} sats to {recipient}")
+        print(f"btc fee: {prepared.built.fee} sats @ {fee_rate} sat/vB")
+        return _confirm_and_execute(prepared, adapter, args)
+
+
 def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  # noqa: ANN001
     if prepared.problems:
         print("VERIFY GATE FAILED — not safe to broadcast:", file=sys.stderr)
@@ -326,7 +385,8 @@ def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  #
         if input("\nBroadcast the swap shown above? type 'yes': ").strip() != "yes":
             print("aborted, not broadcast.")
             return 0
-    if time.time() >= prepared.plan.expiry:
+    expiry = getattr(prepared.plan, "expiry", None)
+    if expiry is not None and time.time() >= expiry:
         print("ABORTED: quote expired while confirming; re-run.", file=sys.stderr)
         return 1
     result = execute_swap(prepared, adapter, confirm=True)
@@ -754,6 +814,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_broadcast_args(s)
     s.set_defaults(func=cmd_withdraw_liquidity)
+
+    s = sub.add_parser(
+        "send", help="send to an external address (no swap); BTC only for now"
+    )
+    s.add_argument("address", help="recipient address")
+    s.add_argument(
+        "--asset",
+        default="BTC",
+        choices=list(ASSET),
+        help="asset to send (default BTC)",
+    )
+    s.add_argument(
+        "--amount",
+        type=_amount,
+        required=True,
+        help="amount to send, or 'max' to sweep",
+    )
+    s.add_argument("--key", help="keystore HD key label (default: first)")
+    s.add_argument("--confirm", action="store_true", help="actually broadcast")
+    s.add_argument(
+        "--yes", action="store_true", help="skip the interactive confirm (automation)"
+    )
+    s.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
+    s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("status", help="track a swap by inbound txid")
     s.add_argument("txid")

@@ -28,7 +28,13 @@ from cryptoswap_wallet.chains.coins import (
 from cryptoswap_wallet.net import HttpClient
 from cryptoswap_wallet.swap import Prepared, SwapRequest
 from cryptoswap_wallet.thorchain import Quote
-from cryptoswap_wallet.verify import SwapPlan, TxOutput, verify_btc_swap
+from cryptoswap_wallet.verify import (
+    SendPlan,
+    SwapPlan,
+    TxOutput,
+    verify_btc_send,
+    verify_btc_swap,
+)
 
 DEFAULT_ESPLORA = "https://blockstream.info/api"
 DEFAULT_DERIVATION = "m/84'/0'/0'/0/0"
@@ -111,14 +117,19 @@ class BtcAdapter(HttpClient):
         utxos: list[Utxo],
         vault_address: str,
         amount: int,
-        memo: str,
+        memo: str | None,
         fee_rate: float,
         change_address: str | None = None,
         default_path: str = DEFAULT_DERIVATION,
         sweep: bool = False,
     ) -> BuiltSwap:
+        """Build the unsigned tx paying ``amount`` to ``vault_address``.
+
+        ``memo`` of ``None`` omits the OP_RETURN output entirely — used for a
+        plain send (no swap). Any other value is encoded as the single OP_RETURN.
+        """
         change_address = change_address or self.derive_address(mnemonic, default_path)
-        memo_bytes = memo.encode()
+        memo_bytes = memo.encode() if memo is not None else b""
         if sweep:
             # Spend everything: fee is whatever is left over the vault output.
             chosen = list(utxos)
@@ -143,7 +154,8 @@ class BtcAdapter(HttpClient):
             )
             keys.append(key)
         tx.add_output(amount, address=vault_address)
-        tx.add_output(0, lock_script=encode_op_return(memo_bytes))
+        if memo is not None:
+            tx.add_output(0, lock_script=encode_op_return(memo_bytes))
         if change > 0:
             tx.add_output(change, address=change_address)
 
@@ -234,6 +246,41 @@ class BtcAdapter(HttpClient):
             plan=plan,
             owned_addresses=owned,
             now=now,
+            max_fee=max_fee,
+        )
+        return Prepared(quote=None, built=built, plan=plan, problems=problems)
+
+    def build_and_verify_send(
+        self,
+        *,
+        recipient: str,
+        amount: int,
+        now: int,  # noqa: ARG002 (kept for a uniform build_and_verify_* signature)
+        mnemonic: str,
+        scanned_utxos: list[Utxo],
+        fee_rate: float,
+        change_address: str,
+        max_fee: int,
+        sweep: bool = False,
+    ) -> Prepared:
+        """Build + verify a plain BTC send (no swap, no memo) to ``recipient``."""
+        built = self.build_unsigned_swap(
+            mnemonic=mnemonic,
+            utxos=scanned_utxos,
+            vault_address=recipient,
+            amount=amount,
+            memo=None,
+            fee_rate=fee_rate,
+            change_address=change_address,
+            sweep=sweep,
+        )
+        owned = {change_address} | {u.address for u in scanned_utxos}
+        plan = SendPlan(recipient=recipient, amount=amount)
+        problems = verify_btc_send(
+            built.outputs,
+            fee=built.fee,
+            plan=plan,
+            owned_addresses=owned,
             max_fee=max_fee,
         )
         return Prepared(quote=None, built=built, plan=plan, problems=problems)

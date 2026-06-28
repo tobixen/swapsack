@@ -108,6 +108,31 @@ def test_status_takes_txid():
     assert args.txid == "ABC123"
 
 
+def test_send_parses_recipient_and_amount():
+    from cryptoswap_wallet.cli import cmd_send
+
+    args = build_parser().parse_args(
+        ["send", "bc1qrecipient", "--amount", "0.001", "--confirm"]
+    )
+    assert args.address == "bc1qrecipient"
+    assert args.amount == 0.001
+    assert args.asset == "BTC"
+    assert args.confirm is True
+    assert args.func is cmd_send
+
+
+def test_send_amount_max_parses():
+    args = build_parser().parse_args(["send", "bc1qx", "--amount", "max"])
+    assert args.amount == "max"
+
+
+def test_send_requires_address_and_amount():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["send", "--amount", "0.001"])  # no recipient
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["send", "bc1qx"])  # no amount
+
+
 def test_asset_map():
     assert ASSET["BTC"] == "BTC.BTC"
     assert ASSET["ETH"] == "ETH.ETH"

@@ -30,7 +30,7 @@ override.
 | `quote` | any supported asset | read-only price preview |
 | `swap` (source) | BTC, ETH, USDT-ETH | the asset you spend |
 | `swap` (destination) | BTC, ETH, TRX, USDT-ETH, USDT-TRON | where funds land |
-| `send` (to external address) | — | **planned** (next) |
+| `send` (to external address) | BTC | plain transfer, no swap; ETH/TRX planned |
 | `add-liquidity` / `withdraw-liquidity` | BTC, ETH | single-sided, **experimental** |
 | `status` | all | track a swap by its inbound txid |
 | `--amount max` | BTC, ETH (source) | sweep the whole balance minus fees |
@@ -74,12 +74,15 @@ sources are code-ready but need a working endpoint. See `docs/TODO.md` for detai
 
 ### Per-feature support
 
+Remember that this is "current status".  Most of the missing items is in the pipeline - but I will probably prioritize according to my personal needs and/or issues raised / pull requests received.
+
 Features:
 
 * **Hold** — derive an address, hold a balance, receive funds
 * **Bal**  — show the balance
 * **To**   — use as a swap *destination* (funds land here)
 * **From** — use as a swap *source* (the asset you spend)
+* **Send** — send to an external address (a plain transfer, no swap)
 * **Liq**  — provide liquidity (see below)
 
 **Liquidity (experimental).** `add-liquidity` / `withdraw-liquidity` add or
@@ -91,16 +94,15 @@ risk-free yield. Only BTC and ETH are wired up so far.
 
 What works for the currencies with any support today. ✅ = working, ◑ =
 partial, blank = not yet. Currencies with **Support = none** above support no
-features yet. `send` (to an external address) is planned for all and so is
-omitted as it would be an entirely blank column.
+features yet.
 
-| Currency  | Hold | Bal | To  | From | Liq |
-|-----------|:----:|:---:|:---:|:----:|:---:|
-| BTC       |  ✅  |  ✅ |  ✅ |  ✅  |  ✅ |
-| ETH       |  ✅  |  ✅ |  ✅ |  ✅  |  ✅ |
-| USDT-ETH  |  ✅  |     |  ✅ |  ✅  |     |
-| TRX       |  ✅  |  ✅ |  ✅ |  ◑   |     |
-| USDT-TRON |  ✅  |     |  ✅ |      |     |
+| Currency  | Hold | Bal | To  | From | Send | Liq |
+|-----------|:----:|:---:|:---:|:----:|:----:|:---:|
+| BTC       |  ✅  |  ✅ |  ✅ |  ✅  |  ✅  |  ✅ |
+| ETH       |  ✅  |  ✅ |  ✅ |  ✅  |      |  ✅ |
+| USDT-ETH  |  ✅  |     |  ✅ |  ✅  |      |     |
+| TRX       |  ✅  |  ✅ |  ✅ |  ◑   |      |     |
+| USDT-TRON |  ✅  |     |  ✅ |      |      |     |
 
 ## Usage
 
@@ -113,6 +115,8 @@ cryptoswap-wallet balance                             # balances across chains
 cryptoswap-wallet quote --from ETH --to USDT-TRON --amount 0.02
 cryptoswap-wallet swap  --from ETH --to BTC --amount max          # DRY RUN (sweep)
 cryptoswap-wallet swap  --from BTC --to USDT-TRON --amount 0.001 --confirm
+cryptoswap-wallet send  bc1q...recipient --amount 0.001                 # DRY RUN
+cryptoswap-wallet send  bc1q...recipient --amount max --confirm         # sweep + send
 ```
 
 Defaults are `--from BTC --to ETH`. `--confirm` prints the freshly-quoted swap

@@ -124,6 +124,55 @@ def test_build_sweep_spends_all_with_no_change():
     assert problems == []
 
 
+def test_btc_build_and_verify_send_clean_and_signs():
+    a = BtcAdapter()
+    addr = a.derive_address(MNEMONIC, PATH)
+    recipient = a.derive_address(MNEMONIC, "m/84'/0'/0'/0/9")  # a valid external addr
+    utxos = [Utxo(txid="aa" * 32, vout=0, value=200000, address=addr, path=PATH)]
+    prepared = a.build_and_verify_send(
+        recipient=recipient,
+        amount=100000,
+        now=0,
+        mnemonic=MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=2,
+        change_address=addr,
+        max_fee=100000,
+    )
+    assert prepared.problems == []
+    # A plain send carries no OP_RETURN/memo output.
+    assert all(o.op_return_data is None for o in prepared.built.outputs)
+    pays = [o for o in prepared.built.outputs if o.address == recipient]
+    assert len(pays) == 1 and pays[0].value == 100000
+    raws = a.sign(prepared.built)
+    assert len(raws) == 1 and prepared.built.tx.verify() is True
+
+
+def test_btc_send_sweep_spends_all_no_change():
+    from cryptoswap_wallet.chains.coins import sweep_amount
+
+    a = BtcAdapter()
+    addr = a.derive_address(MNEMONIC, PATH)
+    recipient = a.derive_address(MNEMONIC, "m/84'/0'/0'/0/9")
+    utxos = [Utxo(txid="aa" * 32, vout=0, value=150000, address=addr, path=PATH)]
+    send, _ = sweep_amount(150000, len(utxos), 2, memo_len=0)
+    prepared = a.build_and_verify_send(
+        recipient=recipient,
+        amount=send,
+        now=0,
+        mnemonic=MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=2,
+        change_address=addr,
+        max_fee=100000,
+        sweep=True,
+    )
+    assert prepared.problems == []
+    assert prepared.built.fee == 150000 - send
+    non_data = [o for o in prepared.built.outputs if o.op_return_data is None]
+    assert len(non_data) == 1 and non_data[0].address == recipient
+
+
 def test_parse_address_info_confirmed_and_pending():
     from cryptoswap_wallet.chains.btc import parse_address_info
 
