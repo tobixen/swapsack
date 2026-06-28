@@ -79,6 +79,27 @@ def estimate_vsize(n_inputs: int, n_p2wpkh_outputs: int, op_return_len: int) -> 
     return vsize
 
 
+def sweep_amount(
+    total: int,
+    n_inputs: int,
+    fee_rate: float,
+    memo_len: int = OP_RETURN_MAX_BYTES,
+    *,
+    dust: int = DUST_P2WPKH,
+) -> tuple[int, int]:
+    """Return ``(send_amount, fee)`` for sweeping ``total`` into one output.
+
+    Spends every input into a single P2WPKH (vault) output plus the OP_RETURN
+    memo, with no change. ``memo_len`` defaults to the maximum so the fee is
+    never underestimated.
+    """
+    fee = math.ceil(estimate_vsize(n_inputs, 1, memo_len) * fee_rate)
+    send = total - fee
+    if send < dust:
+        raise InsufficientFunds(f"balance {total} too small to sweep after fee {fee}")
+    return send, fee
+
+
 def select_coins(
     utxos: list[Utxo],
     send_amount: int,

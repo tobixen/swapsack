@@ -22,6 +22,16 @@ def test_swap_confirm_and_target():
     assert args.to_ == "TRX"
 
 
+def test_swap_amount_max_parses():
+    args = build_parser().parse_args(["swap", "--amount", "max"])
+    assert args.amount == "max"
+
+
+def test_swap_amount_numeric_parses():
+    args = build_parser().parse_args(["swap", "--amount", "0.001"])
+    assert args.amount == 0.001
+
+
 def test_swap_requires_amount():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["swap"])

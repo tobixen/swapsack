@@ -19,6 +19,7 @@ from bitcoinlib.mnemonic import Mnemonic
 from bitcoinlib.transactions import Transaction
 
 from cryptoswap.chains.coins import (
+    InsufficientFunds,
     Utxo,
     decode_op_return,
     encode_op_return,
@@ -130,14 +131,24 @@ class BtcAdapter:
         fee_rate: float,
         change_address: str | None = None,
         default_path: str = DEFAULT_DERIVATION,
+        sweep: bool = False,
     ) -> BuiltSwap:
         change_address = change_address or self.derive_address(mnemonic, default_path)
         memo_bytes = memo.encode()
-        sel = select_coins(utxos, amount, fee_rate, len(memo_bytes))
+        if sweep:
+            # Spend everything: fee is whatever is left over the vault output.
+            chosen = list(utxos)
+            fee = sum(u.value for u in chosen) - amount
+            change = 0
+            if fee < 0:
+                raise InsufficientFunds(f"amount {amount} exceeds balance")
+        else:
+            sel = select_coins(utxos, amount, fee_rate, len(memo_bytes))
+            chosen, fee, change = sel.utxos, sel.fee, sel.change
 
         tx = Transaction(network="bitcoin", witness_type="segwit")
         keys: list[HDKey] = []
-        for utxo in sel.utxos:
+        for utxo in chosen:
             key = self._hdkey(mnemonic, utxo.path or default_path)
             tx.add_input(
                 prev_txid=utxo.txid,
@@ -149,13 +160,13 @@ class BtcAdapter:
             keys.append(key)
         tx.add_output(amount, address=vault_address)
         tx.add_output(0, lock_script=encode_op_return(memo_bytes))
-        if sel.change > 0:
-            tx.add_output(sel.change, address=change_address)
+        if change > 0:
+            tx.add_output(change, address=change_address)
 
         return BuiltSwap(
             tx=tx,
             outputs=_extract_outputs(tx),
-            fee=sel.fee,
+            fee=fee,
             change_address=change_address,
             keys=keys,
         )

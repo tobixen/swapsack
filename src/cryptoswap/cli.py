@@ -177,6 +177,9 @@ def _resolve_destination(args: argparse.Namespace) -> str | None:
 
 
 def cmd_quote(args: argparse.Namespace) -> int:
+    if args.amount == "max":
+        print("quote needs a numeric amount ('max' is only for swap)", file=sys.stderr)
+        return 2
     amount = int(round(args.amount * THORCHAIN_UNIT))
     dest = _resolve_destination(args)
     with ThorchainClient() as thor:
@@ -206,7 +209,7 @@ def cmd_swap(args: argparse.Namespace) -> int:
         print("a --dest address is required for this destination", file=sys.stderr)
         return 2
 
-    amount = int(round(args.amount * THORCHAIN_UNIT))
+    sweep = args.amount == "max"
     with _btc_adapter(args) as adapter, ThorchainClient() as thor:
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(mnemonic, p),
@@ -225,6 +228,18 @@ def cmd_swap(args: argparse.Namespace) -> int:
 
         change_address = adapter.derive_address(mnemonic, BTC_CHANGE_PATH)
         fee_rate = adapter.fetch_fee_rate()
+        if sweep:
+            from cryptoswap.chains.coins import InsufficientFunds, sweep_amount
+
+            total = sum(u.value for u in utxos)
+            try:
+                amount, _ = sweep_amount(total, len(utxos), fee_rate)
+            except InsufficientFunds as exc:
+                print(f"ABORTED: {exc}", file=sys.stderr)
+                return 1
+        else:
+            amount = int(round(args.amount * THORCHAIN_UNIT))
+
         request = SwapRequest(
             from_asset="BTC.BTC",
             to_asset=ASSET[args.to_],
@@ -242,6 +257,7 @@ def cmd_swap(args: argparse.Namespace) -> int:
                 change_address=change_address,
                 now=int(time.time()),
                 max_fee=args.max_fee,
+                sweep=sweep,
             )
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
@@ -280,11 +296,16 @@ def cmd_status(args: argparse.Namespace) -> int:
 # --- parser -----------------------------------------------------------------
 
 
+def _amount(value: str) -> float | str:
+    """Parse a swap amount: a number, or the literal 'max' to sweep the balance."""
+    return "max" if value.lower() == "max" else float(value)
+
+
 def _add_swap_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--from", dest="from_", default="BTC", choices=list(ASSET))
     sub.add_argument("--to", dest="to_", default="ETH", choices=list(ASSET))
     sub.add_argument(
-        "--amount", type=float, required=True, help="amount of --from asset"
+        "--amount", type=_amount, required=True, help="amount of --from asset, or 'max'"
     )
     sub.add_argument("--dest", help="destination address (default: derived from seed)")
     sub.add_argument("--key", help="keystore HD key label (default: first)")

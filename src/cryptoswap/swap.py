@@ -57,6 +57,7 @@ class BtcSwapAdapter(Protocol):
         memo: str,
         fee_rate: float,
         change_address: str,
+        sweep: bool = False,
     ) -> BuiltSwapLike: ...
 
     def sign(self, built: BuiltSwapLike) -> str: ...
@@ -103,6 +104,7 @@ def prepare_btc_swap(
     now: int,
     max_fee: int,
     tolerance_bps: int = DEFAULT_TOLERANCE_BPS,
+    sweep: bool = False,
 ) -> Prepared:
     """Quote, build the unsigned tx, and run it through the verify gate."""
     status = thorchain.inbound_addresses().get(adapter.chain)
@@ -132,6 +134,7 @@ def prepare_btc_swap(
         memo=quote.memo,
         fee_rate=fee_rate,
         change_address=change_address,
+        sweep=sweep,
     )
     owned = {change_address} | {u.address for u in scanned_utxos}
     plan = SwapPlan(

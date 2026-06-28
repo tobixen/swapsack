@@ -71,7 +71,16 @@ class FakeAdapter:
         self.broadcasted = False
 
     def build_unsigned_swap(
-        self, *, mnemonic, utxos, vault_address, amount, memo, fee_rate, change_address
+        self,
+        *,
+        mnemonic,
+        utxos,
+        vault_address,
+        amount,
+        memo,
+        fee_rate,
+        change_address,
+        sweep=False,
     ):
         outputs = self._outputs
         if outputs is None:

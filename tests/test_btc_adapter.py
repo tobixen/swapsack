@@ -85,6 +85,45 @@ def test_generate_mnemonic_is_usable():
     assert addr.startswith("bc1q")
 
 
+def test_build_sweep_spends_all_with_no_change():
+    from cryptoswap.chains.coins import sweep_amount
+
+    a = BtcAdapter()
+    p0, p1 = "m/84'/0'/0'/0/0", "m/84'/0'/0'/0/1"
+    a0, a1 = a.derive_address(MNEMONIC, p0), a.derive_address(MNEMONIC, p1)
+    utxos = [
+        Utxo(txid="aa" * 32, vout=0, value=100000, address=a0, path=p0),
+        Utxo(txid="bb" * 32, vout=0, value=100000, address=a1, path=p1),
+    ]
+    total = 200000
+    send, _ = sweep_amount(total, len(utxos), 2, len(MEMO.encode()))
+    built = a.build_unsigned_swap(
+        mnemonic=MNEMONIC,
+        utxos=utxos,
+        vault_address=VAULT,
+        amount=send,
+        memo=MEMO,
+        fee_rate=2,
+        sweep=True,
+    )
+    assert built.fee == total - send
+    non_data = [o for o in built.outputs if o.op_return_data is None]
+    assert len(non_data) == 1  # only the vault output, no change
+    assert non_data[0].address == VAULT
+    assert non_data[0].value == send
+    assert len(built.keys) == 2
+    plan = SwapPlan(inbound_address=VAULT, amount=send, memo=MEMO, expiry=9_999_999_999)
+    problems = verify_btc_swap(
+        built.outputs,
+        fee=built.fee,
+        plan=plan,
+        owned_addresses={a0, a1, built.change_address},
+        now=0,
+        max_fee=100_000,
+    )
+    assert problems == []
+
+
 def test_parse_address_info_confirmed_and_pending():
     from cryptoswap.chains.btc import parse_address_info
 

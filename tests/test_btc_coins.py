@@ -69,6 +69,21 @@ def test_select_insufficient_funds():
         select_coins([u(100000)], send_amount=178100, fee_rate=2, memo_len=50)
 
 
+def test_sweep_amount_conserves_value():
+    from cryptoswap.chains.coins import sweep_amount
+
+    send, fee = sweep_amount(total=200000, n_inputs=1, fee_rate=2, memo_len=50)
+    assert send + fee == 200000
+    assert send > 0 and fee > 0
+
+
+def test_sweep_amount_raises_when_balance_below_fee():
+    from cryptoswap.chains.coins import sweep_amount
+
+    with pytest.raises(InsufficientFunds):
+        sweep_amount(total=100, n_inputs=1, fee_rate=2, memo_len=50)
+
+
 def test_select_folds_sub_dust_change_into_fee():
     # 100262 - 100000 leaves only 262, below the dust floor: no change output,
     # the remainder becomes extra fee, and value is still conserved.
