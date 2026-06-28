@@ -3,8 +3,10 @@
 Add (single-sided / asymmetric): deposit the asset to the inbound vault with
 memo ``+:POOL``. Withdraw: send a dust tx to the vault with
 ``-:POOL:<basis_points>`` (1..10000) from the address that provided. No quote
-is involved — this is not a swap, and it is *not* a yield strategy for small
-sums (impermanent loss + RUNE/protocol risk usually exceed the fees earned).
+is involved — this is not a swap. Risk (impermanent loss, RUNE price, protocol)
+and fee yield both scale ~linearly with the deposit; the thing that penalises a
+small position is the roughly *fixed* round-trip transaction cost (add +
+withdraw trigger + outbound), which is a larger fraction of a smaller stake.
 """
 
 from __future__ import annotations

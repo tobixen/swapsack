@@ -95,10 +95,16 @@ Esplora `$CRYPTOSWAP_ESPLORA`, Ethereum RPC `$CRYPTOSWAP_ETH_RPC`, TRON API
 ## Development
 
 ```sh
-uv run pytest        # tests (auto-syncs the env)
+uv run pytest            # unit tests (auto-syncs; live network tests excluded)
+uv run pytest -m network # opt-in: read-only integration tests vs live THORChain
 uv run ruff check .
 uv run ruff format .
 ```
+
+The `network` tests are read-only (no funds moved); they guard against THORChain
+API drift and stale hard-coded asset strings. Full *broadcast* integration would
+use THORChain **stagenet** (the old testnet is deprecated) but needs stagenet
+faucet coins + testnet chain params — left as a manual exercise, not CI.
 
 ## Refreshing test fixtures
 

@@ -448,8 +448,10 @@ def cmd_withdraw_liquidity(args: argparse.Namespace) -> int:
 
 def _liquidity(args: argparse.Namespace, *, memo: str, amount: int | None) -> int:
     print(
-        "EXPERIMENTAL liquidity op — not a yield strategy; expect impermanent "
-        "loss + RUNE/protocol risk to exceed fees on small sums.",
+        "EXPERIMENTAL liquidity op. Risk (impermanent loss, RUNE price, protocol) "
+        "and fee yield both scale with size; what penalises small positions is the "
+        "~fixed round-trip cost (add + withdraw + outbound). Only LP what you can "
+        "afford to lose.",
         file=sys.stderr,
     )
     if "-" in ASSET[args.asset]:

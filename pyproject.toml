@@ -37,3 +37,6 @@ select = ["E", "F", "I", "UP", "B", "ANN"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Network/integration tests are opt-in: run them with `pytest -m network`.
+addopts = "-m 'not network'"
+markers = ["network: hits live THORChain (opt-in; excluded by default)"]
