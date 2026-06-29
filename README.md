@@ -24,7 +24,7 @@ is required to broadcast, and `--yes` skips the interactive
 confirmation prompt. Destination addresses auto-derive from the seed;
 pass `--dest` to override.
 
-The wallet is still under rapid development.  Missing features and currency support will be prioritized by personal need and by issues/PRs received.  Here is the "current status" of (partially) supported currencies (✅ = working, ◑ = partial, blank = not yet):
+The wallet is still under rapid development as of 2026-06-29.  Missing features and currency support will be prioritized by personal need and by issues/PRs received.  Here is the "current status" of (partially) supported currencies (✅ = working, ◑ = partial, blank = not yet):
 
 | Currency  | Hold | Bal | To  | From | Send | Liq |
 |-----------|:----:|:---:|:---:|:----:|:----:|:---:|
@@ -91,9 +91,6 @@ capability grid above for the per-feature detail.
 | XMR | Monero | Monero | none | no live THORChain pool yet |
 | TCY | THORChain reward token | THORChain token | none | niche; low priority |
 | MAYA | Maya governance token | Maya token | none | Maya-only; niche; low priority |
-
-EVM is the recommended next family (most coverage, least risk); then UTXO. See
-`docs/TODO.md` for detail.
 
 ## Usage
 
