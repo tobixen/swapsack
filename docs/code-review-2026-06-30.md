@@ -1,5 +1,18 @@
 # Code review — 2026-06-30
 
+> **✅ RESOLVED (2026-06-30).** All 13 confirmed findings below have been fixed
+> in commit `54f1432`, each with a regression test (suite: 240 passed). Notes:
+> - **#1** fixed via the *storage + v1 version-gate* model: keystore bumped to v2;
+>   a v1 keystore strips any stored BIP-39 passphrase on load, so existing
+>   empty-passphrase wallets keep their addresses while new v2 wallets honour a
+>   passphrase through derivation/signing.
+> - **#2/#9** amounts are now parsed and scaled as `Decimal`, and amounts below
+>   one base unit (1e-8) are rejected at parse time.
+> - **#10/#11** the default tolerance constant moved to `thorchain.py` and is
+>   threaded into backend selection.
+>
+> The findings are retained below as the historical record.
+
 **Scope:** full code review of all code (whole tree treated as one changeset, `git diff 4b825dc6…HEAD`).
 **Effort:** xhigh — 6 finder angles + cleanup, independent per-location verification.
 **Tooling note:** the `sweep` and `synthesize` stages hit the session token limit and were skipped, so findings below are the **verified** set, ranked but unmerged (one duplicate pair merged by hand). 40 candidates verified → 14 kept (one was a duplicate of another), 11 refuted.
