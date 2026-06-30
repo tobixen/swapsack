@@ -202,6 +202,60 @@ def test_broadcast_translates_tronpy_error_with_headroom_hint():
     assert "headroom" in str(exc.value).lower()
 
 
+# --- Phase 2 scaffold: TRC-20 transfer (USDT-TRON deposit) mechanics ---
+
+
+def test_decode_trc20_transfer_calldata():
+    from cryptoswap_wallet.chains.tron import decode_trc20_transfer
+
+    # transfer(TR7NH..., 1_000_000): selector + padded 20-byte addr + uint256
+    calldata = (
+        "a9059cbb"
+        "000000000000000000000000a614f803b6fd780986a42c78ec9c7f77e6ded13c"
+        + format(1_000_000, "064x")
+    )
+    to, amount = decode_trc20_transfer(calldata)
+    assert to == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    assert amount == 1_000_000
+
+
+def test_decode_trc20_transfer_rejects_wrong_selector():
+    from cryptoswap_wallet.chains.tron import decode_trc20_transfer
+
+    with pytest.raises(ValueError, match="selector"):
+        decode_trc20_transfer("deadbeef" + "0" * 128)
+
+
+@pytest.mark.network
+def test_tron_build_unsigned_trc20_transfer_live_nile():
+    """Build (no broadcast) a memo-carrying TRC-20 transfer on the Nile TESTNET,
+    decoupled from THORChain. Exercises the Phase 2 USDT-TRON deposit mechanics
+    safely: TriggerSmartContract construction, calldata encoding, the memo in the
+    tx data field, and local signing. A FRESH account is used (the test-vector
+    account has a reassigned owner permission that fails signing); nothing is
+    broadcast."""
+    from eth_account import Account
+
+    from cryptoswap_wallet.chains.tron import decode_trc20_transfer
+
+    Account.enable_unaudited_hdwallet_features()
+    _, fresh = Account.create_with_mnemonic()
+    token = "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj"  # a Nile address; not broadcast
+    recipient = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    memo = f"=:TRON.USDT:{recipient}"
+    with TronAdapter(api_url="https://nile.trongrid.io") as adapter:
+        built = adapter.build_unsigned_trc20_transfer(
+            mnemonic=fresh, token=token, to=recipient, amount=1_000_000, memo=memo
+        )
+        assert built.contract_type == "TriggerSmartContract"
+        assert built.to_address == token  # the TriggerSmartContract targets the token
+        decoded_to, decoded_amount = decode_trc20_transfer(built.call_data)
+        assert decoded_to == recipient
+        assert decoded_amount == 1_000_000
+        assert built.memo == memo
+        assert adapter.sign(built)  # local signing must succeed for a fresh account
+
+
 @pytest.mark.network
 def test_tron_build_unsigned_transfer_live():
     """Build (no broadcast) a real memo-carrying TRX transfer against the keyless
@@ -209,20 +263,20 @@ def test_tron_build_unsigned_transfer_live():
     has a reassigned owner permission on mainnet and would fail signing)."""
     from cryptoswap_wallet.chains.btc import generate_mnemonic
 
-    adapter = TronAdapter()
     fresh = generate_mnemonic()
-    built = adapter.build_unsigned_transfer(
-        mnemonic=fresh,
-        to="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
-        amount_sun=1_000_000,
-        memo="+:TRON.TRX",
-    )
-    assert built.contract_type == "TransferContract"
-    assert built.to_address == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-    assert built.amount_sun == 1_000_000
-    assert built.memo == "+:TRON.TRX"
-    # Signing is local and must succeed for a fresh (own-permission) account.
-    assert adapter.sign(built)
+    with TronAdapter() as adapter:
+        built = adapter.build_unsigned_transfer(
+            mnemonic=fresh,
+            to="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            amount_sun=1_000_000,
+            memo="+:TRON.TRX",
+        )
+        assert built.contract_type == "TransferContract"
+        assert built.to_address == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+        assert built.amount_sun == 1_000_000
+        assert built.memo == "+:TRON.TRX"
+        # Signing is local and must succeed for a fresh (own-permission) account.
+        assert adapter.sign(built)
 
 
 @pytest.mark.network

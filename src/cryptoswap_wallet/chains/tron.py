@@ -42,6 +42,43 @@ _B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 # TRC-20 tokens the wallet tracks for `balance` (symbol, contract base58, decimals).
 TRACKED_TOKENS = (("USDT", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", 6),)
 
+# ERC-20/TRC-20 transfer(address,uint256) selector + a minimal ABI so building a
+# token transfer needs no on-chain ABI fetch.
+TRC20_TRANSFER_SELECTOR = "a9059cbb"
+_TRC20_TRANSFER_ABI = [
+    {
+        "name": "transfer",
+        "type": "function",
+        "stateMutability": "Nonpayable",
+        "inputs": [
+            {"name": "_to", "type": "address"},
+            {"name": "_value", "type": "uint256"},
+        ],
+        "outputs": [{"type": "bool"}],
+    }
+]
+# A TRC-20 deposit needs spare TRX for energy; cap what a malformed call can burn.
+DEFAULT_TRC20_FEE_LIMIT_SUN = 15_000_000
+
+
+def decode_trc20_transfer(call_data: str) -> tuple[str, int]:
+    """Decode ``transfer(address,uint256)`` calldata to ``(to_base58, amount)``.
+
+    Used to bind a built TRC-20 transfer back to the intended recipient/amount
+    (the Phase 2 verify gate will reuse this, mirroring ``verify_eth_token_swap``).
+    Raises :class:`ValueError` on a selector mismatch.
+    """
+    from tronpy.abi import trx_abi
+
+    raw = bytes.fromhex(call_data.removeprefix("0x"))
+    if raw[:4].hex() != TRC20_TRANSFER_SELECTOR:
+        raise ValueError(
+            f"selector {raw[:4].hex()} != transfer {TRC20_TRANSFER_SELECTOR}"
+        )
+    to_base58, amount = trx_abi.decode(["address", "uint256"], raw[4:])
+    return to_base58, amount
+
+
 Account.enable_unaudited_hdwallet_features()
 
 
@@ -52,9 +89,10 @@ class BuiltTronTx:
     tx: object  # tronpy Transaction (online-built, carries its client for broadcast)
     priv: object  # tronpy PrivateKey for signing
     contract_type: str
-    to_address: str  # base58
-    amount_sun: int
+    to_address: str  # base58: vault (native) or token contract (TRC-20 trigger)
+    amount_sun: int  # native TRX value in sun; 0 for a TRC-20 transfer
     memo: str
+    call_data: str = ""  # TriggerSmartContract calldata hex (TRC-20); "" for native
 
 
 def _keyless_tron(api_url: str):  # noqa: ANN202 (tronpy Tron subclass, lazy import)
@@ -89,6 +127,21 @@ class TronAdapter(HttpClient):
     def __init__(self, api_url: str = DEFAULT_TRON_API, timeout: float = 20.0) -> None:
         super().__init__(timeout)
         self.api_url = api_url.rstrip("/")
+        # tronpy clients spawned for tx-building each hold their own HTTP session;
+        # track them so close() can release the sockets (they must outlive build
+        # for broadcast, which always runs inside this adapter's context).
+        self._tron_clients: list = []
+
+    def _tron_client(self):  # noqa: ANN202 (tronpy Tron subclass, lazy import)
+        client = _keyless_tron(self.api_url)
+        self._tron_clients.append(client)
+        return client
+
+    def close(self) -> None:
+        for client in self._tron_clients:
+            client.provider.sess.close()
+        self._tron_clients.clear()
+        super().close()
 
     def _key(self, mnemonic: str, path: str) -> LocalAccount:
         return Account.from_mnemonic(mnemonic, account_path=path)
@@ -192,7 +245,7 @@ class TronAdapter(HttpClient):
 
         priv = PrivateKey(bytes(self._key(mnemonic, path).key))
         owner = priv.public_key.to_base58check_address()
-        builder = _keyless_tron(self.api_url).trx.transfer(owner, to, amount_sun)
+        builder = self._tron_client().trx.transfer(owner, to, amount_sun)
         if memo:
             builder = builder.memo(memo)
         tx = builder.build()
@@ -206,6 +259,52 @@ class TronAdapter(HttpClient):
             to_address=to_base58check_address(value["to_address"]),
             amount_sun=value["amount"],
             memo=bytes.fromhex(data).decode() if data else "",
+        )
+
+    def build_unsigned_trc20_transfer(
+        self,
+        *,
+        mnemonic: str,
+        token: str,
+        to: str,
+        amount: int,
+        memo: str,
+        fee_limit_sun: int = DEFAULT_TRC20_FEE_LIMIT_SUN,
+        path: str = DEFAULT_TRON_DERIVATION,
+    ) -> BuiltTronTx:
+        """Build (but do not sign) a TRC-20 ``transfer(to, amount)`` carrying ``memo``.
+
+        This is the Phase 2 USDT-TRON deposit primitive: a ``TriggerSmartContract``
+        on the token, with the swap memo in the tx data field (where THORChain
+        reads it — TRON has no router contract). ``amount`` is in the token's
+        native units. Like the native builder it only hits the node for the ref
+        block; signing/broadcast happen later, after the verify gate passes.
+        """
+        from tronpy.contract import Contract
+        from tronpy.keys import PrivateKey, to_base58check_address
+
+        priv = PrivateKey(bytes(self._key(mnemonic, path).key))
+        owner = priv.public_key.to_base58check_address()
+        cntr = Contract(addr=token, abi=_TRC20_TRANSFER_ABI, client=self._tron_client())
+        builder = (
+            cntr.functions.transfer(to, amount)
+            .with_owner(owner)
+            .fee_limit(fee_limit_sun)
+        )
+        if memo:
+            builder = builder.memo(memo)
+        tx = builder.build()
+        contract = tx._raw_data["contract"][0]
+        value = contract["parameter"]["value"]
+        data = tx._raw_data.get("data")
+        return BuiltTronTx(
+            tx=tx,
+            priv=priv,
+            contract_type=contract["type"],
+            to_address=to_base58check_address(value["contract_address"]),
+            amount_sun=0,
+            memo=bytes.fromhex(data).decode() if data else "",
+            call_data=value["data"],
         )
 
     def _build_and_verify(
