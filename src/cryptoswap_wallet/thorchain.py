@@ -20,7 +20,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 THORCHAIN_UNIT = 100_000_000
-DEFAULT_BASE_URL = "https://thornode.thorchain.liquify.com"
+# See backends.DEFAULT_THORNODE: the old liquify default's cert expired 2024-02-07.
+DEFAULT_BASE_URL = "https://thornode.thorchain.network"
 # Default price tolerance for a quote, in basis points. Defined here (not in
 # swap.py) so the client default matches the ThorchainLike protocol default
 # without a circular import.

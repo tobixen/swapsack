@@ -192,6 +192,6 @@ lychee link check on push. Run `make dev` once to install the hooks.
 The fixtures in `tests/` are trimmed real responses from the THORChain REST API:
 
 ```sh
-curl -s "https://thornode.thorchain.liquify.com/thorchain/quote/swap?from_asset=BTC.BTC&to_asset=ETH.ETH&amount=178100"
-curl -s "https://thornode.thorchain.liquify.com/thorchain/inbound_addresses"
+curl -s "https://thornode.thorchain.network/thorchain/quote/swap?from_asset=BTC.BTC&to_asset=ETH.ETH&amount=178100"
+curl -s "https://thornode.thorchain.network/thorchain/inbound_addresses"
 ```

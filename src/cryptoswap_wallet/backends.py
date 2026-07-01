@@ -14,7 +14,11 @@ import os
 from cryptoswap_wallet.net import HTTP_ERRORS
 from cryptoswap_wallet.thorchain import Quote, ThorchainClient, ThorchainError
 
-DEFAULT_THORNODE = "https://thornode.thorchain.liquify.com"
+# thornode.thorchain.liquify.com's TLS cert expired 2024-02-07 (never renewed)
+# and the ninerealms gateways were retired (no A record), so default to a node
+# that currently resolves + serves a valid cert. Override with
+# CRYPTOSWAP_WALLET_THORNODE if this one degrades.
+DEFAULT_THORNODE = "https://thornode.thorchain.network"
 DEFAULT_MAYANODE = "https://mayanode.mayachain.info"
 
 
