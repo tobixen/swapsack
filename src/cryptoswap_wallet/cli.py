@@ -1339,14 +1339,17 @@ def _add_swap_args(sub: argparse.ArgumentParser) -> None:
         type=_nonneg_int,
         metavar="BLOCKS",
         help="streaming swap: blocks between sub-swaps (>=1). Splits the trade "
-        "over time to cut slippage, at the cost of a longer settlement",
+        "over time so each hits the pool smaller, sharply cutting slippage on "
+        "large/thinly-pooled swaps — at the cost of a longer settlement (funds "
+        "in-flight, exposed to price movement). Manages slippage itself, so it "
+        "OVERRIDES --tolerance-bps (the memo limit is set to 0). See docs/streaming.md",
     )
     sub.add_argument(
         "--stream-quantity",
         type=_nonneg_int,
         metavar="N",
         help="streaming swap: number of sub-swaps (0/omit = let the network pick "
-        "the count that minimises slippage). Only used with --stream-interval",
+        "the count that minimises slippage). Only meaningful with --stream-interval",
     )
 
 
@@ -1452,7 +1455,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_TOLERANCE_BPS,
         help="max basis points of price tolerance; raise it for small/high-fee "
-        f"swaps THORChain refuses at the default {DEFAULT_TOLERANCE_BPS}",
+        f"swaps THORChain refuses at the default {DEFAULT_TOLERANCE_BPS}. Ignored "
+        "when --stream-interval is set (streaming manages slippage itself)",
     )
     s.set_defaults(func=cmd_swap)
 
