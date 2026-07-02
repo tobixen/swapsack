@@ -65,5 +65,6 @@ addopts = "-m 'not network'"
 markers = ["network: hits live THORChain (opt-in; excluded by default)"]
 # Treat warnings as errors so deprecations/misconfig surface as failures rather
 # than scroll by. Add a documented `ignore:...` entry here if an upstream dep
-# forces an unavoidable one.
+# forces an unavoidable one. (Network tests additionally tolerate GC-timed
+# ResourceWarnings from pooled sockets — scoped in tests/conftest.py.)
 filterwarnings = ["error"]
