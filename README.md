@@ -171,9 +171,10 @@ addresses (and faucets) are documented in [docs/testnet.md](docs/testnet.md);
 the seeds live only in CI secrets:
 
 ```sh
-# BTC testnet3 (sweeps the wallet's testnet UTXOs to itself)
-CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC=...    # a funded testnet account
-CRYPTOSWAP_WALLET_BTC_TESTNET_ESPLORA=...     # optional; defaults to blockstream testnet
+# BTC signet (sweeps the wallet's signet UTXOs to itself; testnet3 is deprecated)
+CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC=...    # a funded account
+CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK=...     # optional; "signet" (default) / "testnet"
+CRYPTOSWAP_WALLET_BTC_TESTNET_ESPLORA=...     # optional; defaults to blockstream <network>
 CRYPTOSWAP_WALLET_BTC_TESTNET_RECIPIENT=tb1.. # optional; defaults to a self-send
 
 # ETH Sepolia (self-sends 0.001 ETH, chain id 11155111)

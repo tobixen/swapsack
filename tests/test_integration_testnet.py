@@ -7,8 +7,9 @@ Nile TRC-20 loop in ``test_tron.py`` — and skips for everyone else. Provide th
 account our wallet DERIVES. The funding addresses are documented in
 ``docs/testnet.md`` (and each test prints its address on the send line):
 
-  BTC testnet3:
-    CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC   seed of a funded testnet account
+  BTC signet (default; override the network via env for testnet3/4):
+    CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC   seed of a funded account
+    CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK    optional; "signet" (default)/"testnet"
     CRYPTOSWAP_WALLET_BTC_TESTNET_ESPLORA    optional Esplora base URL
     CRYPTOSWAP_WALLET_BTC_TESTNET_RECIPIENT   optional; defaults to a self-send
 
@@ -45,9 +46,17 @@ from cryptoswap_wallet.chains.scan import scan_account  # noqa: E402
 pytestmark = pytest.mark.network
 
 BTC_TESTNET_MNEMONIC = os.environ.get("CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC")
+# Default to signet (stable, reliable faucet); testnet3 is being deprecated and
+# its faucets are chronically drained. Override with the NETWORK env (e.g.
+# "testnet"/"testnet4") — the Esplora default follows it (blockstream hosts each
+# under the same path). Signet and testnet3 share the tb1 address format, so the
+# funded address is the same either way.
+BTC_TESTNET_NETWORK = (
+    os.environ.get("CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK") or "signet"
+)
 BTC_TESTNET_ESPLORA = (
     os.environ.get("CRYPTOSWAP_WALLET_BTC_TESTNET_ESPLORA")
-    or "https://blockstream.info/testnet/api"
+    or f"https://blockstream.info/{BTC_TESTNET_NETWORK}/api"
 )
 
 ETH_SEPOLIA_MNEMONIC = os.environ.get("CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC")
@@ -68,7 +77,9 @@ def test_btc_testnet_send_broadcast():
     broadcast, then confirm the network accepted the tx (Esplora sees it)."""
     receive_path = "m/84'/0'/0'/0/0"
     change_path = "m/84'/0'/0'/1/0"
-    with BtcAdapter(esplora_url=BTC_TESTNET_ESPLORA, network="testnet") as adapter:
+    with BtcAdapter(
+        esplora_url=BTC_TESTNET_ESPLORA, network=BTC_TESTNET_NETWORK
+    ) as adapter:
         recipient = os.environ.get(
             "CRYPTOSWAP_WALLET_BTC_TESTNET_RECIPIENT"
         ) or adapter.derive_address(BTC_TESTNET_MNEMONIC, receive_path)

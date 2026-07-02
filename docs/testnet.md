@@ -14,8 +14,13 @@ does). The same mnemonic is set as both secrets below.
 
 | Chain | Network | Derivation | Address | Secret / env |
 |---|---|---|---|---|
-| BTC | testnet3 | `m/84'/0'/0'/0/0` (P2WPKH) | `tb1qaxgpvty4myyaf7qwz43f9meq5qsuz2dfzhhrdr` | `CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC` |
+| BTC | **signet** | `m/84'/0'/0'/0/0` (P2WPKH) | `tb1qaxgpvty4myyaf7qwz43f9meq5qsuz2dfzhhrdr` | `CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC` |
 | ETH | Sepolia | `m/44'/60'/0'/0/0` | `0xd3074A2Bf86F5Db92C2F096302359CeEFEBC7176` | `CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC` |
+
+The BTC test defaults to **signet** (`blockstream.info/signet/api`). Signet and
+testnet3 share the same `tb1…` address format, so the address above is the same
+on either; set `CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK=testnet` (+ a matching
+Esplora) to fall back to testnet3.
 
 The BTC test *sweeps the wallet's UTXOs to itself* and the ETH test *self-sends*
 a tiny amount, so both just need a small balance at the address above (enough to
@@ -24,10 +29,10 @@ small, so a dry faucet never turns CI red.
 
 ## Faucets
 
-- **BTC testnet3:** https://coinfaucet.eu/en/btc-testnet/ ·
-  https://bitcoinfaucet.uo1.net/ · https://faucet.triangleplatform.com/bitcoin/testnet
-  (testnet3 faucets are chronically drained/rate-limited; testnet3 is being
-  phased out for testnet4 — see the note below).
+- **BTC signet:** https://signetfaucet.com/ · https://faucet.mutinynet.com/
+  (signet coins are stable and the faucet is reliable, unlike testnet3). If you
+  switch back to testnet3: https://coinfaucet.eu/en/btc-testnet/ ·
+  https://bitcoinfaucet.uo1.net/ (chronically drained).
 - **ETH Sepolia:** https://sepoliafaucet.com/ · https://www.alchemy.com/faucets/ethereum-sepolia
   · https://cloud.google.com/application/web3/faucet/ethereum/sepolia
 
@@ -56,11 +61,12 @@ from cryptoswap_wallet.chains.eth import EthAdapter; \
 print(EthAdapter().derive_address(os.environ['CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC']))"
 ```
 
-## Note: testnet3 vs signet/testnet4
+## Network choice
 
-Bitcoin **testnet3** is being deprecated and its faucets are unreliable.
-bitcoinlib here also supports `signet` and `testnet4`, and **signet** has a
-stable faucet (https://signetfaucet.com/). Moving to signet would need a small
-change — the test hardcodes `network="testnet"` and the Esplora default is
-testnet3; parameterize the network (env-driven) to switch. Left as testnet3 for
-now to match the existing `blockstream.info/testnet/api` default.
+The BTC test defaults to **signet** because testnet3 is being deprecated and its
+faucets are chronically drained; signet is stable with a reliable faucet. The
+network is env-driven (`CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK`, default
+`signet`), and the Esplora default follows it
+(`https://blockstream.info/<network>/api`), so testnet3/testnet4 remain a
+one-env-var switch. bitcoinlib supports `signet`, `testnet` (testnet3) and
+`testnet4`. The derived `tb1…` address is identical across them.
