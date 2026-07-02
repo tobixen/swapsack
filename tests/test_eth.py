@@ -336,6 +336,73 @@ def test_eth_token_verify_rejects_swapped_vault_token():
     assert problems
 
 
+# --- ERC-20 liquidity add (approve + router.depositWithExpiry, "+:POOL" memo) ---
+
+LP_ROUTER = "0xe3985E6b61b814F7Cdb188766562ba71b446B46d"
+LP_VAULT = "0x6a16f961e24e6e90bd9f950f768dc42a7f305664"
+
+
+def _lp_deposit_kwargs(**over):
+    kw = dict(
+        vault=LP_VAULT,
+        memo=f"+:{USDT_ASSET}",
+        amount=2_500_000_000,  # 25 USDT in THORChain 1e8 units
+        now=1000,
+        mnemonic=MNEMONIC,
+        nonce=4,
+        gas=60000,  # ignored on the token path (uses APPROVE_GAS/TOKEN_DEPOSIT_GAS)
+        max_fee_per_gas=20_000_000_000,
+        max_priority_fee_per_gas=1_000_000_000,
+        max_fee_wei=10**16,
+        router=LP_ROUTER,
+    )
+    kw.update(over)
+    return kw
+
+
+def test_eth_token_lp_add_builds_and_verifies():
+    from cryptoswap_wallet.chains.eth import DEPOSIT_SELECTOR, _decode_call
+
+    prepared = EthAdapter().build_and_verify_deposit(**_lp_deposit_kwargs())
+    assert prepared.problems == []
+    built = prepared.built
+    assert built.native_amount == 25_000_000  # 25 USDT (6 dec)
+    assert built.approve_tx["nonce"] == 4
+    assert built.deposit_tx["nonce"] == 5
+    assert built.router.lower() == LP_ROUTER.lower()
+    assert built.vault.lower() == LP_VAULT.lower()
+    # The deposit calldata binds vault/token/amount/memo positionally.
+    d_vault, d_token, d_amount, d_memo, _exp = _decode_call(
+        built.deposit_tx["data"],
+        DEPOSIT_SELECTOR,
+        ["address", "address", "uint256", "string", "uint256"],
+    )
+    assert d_vault.lower() == LP_VAULT.lower()
+    assert d_amount == 25_000_000
+    assert d_memo == f"+:{USDT_ASSET}"
+
+
+def test_eth_token_lp_add_requires_router():
+    from cryptoswap_wallet.swap import SwapAborted
+
+    with pytest.raises(SwapAborted, match="router"):
+        EthAdapter().build_and_verify_deposit(**_lp_deposit_kwargs(router=None))
+
+
+def test_eth_token_lp_withdraw_is_native_dust_not_a_token_deposit():
+    # A withdraw ("-:POOL:bps") — even of a token pool — is a dust native-ETH
+    # trigger, so it must take the native path (one tx, memo as calldata), not
+    # build an approve+deposit pair.
+    memo = f"-:{USDT_ASSET}:5000"
+    prepared = EthAdapter().build_and_verify_deposit(
+        **_lp_deposit_kwargs(memo=memo, amount=1000)
+    )
+    assert prepared.problems == []
+    built = prepared.built
+    assert not hasattr(built, "approve_tx")  # native EthBuiltSwap, not token pair
+    assert built.data == "0x" + memo.encode().hex()
+
+
 @pytest.mark.network
 def test_eth_token_balance_live():
     """Live ERC-20 balanceOf against the public RPC — guards the call encoding

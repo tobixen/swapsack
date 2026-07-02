@@ -1084,10 +1084,13 @@ def _liquidity(
         "volatility may cause arbitrageurs to eat your funds",
         "for small amounts, the networking fees will probably outsize any win",
     )
-    if "-" in ASSET[args.asset]:
-        print("liquidity for tokens is not supported yet", file=sys.stderr)
+    asset = ASSET[args.asset]
+    chain = asset.split(".", 1)[0]
+    if "-" in asset and chain != "ETH":
+        # Only ETH-chain ERC-20 LP is wired (via the Maya router). USDT-TRON has
+        # no Maya pool; there's nowhere to provide it.
+        print(f"token liquidity is only supported for ETH tokens, not {args.asset}")
         return 2
-    chain = ASSET[args.asset].split(".", 1)[0]
     if chain == "BTC":
         return _liquidity_btc(args, memo=memo, amount=amount, sweep=sweep)
     if chain == "ETH":
@@ -1168,25 +1171,49 @@ def _liquidity_btc(
 def _liquidity_eth(
     args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
 ) -> int:
-    from cryptoswap_wallet.chains.coins import InsufficientFunds
+    from cryptoswap_wallet.chains.coins import InsufficientFunds, token_sweep_amount
     from cryptoswap_wallet.chains.eth import eth_sweep_amount
     from cryptoswap_wallet.swap import prepare_liquidity
 
+    asset = ASSET[args.asset]
+    # A token *add* (approve + router deposit) is the only token op that needs the
+    # router; a token *withdraw* is a native-ETH dust trigger, handled natively.
+    token_add = memo.startswith("+") and "-" in asset
     mnemonic, passphrase = _load_mnemonic(args)
     with _eth_adapter(args, passphrase) as adapter, _liquidity_client(args) as thor:
         from_address = adapter.derive_address(mnemonic)
         nonce = adapter.get_nonce(from_address)
         max_fee_per_gas, max_priority_fee_per_gas = adapter.fetch_fees()
-        if sweep:
-            try:
+        build_extra: dict[str, object] = {}
+        decimals = 18
+        if token_add:
+            token = asset.split("-", 1)[1]
+            decimals = adapter.token_decimals(token)
+            eth_status = thor.inbound_addresses().get("ETH")
+            if not eth_status or not eth_status.router:
+                print("no ETH router on this backend — token LP needs it")
+                return 2
+            build_extra["router"] = eth_status.router
+            _warn(
+                "token liquidity add — 2 transactions (approve + deposit):",
+                "gas is paid in ETH, separate from the tokens deposited",
+                "if the deposit fails after approve, a router allowance remains",
+            )
+        try:
+            if sweep and token_add:
+                token = asset.split("-", 1)[1]
+                amount = token_sweep_amount(
+                    adapter.fetch_token_balance(token, from_address), decimals
+                )
+            elif sweep:
                 amount = eth_sweep_amount(
                     adapter.fetch_balance(from_address),
                     gas=args.eth_gas,
                     max_fee_per_gas=max_fee_per_gas,
                 )
-            except InsufficientFunds as exc:
-                print(f"ABORTED: {exc}", file=sys.stderr)
-                return 1
+        except InsufficientFunds as exc:
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
         try:
             prepared = prepare_liquidity(
                 thorchain=thor,
@@ -1200,12 +1227,21 @@ def _liquidity_eth(
                 max_fee_per_gas=max_fee_per_gas,
                 max_priority_fee_per_gas=max_priority_fee_per_gas,
                 max_fee_wei=ETH_MAX_FEE_WEI,
+                **build_extra,
             )
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
-        eth_amt = prepared.plan.amount_wei / 10**18
-        print(f"send:    {eth_amt:.8f} ETH to {prepared.plan.inbound_address}")
+        if token_add:
+            built = prepared.built
+            print(
+                f"send:    {built.native_amount / 10**decimals:.6f} {args.asset} "
+                f"via router {built.router}"
+            )
+            print(f"vault:   {built.vault}")
+        else:
+            eth_amt = prepared.plan.amount_wei / 10**18
+            print(f"send:    {eth_amt:.8f} ETH to {prepared.plan.inbound_address}")
         print(f"memo:    {memo}")
         print(f"max fee: {prepared.built.fee / 10**18:.6f} ETH")
         return _confirm_and_execute(prepared, adapter, args)

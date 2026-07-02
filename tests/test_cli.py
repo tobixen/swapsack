@@ -141,6 +141,34 @@ def test_add_liquidity_rejects_zero_amount():
         build_parser().parse_args(["add-liquidity", "--asset", "BTC", "--amount", "0"])
 
 
+def test_add_liquidity_usdt_eth_routes_to_eth_handler(monkeypatch):
+    import cryptoswap_wallet.cli as cli
+
+    called = {}
+
+    def fake_eth(args, *, memo, amount, sweep=False):
+        called.update(memo=memo, amount=amount, sweep=sweep)
+        return 0
+
+    monkeypatch.setattr(cli, "_liquidity_eth", fake_eth)
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "USDT-ETH", "--amount", "25"]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    assert called["memo"] == "+:ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7"
+    assert called["amount"] == 2_500_000_000  # 25 USDT in THORChain 1e8 units
+
+
+def test_add_liquidity_usdt_tron_rejected(capsys):
+    import cryptoswap_wallet.cli as cli
+
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "USDT-TRON", "--amount", "10"]
+    )
+    assert cli.cmd_add_liquidity(args) == 2
+    assert "only supported for ETH tokens" in capsys.readouterr().out
+
+
 def test_swap_amount_numeric_parses():
     args = build_parser().parse_args(["swap", "--amount", "0.001"])
     assert args.amount == Decimal("0.001")

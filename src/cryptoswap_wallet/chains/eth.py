@@ -23,7 +23,7 @@ from eth_account.signers.local import LocalAccount
 from cryptoswap_wallet.chains.base import BalanceReport
 from cryptoswap_wallet.chains.coins import InsufficientFunds
 from cryptoswap_wallet.net import HttpClient
-from cryptoswap_wallet.swap import BroadcastError, Prepared, SwapRequest
+from cryptoswap_wallet.swap import BroadcastError, Prepared, SwapAborted, SwapRequest
 from cryptoswap_wallet.thorchain import Quote
 from cryptoswap_wallet.verify import (
     WEI_PER_THORCHAIN_UNIT,
@@ -420,24 +420,29 @@ class EthAdapter(HttpClient):
     def sign(self, built: EthBuiltSwap | EthTokenBuiltSwap) -> list[str]:
         return [self._sign_tx(tx, built.private_key) for tx in built.txs]
 
-    def build_token_swap(
+    def _build_token_deposit(
         self,
         *,
-        mnemonic: str,
-        request: SwapRequest,
-        quote: Quote,
+        account: LocalAccount,
+        token: str,
+        router: str,
+        vault: str,
+        native: int,
+        memo: str,
+        expiry: int,
         nonce: int,
         max_fee_per_gas: int,
         max_priority_fee_per_gas: int,
-        decimals: int,
     ) -> EthTokenBuiltSwap:
-        account = self._key(mnemonic, DEFAULT_ETH_DERIVATION)
-        token = to_checksum_address(request.from_asset.split("-", 1)[1])
-        router = to_checksum_address(quote.router or "")
-        vault = to_checksum_address(quote.inbound_address)
-        memo = quote.memo or ""
-        # THORChain 1e8 units -> the token's native decimals.
-        native = request.amount * 10**decimals // 10**8
+        """Build the approve + ``router.depositWithExpiry`` pair for any ERC-20
+        deposit to a THORChain/Maya vault — a token swap *or* a token LP add.
+
+        ``memo`` is the deposit memo (``=:…`` for a swap, ``+:POOL`` for LP);
+        amounts are already in the token's native units.
+        """
+        token = to_checksum_address(token)
+        router = to_checksum_address(router)
+        vault = to_checksum_address(vault)
         common = {
             "type": 2,
             "chainId": CHAIN_ID,
@@ -457,7 +462,7 @@ class EthAdapter(HttpClient):
             "nonce": nonce + 1,
             "to": router,
             "gas": TOKEN_DEPOSIT_GAS,
-            "data": encode_deposit(vault, token, native, memo, quote.expiry),
+            "data": encode_deposit(vault, token, native, memo, expiry),
         }
         return EthTokenBuiltSwap(
             approve_tx=approve_tx,
@@ -468,7 +473,32 @@ class EthAdapter(HttpClient):
             vault=vault,
             native_amount=native,
             memo=memo,
+            expiry=expiry,
+        )
+
+    def build_token_swap(
+        self,
+        *,
+        mnemonic: str,
+        request: SwapRequest,
+        quote: Quote,
+        nonce: int,
+        max_fee_per_gas: int,
+        max_priority_fee_per_gas: int,
+        decimals: int,
+    ) -> EthTokenBuiltSwap:
+        return self._build_token_deposit(
+            account=self._key(mnemonic, DEFAULT_ETH_DERIVATION),
+            token=request.from_asset.split("-", 1)[1],
+            router=quote.router or "",
+            vault=quote.inbound_address,
+            # THORChain 1e8 units -> the token's native decimals.
+            native=request.amount * 10**decimals // 10**8,
+            memo=quote.memo or "",
             expiry=quote.expiry,
+            nonce=nonce,
+            max_fee_per_gas=max_fee_per_gas,
+            max_priority_fee_per_gas=max_priority_fee_per_gas,
         )
 
     def build_and_verify(
@@ -674,7 +704,42 @@ class EthAdapter(HttpClient):
         max_fee_per_gas: int,
         max_priority_fee_per_gas: int,
         max_fee_wei: int,
+        router: str | None = None,
     ) -> Prepared:
+        # An ERC-20 LP *add* (memo "+:ETH.USDT-0x…") is a token deposit: approve +
+        # router.depositWithExpiry, exactly like a token swap but with the LP memo
+        # and no destination to bind. Needs the backend's ETH router. A *withdraw*
+        # ("-:POOL:bps") — even of a token pool — is instead a dust native-ETH
+        # trigger from the provider address, so it falls through to the native
+        # path below; hence we key on "+:" and a token pool, not just "-" in memo.
+        if memo.startswith("+") and "-" in memo:
+            if not router:
+                raise SwapAborted("token liquidity needs the backend's ETH router")
+            token_contract = memo.split(":", 1)[1].split("-", 1)[1]
+            decimals = self.token_decimals(token_contract)
+            expiry = now + 3600
+            built_token = self._build_token_deposit(
+                account=self._key(mnemonic, DEFAULT_ETH_DERIVATION),
+                token=token_contract,
+                router=router,
+                vault=vault,
+                native=amount * 10**decimals // 10**8,
+                memo=memo,
+                expiry=expiry,
+                nonce=nonce,
+                max_fee_per_gas=max_fee_per_gas,
+                max_priority_fee_per_gas=max_priority_fee_per_gas,
+            )
+            # No destination in an LP memo, so pass "" (memo_pays_destination
+            # is a no-op for empty); the gate still binds token/router/vault/
+            # amount/memo/expiry.
+            problems = verify_eth_token_swap(
+                built=built_token, destination="", now=now, max_fee_wei=max_fee_wei
+            )
+            return Prepared(
+                quote=None, built=built_token, plan=built_token, problems=problems
+            )
+
         built = self.build_unsigned_swap(
             mnemonic=mnemonic,
             vault_address=vault,

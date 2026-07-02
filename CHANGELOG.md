@@ -55,7 +55,11 @@ automatically from git tags (PEP 440 / SemVer).
   plus any pending); `quote`, `status`, `address`.
 - Experimental `add-liquidity` / `withdraw-liquidity` (BTC, ETH, TRX,
   single-sided), with `--backend {thorchain,maya}` and a pre-flight `PAUSELP`
-  check that aborts an add THORChain would only refund.
+  check that aborts an add THORChain would only refund. ERC-20 token LP adds
+  (e.g. USDT-ETH on Maya) are now supported: an approve + `router.depositWithExpiry`
+  pair carrying the `+:POOL` memo (reusing the token-swap deposit builder + gate,
+  with no destination to bind), `--amount max` sweeping the whole token balance;
+  a token *withdraw* stays a native-ETH dust trigger.
 - `send` to an external address (plain transfer, no swap/memo) for **BTC, ETH,
   USDT-ETH, TRX and USDT-TRON** (USDC-ETH rides the same ERC-20 path), with
   `--amount max` to sweep (exact for tokens; ETH leaves a gas reserve; native
