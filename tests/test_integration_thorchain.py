@@ -104,8 +104,14 @@ def test_small_high_fee_swap_rejected_at_default_tolerance_live():
 
 
 def test_eth_usdt_source_quote_live():
+    # tolerance_bps=None disables the slippage price limit: this small swap's
+    # fixed fees can exceed the default tolerance as the market moves, and the
+    # test only checks the quote's shape (router present), not its price — so a
+    # price-limit rejection would be a spurious failure (matches the siblings).
     with ThorchainClient() as thor:
-        quote = thor.quote_swap(ASSET["USDT-ETH"], "BTC.BTC", 5_000_000_000, BTC_DEST)
+        quote = thor.quote_swap(
+            ASSET["USDT-ETH"], "BTC.BTC", 5_000_000_000, BTC_DEST, tolerance_bps=None
+        )
     assert quote.router  # token source needs the router for depositWithExpiry
     assert quote.expected_amount_out > 0
 
