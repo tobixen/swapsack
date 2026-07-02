@@ -55,14 +55,23 @@ Owner's requested order; two-sided liquidity comes *after* these.
 
 ## Integration tests towards testnet / stagenet
 
-Done: opt-in full-loop **`send`** broadcast tests on **BTC testnet3** and **ETH
-Sepolia** (`tests/test_integration_testnet.py`), gated on funded testnet accounts
-via env / CI secrets (skip otherwise), mirroring the Nile TRC-20 loop. The BTC
-and ETH adapters are now network-parameterized (`BtcAdapter(network=...)`,
-`EthAdapter(chain_id=...)`) so mainnet stays the default. This proves the account
-+ UTXO spending path end to end for the first time.
+Done: opt-in full-loop **`send`** broadcast tests on **BTC signet** (default;
+testnet3/4 via env) and **ETH Sepolia** (`tests/test_integration_testnet.py`),
+gated on funded testnet accounts via env / CI secrets (skip otherwise),
+mirroring the Nile TRC-20 loop. The BTC and ETH adapters are network-
+parameterized (`BtcAdapter(network=...)`, `EthAdapter(chain_id=...)`) so mainnet
+stays the default. This proves the account + UTXO spending path end to end.
 
 Still to do:
+- **Verify the funded broadcast loop actually RUNS in CI** (not just skips). A
+  fresh signet seed + Sepolia account are set as CI secrets and are being funded
+  (signetfaucet queued a payout on 2026-07-02; addresses in `docs/testnet.md`).
+  Once the coins land: (a) confirm the balances arrived (`address_info` /
+  `fetch_balance`), and (b) confirm the **Integration (network)** job reports
+  `test_btc_testnet_send_broadcast` and `test_eth_sepolia_send_broadcast_and_confirm`
+  as **PASSED, not skipped** — the tests skip when unfunded, so a green CI alone
+  does NOT prove a real testnet tx was broadcast. Inspect the run log for the
+  broadcast txids.
 - **Sepolia token send** (USDT/USDC on Sepolia) — the token-swap gate still bakes
   in mainnet `CHAIN_ID`; parameterize it (fold into A2/A3) to testnet-cover the
   ERC-20 send/swap path too.
