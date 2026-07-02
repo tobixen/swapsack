@@ -39,9 +39,11 @@ automatically from git tags (PEP 440 / SemVer).
   (memo LIM=0); `quote` prints the sub-swap count and estimated settlement time.
 - Itemised cost breakdown on `quote`/`swap` (slip/swap fee, flat outbound fee,
   quoted total in `bps`; the inbound source-chain tx fee is shown separately),
-  plus a best-effort `market:` line comparing the quoted output to a public spot
+  plus a best-effort `Market:` block comparing the quoted output to a public spot
   price (CoinGecko) to surface the *total* realised cost — protocol fees, slip,
-  and the pool-vs-market spread. On by default; `--no-price-check` disables it.
+  and the pool-vs-market spread. Three lines: a source header, the per-asset
+  comparison in `bps`, and the estimated absolute loss in **EUR**. On by default;
+  `--no-price-check` disables it.
 - `swap --tolerance-bps` (default 300) to widen the slippage/fee tolerance for
   small or high-fee swaps THORChain refuses at the default. A rejected quote now
   aborts cleanly with an actionable message (no traceback); the common

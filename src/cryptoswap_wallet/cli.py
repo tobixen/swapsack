@@ -449,16 +449,20 @@ def _select_backend(  # noqa: ANN202 (Backend, lazy import)
 
 def _market_comparison(
     from_key: str, to_key: str, amount_units: int, quoted_out_units: int
-) -> str | None:
-    """Best-effort 'vs public spot' line, or None if unavailable/not mappable.
+) -> list[str] | None:
+    """Best-effort 'vs public spot' block, or None if unavailable/not mappable.
 
     Compares the quoted output against what an external mid-price swap would
     yield, surfacing the *total* realised cost (fees + slip + the pool-vs-market
-    spread arbitrageurs earn). Never raises: a feed failure just drops the line.
+    spread arbitrageurs earn). Returns up to three lines: a source header, the
+    per-asset comparison, and (when the feed has a EUR price for the destination)
+    the estimated absolute loss in EUR. Never raises: a feed failure drops it.
     """
     from cryptoswap_wallet.pricefeed import (
         COINGECKO_IDS,
+        SOURCE,
         PriceFeed,
+        loss_amount,
         loss_vs_market_bps,
         market_out,
     )
@@ -469,18 +473,31 @@ def _market_comparison(
         return None
     try:
         with PriceFeed() as feed:
-            prices = feed.spot_usd([id_from, id_to])
+            prices = feed.spot([id_from, id_to], vs=("usd", "eur"))
         market = market_out(
-            amount_units / THORCHAIN_UNIT, prices[id_from], prices[id_to]
+            amount_units / THORCHAIN_UNIT,
+            prices[id_from]["usd"],
+            prices[id_to]["usd"],
         )
     except (*HTTP_ERRORS, KeyError, ValueError, ZeroDivisionError):
         return None
     quoted = quoted_out_units / THORCHAIN_UNIT
     bps = loss_vs_market_bps(quoted, market)
-    return (
-        f"market:  ~{market:.8f} {to_key} at spot (CoinGecko)"
-        f"  ->  ~{bps:.0f} bps total vs market (fees+slip+spread)"
-    )
+    lines = [
+        f"Market: ({SOURCE})",
+        f"  ~{market:.8f} {to_key} at spot"
+        f"  ->  ~{bps:.0f} bps total vs market (fees+slip+spread)",
+    ]
+    eur_out = prices.get(id_to, {}).get("eur")
+    if eur_out:
+        loss_eur = loss_amount(quoted, market) * eur_out
+        if loss_eur >= 0:
+            lines.append(f"  est. total loss ~€{loss_eur:.2f} (fees+slip+spread)")
+        else:
+            lines.append(
+                f"  est. gain ~€{-loss_eur:.2f} vs market (pool priced in your favour)"
+            )
+    return lines
 
 
 def _print_swap_costs(
@@ -505,10 +522,10 @@ def _print_swap_costs(
     for line in quote.fees.breakdown(to_key):
         print(line)
     if price_check:
-        line = _market_comparison(
+        market_lines = _market_comparison(
             from_key, to_key, amount_units, quote.expected_amount_out
         )
-        if line:
+        for line in market_lines or ():
             print(line)
 
 

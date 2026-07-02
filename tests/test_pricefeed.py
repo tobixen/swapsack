@@ -4,8 +4,10 @@ import pytest
 
 from cryptoswap_wallet.pricefeed import (
     COINGECKO_IDS,
+    loss_amount,
     loss_vs_market_bps,
     market_out,
+    parse_prices,
     parse_spot,
 )
 
@@ -17,6 +19,24 @@ def test_parse_spot_extracts_usd_and_skips_malformed():
         "broken": {},  # no usd key -> dropped
     }
     assert parse_spot(payload) == {"bitcoin": 60072.0, "ethereum": 1612.35}
+
+
+def test_parse_prices_keeps_every_currency():
+    payload = {
+        "bitcoin": {"usd": 60701, "eur": 53313},
+        "dash": {"usd": 33.69, "eur": 29.59},
+    }
+    assert parse_prices(payload) == {
+        "bitcoin": {"usd": 60701.0, "eur": 53313.0},
+        "dash": {"usd": 33.69, "eur": 29.59},
+    }
+
+
+def test_loss_amount_is_destination_units_below_market():
+    # Market mid would give 4.0; the pool quotes 3.98 -> 0.02 units lost.
+    assert loss_amount(3.98, 4.00) == pytest.approx(0.02)
+    # Pool priced in our favour -> negative "loss".
+    assert loss_amount(4.02, 4.00) == pytest.approx(-0.02)
 
 
 def test_market_out_uses_the_price_ratio():

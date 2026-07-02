@@ -65,6 +65,57 @@ def test_market_comparison_skips_unmapped_asset_without_network():
     assert _market_comparison("RUNE", "BTC", 100_000_000, 1) is None
 
 
+def _patch_feed(monkeypatch, prices):
+    import cryptoswap_wallet.pricefeed as pf
+
+    def fake_spot(self, coin_ids, *, vs=("usd",)):
+        return prices
+
+    monkeypatch.setattr(pf.PriceFeed, "spot", fake_spot)
+
+
+def test_market_comparison_is_three_lines_with_eur_loss(monkeypatch):
+    from cryptoswap_wallet.cli import _market_comparison
+
+    _patch_feed(
+        monkeypatch,
+        {
+            "bitcoin": {"usd": 60000.0, "eur": 55000.0},
+            "dash": {"usd": 30.0, "eur": 27.5},
+        },
+    )
+    # 1 BTC in; quoted 1900 DASH out. market = 1*60000/30 = 2000 DASH;
+    # loss = 100 DASH -> 100 * 27.5 EUR = €2750.00; bps = 100/2000 = 500.
+    lines = _market_comparison("BTC", "DASH", 100_000_000, 190_000_000_000)
+    assert lines[0] == "Market: (CoinGecko)"
+    assert "2000.00000000 DASH at spot" in lines[1]
+    assert "500 bps total vs market" in lines[1]
+    assert "€2750.00" in lines[2] and "loss" in lines[2]
+
+
+def test_market_comparison_drops_eur_line_when_no_eur_price(monkeypatch):
+    from cryptoswap_wallet.cli import _market_comparison
+
+    _patch_feed(monkeypatch, {"bitcoin": {"usd": 60000.0}, "dash": {"usd": 30.0}})
+    lines = _market_comparison("BTC", "DASH", 100_000_000, 190_000_000_000)
+    assert len(lines) == 2  # header + comparison, no EUR loss line
+
+
+def test_market_comparison_shows_gain_when_pool_favours_you(monkeypatch):
+    from cryptoswap_wallet.cli import _market_comparison
+
+    _patch_feed(
+        monkeypatch,
+        {
+            "bitcoin": {"usd": 60000.0, "eur": 55000.0},
+            "dash": {"usd": 30.0, "eur": 27.5},
+        },
+    )
+    # Quoted 2100 DASH > market 2000 -> a gain, not a loss.
+    lines = _market_comparison("BTC", "DASH", 100_000_000, 210_000_000_000)
+    assert "gain" in lines[2]
+
+
 def test_swap_confirm_and_target():
     args = build_parser().parse_args(
         ["swap", "--amount", "0.01", "--to", "TRX", "--confirm"]
