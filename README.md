@@ -166,8 +166,9 @@ CRYPTOSWAP_WALLET_NILE_RECIPIENT=T...  # optional; defaults to a self-transfer
 Two more opt-in tests (`tests/test_integration_testnet.py`) prove the **`send`
 spending path end to end** on public testnets — build → sign → broadcast →
 confirm a real (valueless) transfer, defaulting to a self-send. They skip unless
-a funded testnet account our wallet *derives* is provided (the test prints the
-address to fund):
+a funded testnet account our wallet *derives* is provided. The funding
+addresses (and faucets) are documented in [docs/testnet.md](docs/testnet.md);
+the seeds live only in CI secrets:
 
 ```sh
 # BTC testnet3 (sweeps the wallet's testnet UTXOs to itself)

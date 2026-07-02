@@ -4,7 +4,8 @@ These prove the account/UTXO *spending* path end to end against a real network,
 which recorded-fixture unit tests cannot. They move real (valueless) testnet
 coins, so each is gated on a funded testnet account supplied via env — like the
 Nile TRC-20 loop in ``test_tron.py`` — and skips for everyone else. Provide the
-account our wallet DERIVES (the tests print/derive the address to fund):
+account our wallet DERIVES. The funding addresses are documented in
+``docs/testnet.md`` (and each test prints its address on the send line):
 
   BTC testnet3:
     CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC   seed of a funded testnet account
