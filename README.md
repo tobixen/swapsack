@@ -19,13 +19,13 @@ binary on your PATH. Then run `cryptoswap-wallet --help`.
 
 ## Features
 
-The wallet is still under rapid development as of 2026-06-29.  Missing features and currency support will be prioritized by personal need and by issues/PRs received.  Here is the "current status" of (partially) supported currencies (✅ = working, ◑ = partial, blank = not yet):
+The wallet is still under rapid development as of 2026-07-03.  Missing features and currency support will be prioritized by personal need and by issues/PRs received.  Here is the "current status" of (partially) supported currencies (✅ = working, ◑ = partial, blank = not yet):
 
 | Currency  | Hold | Bal | To  | From | Send | Sweep | Liq |
 |-----------|:----:|:---:|:---:|:----:|:----:|:-----:|:---:|
 | BTC       |  ✅  |  ✅ |  ✅ |  ✅  |  ✅  |  ✅  |  ✅ |
-| ETH       |  ✅  |  ✅ |  ✅ |  ✅  |  ✅  |  ◑   |  ✅ |
-| USDT-ETH  |  ✅  |  ✅ |  ✅ |  ✅  |  ✅  |  ✅  |     |
+| ETH       |  ✅  |  ✅ |  ✅ |  ✅  |  ✅  |  ✅  |  ✅ |
+| USDT-ETH  |  ✅  |  ✅ |  ✅ |  ✅  |  ✅  |  ✅  |  ✅ |
 | USDC-ETH  |  ✅  |  ✅ |  ✅ |  ✅  |  ◑   |  ✅  |     |
 | TRX       |  ✅  |  ✅ |  ✅ |  ✅  |  ✅  |      |  ✅ |
 | USDT-TRON |  ✅  |  ✅ |  ✅ |  ✅  |  ✅  |  ✅  |     |
@@ -41,8 +41,8 @@ The wallet is still under rapid development as of 2026-06-29.  Missing features 
 * **To**   — use as a `swap` *destination* (for a currency whose address the wallet can't derive yet, give an external one via `--dest`)
 * **From** — use as a `swap` *source* (the asset you spend)
 * **Send** — `send` to an external address (a plain transfer, no swap). ✅ = implemented and tested; ◑ = USDC-ETH rides the *same* ERC-20 send path as USDT-ETH (only the contract/decimals differ) but isn't separately covered by a test
-* **Sweep** — `--amount max` sends the maximum amount (✅ = exact, wallet ends at 0 — also the case for tokens, whose gas is paid in the native coin; ◑ = small fee reserve/dust is left behind because the real fee is only known at sending time)
-* **Liq**  — `add-liquidity` and `withdraw-liquidity` can be used to provide/withdraw *single-sided* liquidity (experimental; see below).
+* **Sweep** — `--amount max` sends the maximum amount. ✅ = works: UTXO and token sweeps end at 0 (a token's gas is paid in the native coin); **native account coins (ETH/TRX) intentionally retain a small gas reserve** — the fee is only known at send time, and you *want* some left to move tokens or swap later, so the wallet warns rather than draining you to 0. ◑ = not yet (native TRX).
+* **Liq**  — `add-liquidity` and `withdraw-liquidity` provide/withdraw *single-sided* liquidity, now including ERC-20 tokens (e.g. USDT-ETH on Maya, via the router). Experimental; see below.
 
 Other features:
 
@@ -72,7 +72,7 @@ capability grid above for the per-feature detail.
 | ETH | Ethereum | EVM | partial | `send` done |
 | TRX | TRON | TRON | partial | `send` done |
 | BSC / BNB | BNB Smart Chain | EVM | partial | Hold + balance work (native BNB and BEP-20 USDC/USDT, 18-decimal). Swaps blocked: BSC trading halted on THORChain (`chain_trading_paused`), and Maya has no BSC pools — nothing to swap against until THORChain re-enables it |
-| USDT-ETH | Tether | ERC-20 token | partial | `send` done; no liquidity yet |
+| USDT-ETH | Tether | ERC-20 token | full | `send` + single-sided liquidity (Maya, via router) done |
 | USDT-TRON | Tether | TRC-20 token | partial | `send` done |
 | USDT-BSC | Tether | BEP-20 token | none | Blocked: halted on THORChain, not on Maya (Maya has no BSC pools) |
 | USBT-SOL | Tether | ? | none | Not currently available on THORChain/Maya |
