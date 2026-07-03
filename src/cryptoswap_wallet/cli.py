@@ -632,6 +632,12 @@ def _send_eth(args: argparse.Namespace) -> int:
                     adapter.token_decimals(token),
                 )
             elif sweep:
+                _warn(
+                    "sweeping native ETH keeps only the reserve for THIS tx:",
+                    "you'll have ~no ETH left to pay gas for future token "
+                    "(USDT/USDC) transfers, swaps or LP moves",
+                    "consider sending a fixed amount and keeping some ETH for gas",
+                )
                 amount = eth_sweep_amount(
                     adapter.fetch_balance(from_address),
                     gas=NATIVE_SEND_GAS,
