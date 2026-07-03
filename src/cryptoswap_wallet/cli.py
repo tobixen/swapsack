@@ -285,11 +285,24 @@ def cmd_balance(args: argparse.Namespace) -> int:
                     continue
                 print(report.format())
                 _report_liquidity(backends, adapter.asset, report.addresses)
+                for pool_asset in _token_pool_assets(adapter):
+                    _report_liquidity(backends, pool_asset, report.addresses)
                 _report_token_balances(adapter, mnemonic)
     finally:
         for backend in backends:
             backend.client.close()
     return 0
+
+
+def _token_pool_assets(adapter) -> list[str]:  # noqa: ANN001 (ChainAdapter)
+    """THORChain/Maya pool-asset strings for the adapter's tracked ERC-20/TRC-20
+    tokens (e.g. ``ETH.USDT-0X…``), so `balance` also probes *token* LP positions,
+    not just the native pool. Empty for adapters that track no tokens.
+    """
+    return [
+        f"{adapter.chain}.{symbol}-{contract.upper()}"
+        for symbol, contract, _decimals in getattr(adapter, "tracked_tokens", ())
+    ]
 
 
 def _report_token_balances(adapter, mnemonic: str) -> None:  # noqa: ANN001 (ChainAdapter)

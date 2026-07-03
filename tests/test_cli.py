@@ -159,6 +159,31 @@ def test_add_liquidity_usdt_eth_routes_to_eth_handler(monkeypatch):
     assert called["amount"] == 2_500_000_000  # 25 USDT in THORChain 1e8 units
 
 
+def test_token_pool_assets_uppercases_contract():
+    from cryptoswap_wallet.cli import _token_pool_assets
+
+    class FakeEth:
+        chain = "ETH"
+        tracked_tokens = (
+            ("USDT", "0xdac17f958d2ee523a2206206994597c13d831ec7", 6),
+            ("USDC", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 6),
+        )
+
+    assert _token_pool_assets(FakeEth()) == [
+        "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7",
+        "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48",
+    ]
+
+
+def test_token_pool_assets_empty_without_tracked_tokens():
+    from cryptoswap_wallet.cli import _token_pool_assets
+
+    class FakeBtc:
+        chain = "BTC"
+
+    assert _token_pool_assets(FakeBtc()) == []
+
+
 def test_add_liquidity_usdt_tron_rejected(capsys):
     import cryptoswap_wallet.cli as cli
 
