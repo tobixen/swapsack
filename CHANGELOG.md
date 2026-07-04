@@ -33,8 +33,15 @@ automatically from git tags (PEP 440 / SemVer).
   `chains/maya_tx.py` (no `grpcio`/`cosmpy` runtime dep) and validated
   byte-for-byte against cosmpy in the tests; a `verify_maya_send` gate binds the
   serialized recipient/amount/denom before signing. Broadcast is unproven on
-  mainnet (no Maya testnet) — see `docs/cacao.md`. Swap-from + liquidity
-  (`MsgDeposit`) are still pending. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
+  mainnet (no Maya testnet) — see `docs/cacao.md`.
+- `swap --from CACAO`: native CACAO as a swap source, built as a Cosmos
+  `MsgDeposit` (memo-driven, no inbound vault). The `MsgDeposit` wire format is
+  validated by decoding a real on-chain deposit; a `verify_maya_deposit` gate
+  binds the coin/amount/memo/signer and that the memo pays the destination.
+  `parse_quote` now tolerates the fields a native-source quote omits, and
+  `prepare_swap` skips the inbound-address check for a native-source adapter.
+  Broadcast unproven on mainnet. (Single-sided liquidity is n/a for the
+  settlement asset — that's the RUNE-leg of symmetric LP.) `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
   for ERC-20/TRC-20 token sources (USDT-ETH, USDC-ETH, USDT-TRON) on swap — the whole
   token balance, exact since the fee is paid in the native coin, not the token.
   The TRX source signs a native TransferContract with

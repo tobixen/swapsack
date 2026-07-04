@@ -198,6 +198,33 @@ def _read_fields(data: bytes) -> dict[int, list]:
     return fields
 
 
+def decode_msg_deposit_body(body_bytes: bytes) -> dict:
+    """Decode a single-``MsgDeposit`` :func:`tx_body` back to its fields.
+
+    Returns ``{type_url, coins: [(asset, amount)], memo, signer}`` where ``asset``
+    is ``CHAIN.SYMBOL`` and ``signer`` is the raw account bytes.
+    """
+    body = _read_fields(body_bytes)
+    memo = body.get(2, [b""])[0].decode()
+    any_msg = _read_fields(body[1][0])
+    type_url = any_msg[1][0].decode()
+    msg = _read_fields(any_msg[2][0])
+    coins = []
+    for coin_bytes in msg.get(1, []):
+        coin = _read_fields(coin_bytes)
+        asset = _read_fields(coin[1][0])
+        chain = asset[1][0].decode()
+        symbol = asset[2][0].decode()
+        coins.append((f"{chain}.{symbol}", coin[2][0].decode()))
+    return {
+        "type_url": type_url,
+        "coins": coins,
+        "memo": msg.get(2, [b""])[0].decode(),
+        "signer": msg[3][0] if 3 in msg else b"",
+        "outer_memo": memo,
+    }
+
+
 def decode_msg_send_body(body_bytes: bytes) -> dict:
     """Decode a single-``MsgSend`` :func:`tx_body` back to its fields.
 

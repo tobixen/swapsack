@@ -107,9 +107,22 @@ broadcast test gated on a funded secret, mirroring the Nile TRC-20 loop.
   fee/gas convention (currently empty fee coins + gas 2e6, letting the chain
   charge its fixed native fee) — is unexercised on mainnet. Sweep (`--amount
   max`) is intentionally refused (fixed fee is charged separately).
-- **Phase 3 — From (swap source) + Liq.** `MsgDeposit` with the swap/LP memo;
-  audit the source-side `THORCHAIN_UNIT` conversions for CACAO's 1e10 (see the
-  landmine section). Unlocks the RUNE-leg for TODO #4 symmetric liquidity.
+- **Phase 3 — From (swap source). DONE (broadcast unproven on mainnet).**
+  `swap --from CACAO` builds a `types.MsgDeposit` (memo-driven, **no inbound
+  vault** — confirmed against a live quote, which returns `inbound_address:
+  null`) carrying the CACAO coin at 1e10, signs it (reusing the Phase-2
+  machinery) and broadcasts. The `MsgDeposit` wire format is validated by
+  decoding a **real on-chain deposit** (`tests/test_maya_tx.py`), and a
+  `verify_maya_deposit` gate binds the coin/amount/memo/signer and that the memo
+  pays the destination. `parse_quote` was made tolerant of the fields a
+  native-source quote omits (inbound_address/dust/gas), and `prepare_swap` skips
+  the inbound-address check for a `native_source` adapter. Amount scale (1e10) is
+  the same bank denom as `MsgSend`, cross-checked against the quote's
+  `recommended_min_amount_in`. Sweep is refused (fixed native fee).
+- **Liquidity for CACAO is not a single-sided operation.** CACAO is the
+  settlement asset (the base of every pool), so "adding CACAO liquidity" is the
+  RUNE-leg of a *symmetric* add — that's TODO #4, not a per-asset LP like BTC.
+  The `MsgDeposit` builder here is exactly what that will reuse.
 
 ## See also
 

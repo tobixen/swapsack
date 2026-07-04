@@ -608,6 +608,8 @@ def cmd_swap(args: argparse.Namespace) -> int:
         return _swap_from_eth(args)
     if chain == "TRON":  # native TRX (TRC-20 tokens not yet a source)
         return _swap_from_tron(args)
+    if chain == "MAYA":  # native CACAO (Cosmos MsgDeposit; Maya-only)
+        return _swap_from_maya(args)
     print(f"swap source {args.from_} is not implemented yet", file=sys.stderr)
     return 2
 
@@ -1117,6 +1119,66 @@ def _swap_from_tron(args: argparse.Namespace) -> int:
         )
         print("inbound: paid from spare TRX (bandwidth/energy), NOT the sent amount")
         print("         -> keep some TRX headroom below your balance")
+        return _confirm_and_execute(prepared, adapter, args)
+
+
+def _swap_from_maya(args: argparse.Namespace) -> int:
+    from cryptoswap_wallet.chains.maya import CACAO_UNIT
+
+    if args.amount == "max":
+        # A native CACAO sweep can't be exact — Maya charges a fixed native fee
+        # separately from the deposited amount (same as native TRX).
+        print("--amount max is not supported for native CACAO yet", file=sys.stderr)
+        return 2
+    mnemonic, passphrase = _load_mnemonic(args)
+    dest = _resolve_destination(args, mnemonic, passphrase)
+    if dest is None:
+        print("a --dest address is required for this destination", file=sys.stderr)
+        return 2
+
+    # CACAO is 1e10 (not the 1e8 the shared _base_units assumes); the Maya quote
+    # API also speaks 1e10 for CACAO, so the request amount goes through as-is.
+    amount = int((args.amount * CACAO_UNIT).to_integral_value(rounding=ROUND_HALF_EVEN))
+    with _maya_adapter(args, passphrase) as adapter:
+        request = SwapRequest(
+            from_asset=ASSET[args.from_],
+            to_asset=ASSET[args.to_],
+            amount=amount,
+            destination=dest,
+        )
+        try:
+            backend = _select_backend(
+                args,
+                from_asset=request.from_asset,
+                to_asset=request.to_asset,
+                amount=amount,
+                destination=dest,
+                tolerance_bps=args.tolerance_bps,
+            )
+            with backend.client as thor:
+                prepared = prepare_swap(
+                    thorchain=thor,
+                    adapter=adapter,
+                    request=request,
+                    now=int(time.time()),
+                    mnemonic=mnemonic,
+                    tolerance_bps=args.tolerance_bps,
+                    **_streaming_kwargs(args),
+                )
+        except (SwapAborted, ValueError) as exc:
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
+
+        out = prepared.quote.expected_amount_out / asset_unit(ASSET[args.to_])
+        print(f"via:     {backend.name}")
+        print(f"deposit: {amount / CACAO_UNIT:.8f} CACAO (MsgDeposit, no vault)")
+        print(f"expect:  {out:.8f} {args.to_} -> {dest}")
+        print(f"memo:    {prepared.quote.memo}")
+        _print_swap_costs(
+            prepared.quote, args.from_, args.to_, amount, price_check=args.price_check
+        )
+        print("inbound: Maya charges a fixed native CACAO tx fee, separate from the")
+        print("         deposit -> keep a little CACAO headroom below your balance")
         return _confirm_and_execute(prepared, adapter, args)
 
 

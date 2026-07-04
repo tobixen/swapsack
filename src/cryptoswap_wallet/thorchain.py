@@ -320,7 +320,9 @@ def parse_quote(payload: dict[str, Any]) -> Quote:
         raise ThorchainError(payload["error"])
     fees = payload["fees"]
     return Quote(
-        inbound_address=payload["inbound_address"],
+        # A native-source (RUNE/CACAO) swap is a MsgDeposit to the chain itself,
+        # so the quote carries no inbound vault address.
+        inbound_address=payload.get("inbound_address", ""),
         expected_amount_out=_int(payload["expected_amount_out"]),
         memo=payload.get("memo"),
         fees=SwapFees(
@@ -334,9 +336,11 @@ def parse_quote(payload: dict[str, Any]) -> Quote:
         ),
         recommended_min_amount_in=_int(payload["recommended_min_amount_in"]),
         expiry=_int(payload["expiry"]),
-        dust_threshold=_int(payload["dust_threshold"]),
-        recommended_gas_rate=_int(payload["recommended_gas_rate"]),
-        gas_rate_units=payload["gas_rate_units"],
+        # dust/gas fields describe the inbound tx on an external source chain; a
+        # native-source (RUNE/CACAO) MsgDeposit quote omits them.
+        dust_threshold=_int(payload.get("dust_threshold", 0)),
+        recommended_gas_rate=_int(payload.get("recommended_gas_rate", 0)),
+        gas_rate_units=payload.get("gas_rate_units", ""),
         router=payload.get("router"),
         max_streaming_quantity=_int(payload.get("max_streaming_quantity", 0)),
         streaming_swap_blocks=_int(payload.get("streaming_swap_blocks", 0)),

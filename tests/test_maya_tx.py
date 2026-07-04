@@ -128,6 +128,47 @@ def test_verify_maya_send_flags_a_tampered_recipient():
     assert verify_maya_send(decoded=decode_msg_send_body(body), plan=evil)
 
 
+def test_decode_msg_deposit_against_a_real_onchain_tx():
+    # The MsgDeposit *value* (inside the Any) of a real MayaChain tx at height
+    # 17312886 — a ZEC deposit swapping to BTC. Validates the wire format
+    # (coin{asset,amount}, memo, signer) our builder/decoder rely on.
+    from cryptoswap_wallet.chains.maya_tx import (
+        MSGDEPOSIT_TYPE_URL,
+        decode_msg_deposit_body,
+    )
+
+    real_value = bytes.fromhex(
+        "0a1d0a110a035a454312035a45431a035a4543280112083233323030303030"
+        "123c3d3a4254437e4254433a6d617961313736383230776d6a70353336777473"
+        "6464786e34793532676870337732336b373437686172643a3137313635371a14"
+        "f68ea7bb720d23a72e0d69a7525148b862e546de"
+    )
+    body = tx_body([(MSGDEPOSIT_TYPE_URL, real_value)], "")
+    decoded = decode_msg_deposit_body(body)
+    assert decoded["coins"] == [("ZEC.ZEC", "23200000")]
+    assert (
+        decoded["memo"]
+        == "=:BTC~BTC:maya176820wmjp536wtsddxn4y52ghp3w23k747hard:171657"
+    )
+    assert len(decoded["signer"]) == 20
+
+
+def test_msg_deposit_cacao_build_roundtrips():
+    from cryptoswap_wallet.chains.maya_tx import (
+        MSGDEPOSIT_TYPE_URL,
+        decode_msg_deposit_body,
+        msg_deposit,
+    )
+
+    signer = bytes(range(20))
+    memo = "=:BTC.BTC:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    value = msg_deposit([("MAYA.CACAO", "500000000000000")], memo, signer)
+    decoded = decode_msg_deposit_body(tx_body([(MSGDEPOSIT_TYPE_URL, value)], ""))
+    assert decoded["coins"] == [("MAYA.CACAO", "500000000000000")]
+    assert decoded["memo"] == memo
+    assert decoded["signer"] == signer
+
+
 def test_verify_maya_send_rejects_a_memo_on_a_plain_send():
     from cryptoswap_wallet.chains.maya_tx import decode_msg_send_body
     from cryptoswap_wallet.verify import MayaSendPlan, verify_maya_send

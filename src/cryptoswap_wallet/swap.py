@@ -166,9 +166,13 @@ def prepare_swap(
     embeds and the verify gate binds like any other memo. ``streaming_quantity``
     of ``None``/``0`` lets the network pick the sub-swap count that minimises slip.
     """
-    status = thorchain.inbound_addresses().get(adapter.chain)
-    if status is None or not status.tradable:
-        raise SwapAborted(f"{adapter.chain} is not currently tradable on THORChain")
+    # A native source (RUNE/CACAO) is deposited to the chain itself via
+    # MsgDeposit — there is no external inbound vault to look up, and the quote
+    # below fails anyway if trading is paused, so skip the inbound-address check.
+    if not getattr(adapter, "native_source", False):
+        status = thorchain.inbound_addresses().get(adapter.chain)
+        if status is None or not status.tradable:
+            raise SwapAborted(f"{adapter.chain} is not currently tradable on THORChain")
 
     try:
         # A tolerance limit and streaming don't mix on THORChain/Maya (a tight

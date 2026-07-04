@@ -120,3 +120,59 @@ def test_build_and_verify_send_passes_gate_and_signs_validly(monkeypatch):
         for v in (0, 1)
     ]
     assert signer in recovered
+
+
+def test_build_and_verify_swap_deposit_passes_gate(monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    from cryptoswap_wallet.chains import maya_tx
+
+    adapter = MayaAdapter()
+    monkeypatch.setattr(adapter, "fetch_account", lambda address: (4, 0))
+    monkeypatch.setattr(adapter, "fetch_chain_id", lambda: "mayachain-mainnet-v1")
+
+    dest = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    quote = SimpleNamespace(
+        memo=f"=:BTC.BTC:{dest}", expiry=int(time.time()) + 600, inbound_address=None
+    )
+    request = SimpleNamespace(
+        from_asset="MAYA.CACAO",
+        to_asset="BTC.BTC",
+        amount=500_000_000_000_000,  # 1e10 base units == 50000 CACAO
+        destination=dest,
+    )
+    prepared = adapter.build_and_verify(
+        quote=quote, request=request, now=int(time.time()), mnemonic=TEST_MNEMONIC
+    )
+    assert prepared.problems == []
+    # The built body carries a MsgDeposit of the intended CACAO amount + memo.
+    decoded = maya_tx.decode_msg_deposit_body(prepared.built.body_bytes)
+    assert decoded["coins"] == [("MAYA.CACAO", "500000000000000")]
+    assert decoded["memo"] == quote.memo
+
+
+def test_build_and_verify_swap_deposit_catches_tampered_memo():
+    import time
+
+    from cryptoswap_wallet.verify import MayaDepositPlan, verify_maya_deposit
+
+    # A memo that does not pay the intended destination must be flagged.
+    plan = MayaDepositPlan(
+        asset="MAYA.CACAO",
+        amount="500000000000000",
+        memo="=:BTC.BTC:bc1qattacker000000000000000000000000000000",
+        destination="bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+        signer=bytes(range(20)),
+        expiry=int(time.time()) + 600,
+    )
+    decoded = {
+        "type_url": "/types.MsgDeposit",
+        "coins": [("MAYA.CACAO", "500000000000000")],
+        "memo": plan.memo,
+        "signer": plan.signer,
+    }
+    assert any(
+        "does not pay destination" in p
+        for p in verify_maya_deposit(decoded=decoded, plan=plan, now=int(time.time()))
+    )

@@ -25,7 +25,12 @@ from bitcoinlib.mnemonic import Mnemonic
 from cryptoswap_wallet.chains.base import BalanceReport
 from cryptoswap_wallet.net import HTTP_ERRORS, HttpClient
 from cryptoswap_wallet.swap import BroadcastError, Prepared
-from cryptoswap_wallet.verify import MayaSendPlan, verify_maya_send
+from cryptoswap_wallet.verify import (
+    MayaDepositPlan,
+    MayaSendPlan,
+    verify_maya_deposit,
+    verify_maya_send,
+)
 
 DEFAULT_MAYANODE = "https://mayanode.mayachain.info"
 DEFAULT_DERIVATION = "m/44'/931'/0'/0/0"
@@ -137,6 +142,9 @@ class MayaAdapter(HttpClient):
 
     chain = "MAYA"
     asset = "MAYA.CACAO"
+    # CACAO is deposited to the chain itself (MsgDeposit), not to an external
+    # inbound vault — so prepare_swap skips the inbound-address tradability check.
+    native_source = True
 
     def __init__(
         self,
@@ -244,6 +252,55 @@ class MayaAdapter(HttpClient):
             decoded=maya_tx.decode_msg_send_body(body_bytes), plan=plan
         )
         return Prepared(quote=None, built=built, plan=plan, problems=problems)
+
+    # --- swapping FROM Maya (native CACAO source, via MsgDeposit) -----------
+
+    def build_and_verify(
+        self,
+        *,
+        quote,  # noqa: ANN001 (thorchain.Quote)
+        request,  # noqa: ANN001 (swap.SwapRequest)
+        now: int,
+        mnemonic: str,
+        path: str = DEFAULT_DERIVATION,
+        gas_limit: int = DEFAULT_GAS_LIMIT,
+    ) -> Prepared:
+        """Build + gate a native CACAO swap as a ``MsgDeposit`` (no inbound vault).
+
+        ``request.amount`` is in CACAO's 1e10 base units (the Maya quote API's unit
+        for CACAO). The memo from the quote drives the swap; the gate binds the
+        deposited coin/amount, memo, our signer, and that the memo pays the dest.
+        """
+        from cryptoswap_wallet.chains import maya_tx
+
+        private_key, public_key = self._keys(mnemonic, path)
+        sender = self.derive_address(mnemonic, path)
+        _, signer_bytes = bech32_decode(sender)
+        amount_str = str(request.amount)
+        memo = quote.memo or ""
+        deposit = maya_tx.msg_deposit([(self.asset, amount_str)], memo, signer_bytes)
+        body_bytes = maya_tx.tx_body([(maya_tx.MSGDEPOSIT_TYPE_URL, deposit)], "")
+        account_number, sequence = self.fetch_account(sender)
+        auth_info_bytes = maya_tx.auth_info(public_key, sequence, [], gas_limit)
+        built = BuiltMayaTx(
+            body_bytes=body_bytes,
+            auth_info_bytes=auth_info_bytes,
+            chain_id=self.fetch_chain_id(),
+            account_number=account_number,
+            private_key=private_key,
+        )
+        plan = MayaDepositPlan(
+            asset=self.asset,
+            amount=amount_str,
+            memo=memo,
+            destination=request.destination,
+            signer=signer_bytes,
+            expiry=quote.expiry,
+        )
+        problems = verify_maya_deposit(
+            decoded=maya_tx.decode_msg_deposit_body(body_bytes), plan=plan, now=now
+        )
+        return Prepared(quote=quote, built=built, plan=plan, problems=problems)
 
     def sign(self, built: BuiltMayaTx) -> list[str]:
         from cryptoswap_wallet.chains import maya_tx

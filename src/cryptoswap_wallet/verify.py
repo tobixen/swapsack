@@ -559,3 +559,45 @@ def verify_maya_send(*, decoded: dict, plan: MayaSendPlan) -> list[str]:
         problems.append(f"plain send must carry no memo, got {decoded.get('memo')!r}")
 
     return problems
+
+
+@dataclasses.dataclass(frozen=True)
+class MayaDepositPlan:
+    """What we intend a MayaChain ``MsgDeposit`` (swap from native CACAO) to do.
+
+    A native swap has no inbound vault — the memo drives it — so the gate binds
+    the deposited coin/amount, the memo, our own signer, and that the memo pays
+    the intended destination.
+    """
+
+    asset: str  # "MAYA.CACAO"
+    amount: str  # 1e10 base units, as the on-chain string
+    memo: str
+    destination: str
+    signer: bytes  # our 20-byte account (must match the maya1 we derived)
+    expiry: int
+
+
+def verify_maya_deposit(*, decoded: dict, plan: MayaDepositPlan, now: int) -> list[str]:
+    """Return reasons a decoded MsgDeposit body does not match ``plan``; empty is ok."""
+    problems: list[str] = []
+
+    if now >= plan.expiry:
+        problems.append(f"quote expired (now {now} >= expiry {plan.expiry})")
+    if decoded.get("type_url") != "/types.MsgDeposit":
+        problems.append(f"message type {decoded.get('type_url')!r} != MsgDeposit")
+    if decoded.get("coins") != [(plan.asset, plan.amount)]:
+        problems.append(
+            f"tx deposits {decoded.get('coins')} != intended "
+            f"[({plan.asset!r}, {plan.amount!r})]"
+        )
+    if decoded.get("memo") != plan.memo:
+        problems.append(f"tx memo {decoded.get('memo')!r} != quoted {plan.memo!r}")
+    if decoded.get("signer") != plan.signer:
+        problems.append("tx signer != our derived account")
+    if not memo_pays_destination(plan.destination, plan.memo):
+        problems.append(
+            f"quoted memo {plan.memo!r} does not pay destination {plan.destination}"
+        )
+
+    return problems
