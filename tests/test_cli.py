@@ -116,6 +116,24 @@ def test_market_comparison_shows_gain_when_pool_favours_you(monkeypatch):
     assert "gain" in lines[2]
 
 
+def test_market_comparison_scales_cacao_output_by_1e10(monkeypatch):
+    from cryptoswap_wallet.cli import _market_comparison
+
+    _patch_feed(
+        monkeypatch,
+        {
+            "bitcoin": {"usd": 60000.0, "eur": 55000.0},
+            "cacao": {"usd": 0.1, "eur": 0.09},
+        },
+    )
+    # 1 BTC in; quoted 590_000 CACAO out in 1e10 base units (5.9e15). market =
+    # 1*60000/0.1 = 600_000 CACAO; loss = 10_000 CACAO. If the output were mis-
+    # divided by 1e8 it would read 59_000_000 CACAO -> a bogus huge "gain".
+    lines = _market_comparison("BTC", "CACAO", 100_000_000, 5_900_000_000_000_000)
+    assert "600000.00000000 CACAO at spot" in lines[1]
+    assert "loss" in lines[2]
+
+
 def test_swap_confirm_and_target():
     args = build_parser().parse_args(
         ["swap", "--amount", "0.01", "--to", "TRX", "--confirm"]

@@ -67,3 +67,4 @@ def test_tokens_map_to_the_underlying_asset_regardless_of_chain():
     assert COINGECKO_IDS["USDC-ETH"] == "usd-coin"
     assert COINGECKO_IDS["DASH"] == "dash"
     assert COINGECKO_IDS["ZEC"] == "zcash"
+    assert COINGECKO_IDS["CACAO"] == "cacao"

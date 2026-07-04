@@ -31,7 +31,7 @@ from cryptoswap_wallet.swap import (
     execute_swap,
     prepare_swap,
 )
-from cryptoswap_wallet.thorchain import THORCHAIN_UNIT
+from cryptoswap_wallet.thorchain import THORCHAIN_UNIT, asset_unit
 
 try:
     from cryptoswap_wallet._version import __version__
@@ -56,6 +56,7 @@ ASSET = {
     "BCH": "BCH.BCH",
     "DASH": "DASH.DASH",  # Maya-only pool; see docs/dash.md
     "ZEC": "ZEC.ZEC",  # Maya-only pool; transparent (t-addr) only; see docs/zcash.md
+    "CACAO": "MAYA.CACAO",  # Maya native asset; 1e10 decimals; see docs/cacao.md
 }
 
 
@@ -489,13 +490,13 @@ def _market_comparison(
         with PriceFeed() as feed:
             prices = feed.spot([id_from, id_to], vs=("usd", "eur"))
         market = market_out(
-            amount_units / THORCHAIN_UNIT,
+            amount_units / asset_unit(ASSET[from_key]),
             prices[id_from]["usd"],
             prices[id_to]["usd"],
         )
     except (*HTTP_ERRORS, KeyError, ValueError, ZeroDivisionError):
         return None
-    quoted = quoted_out_units / THORCHAIN_UNIT
+    quoted = quoted_out_units / asset_unit(ASSET[to_key])
     bps = loss_vs_market_bps(quoted, market)
     lines = [
         f"Market: ({SOURCE})",
@@ -571,8 +572,9 @@ def cmd_quote(args: argparse.Namespace) -> int:
             return 1
         chosen, chosen_quote = best_quote(results)
         print(f"in:     {args.amount} {args.from_}  ->  {args.to_}")
+        to_unit = asset_unit(ASSET[args.to_])
         for backend, quote in sorted(results, key=lambda p: -p[1].expected_amount_out):
-            out = quote.expected_amount_out / THORCHAIN_UNIT
+            out = quote.expected_amount_out / to_unit
             mark = "  <- best" if backend is chosen else ""
             print(f"  {backend.name:9} {out:.8f}  ({quote.fees.total_bps} bps){mark}")
         _print_swap_costs(
@@ -869,7 +871,7 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
                 print(f"ABORTED: {exc}", file=sys.stderr)
                 return 1
 
-            out = prepared.quote.expected_amount_out / THORCHAIN_UNIT
+            out = prepared.quote.expected_amount_out / asset_unit(ASSET[args.to_])
             print(f"via:     {backend.name}")
             print(f"send:    {amount} sats to {prepared.quote.inbound_address}")
             print(f"expect:  {out:.8f} {args.to_} -> {dest}")
@@ -974,7 +976,7 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
                 return 1
 
             amount_in = amount / THORCHAIN_UNIT
-            out = prepared.quote.expected_amount_out / THORCHAIN_UNIT
+            out = prepared.quote.expected_amount_out / asset_unit(ASSET[args.to_])
             max_fee_eth = prepared.built.fee / 10**18
             vault = prepared.quote.inbound_address
             print(f"via:     {backend.name}")
@@ -1061,7 +1063,7 @@ def _swap_from_tron(args: argparse.Namespace) -> int:
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
 
-        out = prepared.quote.expected_amount_out / THORCHAIN_UNIT
+        out = prepared.quote.expected_amount_out / asset_unit(ASSET[args.to_])
         vault = prepared.quote.inbound_address
         print(f"via:     {backend.name}")
         if is_token:

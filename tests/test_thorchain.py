@@ -137,6 +137,34 @@ def test_swapfees_breakdown_shows_affiliate_when_nonzero():
     assert any("affiliate" in ln for ln in fees.breakdown("ETH"))
 
 
+def test_asset_unit_defaults_to_1e8_but_cacao_is_1e10():
+    from cryptoswap_wallet.thorchain import THORCHAIN_UNIT, asset_unit
+
+    assert asset_unit("BTC.BTC") == THORCHAIN_UNIT == 10**8
+    assert asset_unit("ZEC.ZEC") == 10**8
+    # Maya's native CACAO is the one asset that deviates: 10 decimals.
+    assert asset_unit("MAYA.CACAO") == 10**10
+
+
+def test_swapfees_breakdown_scales_cacao_by_1e10():
+    from cryptoswap_wallet.thorchain import SwapFees
+
+    # 4578.75867893 CACAO liquidity fee == 45787586789300 in 1e10 base units.
+    fees = SwapFees(
+        asset="MAYA.CACAO",
+        outbound=0,
+        affiliate=0,
+        liquidity=45_787_586_789_300,
+        total=45_787_586_789_300,
+        slippage_bps=16,
+        total_bps=16,
+    )
+    body = "\n".join(fees.breakdown("CACAO"))
+    # Must divide by 1e10, not 1e8 (which would print 4_578_758.68 CACAO).
+    assert "4578.75867893 CACAO" in body
+    assert "4578758.6" not in body
+
+
 def test_parse_quote_evm_source_has_router():
     q = parse_quote(ETH_TO_TRX_QUOTE)
     assert q.router == "0xD37BbE5744D730a1d98d8DC97c42F0Ca46aD7146"

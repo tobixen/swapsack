@@ -55,6 +55,23 @@ class ChainStatus:
         )
 
 
+# THORChain accounting is a fixed 1e8 for (almost) every asset. Maya's native
+# CACAO is the exception: it is 1e10 (10 decimals). Amounts denominated in the
+# destination asset (quote output, fee breakdown) must divide by the asset's own
+# unit, not the 1e8 default, or CACAO renders 100x too large. Keyed by the full
+# THORChain/Maya asset string (e.g. "MAYA.CACAO").
+_ASSET_UNITS: dict[str, int] = {"MAYA.CACAO": 10**10}
+
+
+def asset_unit(asset: str) -> int:
+    """Base units per whole coin for a THORChain/Maya ``asset`` string.
+
+    Defaults to :data:`THORCHAIN_UNIT` (1e8); only assets that deviate (Maya's
+    1e10 CACAO) need an entry.
+    """
+    return _ASSET_UNITS.get(asset, THORCHAIN_UNIT)
+
+
 @dataclasses.dataclass(frozen=True)
 class SwapFees:
     """Fee breakdown from a quote, denominated in the destination asset."""
@@ -70,14 +87,15 @@ class SwapFees:
     def breakdown(self, symbol: str) -> list[str]:
         """Itemised, human-readable cost lines for the destination ``symbol``.
 
-        All amounts are in the destination asset (THORChain 1e8 base units).
-        On THORChain the *liquidity* fee **is** the slip (a bigger trade vs. the
-        pool depth costs more), so it is labelled slip/swap; ``outbound`` is the
-        flat fee to deliver the output on the destination chain. This is the
-        quoted cost only — the inbound (source-chain) tx fee is separate and
-        printed by the per-chain swap path.
+        Amounts are in the destination asset's own base units (1e8 for almost
+        everything; 1e10 for Maya's CACAO — see :func:`asset_unit`). On THORChain
+        the *liquidity* fee **is** the slip (a bigger trade vs. the pool depth
+        costs more), so it is labelled slip/swap; ``outbound`` is the flat fee to
+        deliver the output on the destination chain. This is the quoted cost
+        only — the inbound (source-chain) tx fee is separate and printed by the
+        per-chain swap path.
         """
-        unit = THORCHAIN_UNIT
+        unit = asset_unit(self.asset)
         lines = [
             f"  slip/swap fee  {self.liquidity / unit:.8f} {symbol}"
             f"  ({self.slippage_bps} bps)",

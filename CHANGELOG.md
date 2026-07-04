@@ -19,9 +19,11 @@ automatically from git tags (PEP 440 / SemVer).
   USDT-TRON
   (TRC-20) as sources; BTC,
   ETH, TRX, USDT-TRON, USDT-ETH, USDC-ETH and (external-`--dest`-only) LTC, DOGE,
-  BCH, DASH, ZEC as
-  destinations (DASH and ZEC are Maya-only — route via `--backend maya`/`auto`;
-  see `docs/dash.md`, `docs/zcash.md`). `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
+  BCH, DASH, ZEC, CACAO as
+  destinations (DASH, ZEC and CACAO are Maya-only — route via
+  `--backend maya`/`auto`; see `docs/dash.md`, `docs/zcash.md`, `docs/cacao.md`).
+  CACAO uses 1e10 base units (not the usual 1e8), threaded through the quote/fee/
+  market display via `thorchain.asset_unit`. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
   for ERC-20/TRC-20 token sources (USDT-ETH, USDC-ETH, USDT-TRON) on swap — the whole
   token balance, exact since the fee is paid in the native coin, not the token.
   The TRX source signs a native TransferContract with

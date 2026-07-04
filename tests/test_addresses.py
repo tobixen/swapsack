@@ -31,6 +31,8 @@ VALID = {
     ],
     "ETH": ["0x9858EfFD232B4033E47d90003D41EC34EcaEda94"],
     "TRON": ["TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"],
+    # Maya native chain (Cosmos-SDK bech32), for a CACAO destination.
+    "MAYA": ["maya10sy79jhw9hw9sqwdgu0k4mw4qawzl7czewzs47"],
 }
 
 
@@ -56,6 +58,9 @@ def test_wrong_network_rejected():
     # A ZEC transparent address (starts t1/t3) is not BTC, and vice versa.
     assert validate_destination_address("BTC", VALID["ZEC"][0]) is not None
     assert validate_destination_address("ZEC", VALID["BTC"][1]) is not None
+    # A Maya (maya1) address is not BTC, and a BTC address is not Maya.
+    assert validate_destination_address("BTC", VALID["MAYA"][0]) is not None
+    assert validate_destination_address("MAYA", VALID["BTC"][1]) is not None
 
 
 def test_truncated_rejected():

@@ -146,10 +146,14 @@ Still open:
 Done: Maya backend (THORChain fork, same API/memo) + `--backend auto`
 lowest-price routing across backends.
 
-- **Maya-only assets**: expose DASH, ZEC, ADA (Cardano), ARB (Arbitrum) — Maya
-  has pools THORChain lacks. **Destination-only is just an `ASSET` entry + a
-  `--dest` rule** (DASH **DONE**, live `DASH.DASH` pool `Available`; ZEC
-  **DONE**, live `ZEC.ZEC` pool `Available`, checked 2026-07-03).
+- **Maya-only assets**: expose DASH, ZEC, ADA (Cardano), ARB (Arbitrum), and the
+  Maya-native CACAO — Maya has pools THORChain lacks. **Destination-only is just
+  an `ASSET` entry + a `--dest` rule** (DASH **DONE**, live `DASH.DASH` pool
+  `Available`; ZEC **DONE**, live `ZEC.ZEC` pool `Available`; CACAO **DONE**,
+  checked 2026-07-03 — but CACAO needed a `thorchain.asset_unit` fix because it
+  is 1e10, not 1e8; see `docs/cacao.md`). CACAO's full wallet side is a
+  Cosmos-SDK chain effort (protobuf `MsgSend`/`MsgDeposit`) that overlaps TODO
+  #4's RUNE leg.
   The **full wallet side** is *not* that cheap for the UTXO ones: DASH/ZEC are
   legacy (non-segwit) UTXO chains with no Blockstream Esplora and no easy
   testnet, so hold/bal/send/from means a new legacy adapter + a data-source
