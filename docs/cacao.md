@@ -95,8 +95,18 @@ broadcast test gated on a funded secret, mirroring the Nile TRC-20 loop.
   Wired into `address` and `balance` (and a `--maya-api` override). The
   derivation is cross-checked in `tests/test_maya.py` against a golden vector
   that three independent BIP32 impls (bitcoinlib/eth-account/hdwallet) agree on.
-- **Phase 2 — Send / Sweep. New tx family.** Cosmos `MsgSend` protobuf signer +
-  `verify_maya_send`. Opt-in mainnet broadcast test.
+- **Phase 2 — Send. DONE (broadcast unproven on mainnet).** `chains/maya_tx.py`
+  hand-rolls the Cosmos protobuf (TxBody/AuthInfo/SignDoc/TxRaw + MsgSend) and
+  SIGN_MODE_DIRECT signing (sha256(SignDoc) -> 64-byte low-S secp256k1 via
+  eth-keys), with **no `grpcio`/`cosmpy` runtime dep**; the wire format is
+  validated byte-for-byte against cosmpy in `tests/test_maya_tx.py`. The adapter
+  fetches account-number/sequence + chain-id, builds+signs, and broadcasts via
+  `/cosmos/tx/v1beta1/txs`; a `verify_maya_send` gate decodes the *serialized*
+  body and binds sender/recipient/denom/amount/no-memo. Wired into `send`
+  (`--asset CACAO`). Caveat: no Maya testnet, so broadcast — and the exact
+  fee/gas convention (currently empty fee coins + gas 2e6, letting the chain
+  charge its fixed native fee) — is unexercised on mainnet. Sweep (`--amount
+  max`) is intentionally refused (fixed fee is charged separately).
 - **Phase 3 — From (swap source) + Liq.** `MsgDeposit` with the swap/LP memo;
   audit the source-side `THORCHAIN_UNIT` conversions for CACAO's 1e10 (see the
   landmine section). Unlocks the RUNE-leg for TODO #4 symmetric liquidity.

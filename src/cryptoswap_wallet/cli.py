@@ -620,8 +620,34 @@ def cmd_send(args: argparse.Namespace) -> int:
         return _send_eth(args)
     if chain == "TRON":  # native TRX and TRC-20 tokens (USDT-TRON)
         return _send_tron(args)
+    if chain == "MAYA":  # native CACAO (Cosmos MsgSend)
+        return _send_maya(args)
     print(f"send for {args.asset} is not implemented yet", file=sys.stderr)
     return 2
+
+
+def _send_maya(args: argparse.Namespace) -> int:
+    from cryptoswap_wallet.chains.maya import CACAO_UNIT
+
+    recipient = args.address
+    problem = validate_destination_address("MAYA", recipient)
+    if problem:
+        print(f"recipient: {problem}", file=sys.stderr)
+        return 2
+    if args.amount == "max":
+        # MayaChain charges a fixed native tx fee separately from the sent amount,
+        # so an exact drain-to-zero sweep isn't known at build time (same reason
+        # native TRX has no sweep). Send a fixed amount instead.
+        print("--amount max is not supported for native CACAO send", file=sys.stderr)
+        return 2
+    amount = int((args.amount * CACAO_UNIT).to_integral_value(rounding=ROUND_HALF_EVEN))
+    mnemonic, passphrase = _load_mnemonic(args)
+    with _maya_adapter(args, passphrase) as adapter:
+        prepared = adapter.build_and_verify_send(
+            recipient=recipient, amount=amount, mnemonic=mnemonic
+        )
+        print(f"send:    {amount / CACAO_UNIT:.8f} CACAO to {recipient}")
+        return _confirm_and_execute(prepared, adapter, args)
 
 
 def _send_eth(args: argparse.Namespace) -> int:
@@ -1580,7 +1606,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_withdraw_liquidity)
 
     s = sub.add_parser(
-        "send", help="send to an external address (no swap); BTC/ETH/TRON"
+        "send", help="send to an external address (no swap); BTC/ETH/TRON/CACAO"
     )
     s.add_argument("address", help="recipient address")
     s.add_argument(
@@ -1605,6 +1631,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--eth-rpc", help="Ethereum JSON-RPC URL ($CRYPTOSWAP_WALLET_ETH_RPC)"
     )
     s.add_argument("--tron-api", help="TRON API base URL ($CRYPTOSWAP_WALLET_TRON_API)")
+    s.add_argument(
+        "--maya-api", help="MayaChain REST URL ($CRYPTOSWAP_WALLET_MAYA_API)"
+    )
     s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("status", help="track a swap by inbound txid")

@@ -27,8 +27,14 @@ automatically from git tags (PEP 440 / SemVer).
 - MayaChain adapter (`chains/maya.py`): derives the `maya1` address
   (m/44'/931'/0'/0/0, secp256k1, self-contained bech32) and reports the CACAO
   balance from a mayanode REST node — wired into `address` and `balance`, with a
-  `--maya-api` override. Read-only; `send`/swap-from/liquidity (Cosmos
-  `MsgSend`/`MsgDeposit` signing) are not yet implemented — see `docs/cacao.md`. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
+  `--maya-api` override.
+- `send --asset CACAO`: a native CACAO transfer as a Cosmos `MsgSend`. The
+  protobuf tx assembly + SIGN_MODE_DIRECT signing are hand-rolled in
+  `chains/maya_tx.py` (no `grpcio`/`cosmpy` runtime dep) and validated
+  byte-for-byte against cosmpy in the tests; a `verify_maya_send` gate binds the
+  serialized recipient/amount/denom before signing. Broadcast is unproven on
+  mainnet (no Maya testnet) — see `docs/cacao.md`. Swap-from + liquidity
+  (`MsgDeposit`) are still pending. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
   for ERC-20/TRC-20 token sources (USDT-ETH, USDC-ETH, USDT-TRON) on swap — the whole
   token balance, exact since the fee is paid in the native coin, not the token.
   The TRX source signs a native TransferContract with

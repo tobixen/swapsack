@@ -85,3 +85,38 @@ def test_wallet_balance_reports_cacao_at_1e10(monkeypatch):
     assert report.addresses == (GOLDEN_MAYA_ADDRESS,)
     # 27_983_000_000_000 / 1e10 == 2798.3 CACAO
     assert "2798.30000000" in report.format()
+
+
+def test_build_and_verify_send_passes_gate_and_signs_validly(monkeypatch):
+    import base64
+    import hashlib
+
+    from eth_keys import keys
+
+    from cryptoswap_wallet.chains import maya_tx
+
+    adapter = MayaAdapter()
+    # Avoid the network: pin account + chain id.
+    monkeypatch.setattr(adapter, "fetch_account", lambda address: (4, 11))
+    monkeypatch.setattr(adapter, "fetch_chain_id", lambda: "mayachain-mainnet-v1")
+
+    prepared = adapter.build_and_verify_send(
+        recipient=REAL_MAYA_ADDRESS, amount=15_000_000_000, mnemonic=TEST_MNEMONIC
+    )
+    assert prepared.problems == []  # gate is happy with a well-formed send
+
+    # sign() -> a base64 TxRaw whose signature verifies over the SignDoc.
+    (tx_b64,) = adapter.sign(prepared.built)
+    tx_raw = base64.b64decode(tx_b64)
+    fields = maya_tx._read_fields(tx_raw)
+    body_bytes, auth_bytes = fields[1][0], fields[2][0]
+    signature = fields[3][0]
+    assert len(signature) == 64
+    doc = maya_tx.sign_doc(body_bytes, auth_bytes, "mayachain-mainnet-v1", 4)
+    digest = hashlib.sha256(doc).digest()
+    signer = keys.PrivateKey(prepared.built.private_key).public_key
+    recovered = [
+        keys.Signature(signature + bytes([v])).recover_public_key_from_msg_hash(digest)
+        for v in (0, 1)
+    ]
+    assert signer in recovered

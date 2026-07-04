@@ -522,3 +522,40 @@ def verify_tron_token_send(
         problems.append(f"plain send must carry no memo, got {memo!r}")
 
     return problems
+
+
+@dataclasses.dataclass(frozen=True)
+class MayaSendPlan:
+    """What we intend a plain native-CACAO send to do (MsgSend, no memo)."""
+
+    from_addr: str
+    recipient: str
+    denom: str
+    amount: str  # CACAO native (1e10) base units, as the on-chain string
+
+
+def verify_maya_send(*, decoded: dict, plan: MayaSendPlan) -> list[str]:
+    """Return reasons a decoded MsgSend body does not match ``plan``; empty is safe.
+
+    ``decoded`` is :func:`cryptoswap_wallet.chains.maya_tx.decode_msg_send_body`
+    output — i.e. what was *actually serialized*, so a build bug that bound the
+    wrong recipient/amount is caught before signing.
+    """
+    problems: list[str] = []
+
+    if decoded.get("type_url") != "/cosmos.bank.v1beta1.MsgSend":
+        problems.append(f"message type {decoded.get('type_url')!r} != MsgSend")
+    if decoded.get("from_addr") != plan.from_addr:
+        problems.append(f"tx sends from {decoded.get('from_addr')} != {plan.from_addr}")
+    if decoded.get("to_addr") != plan.recipient:
+        problems.append(
+            f"tx pays {decoded.get('to_addr')} != recipient {plan.recipient}"
+        )
+    if decoded.get("denom") != plan.denom:
+        problems.append(f"tx denom {decoded.get('denom')!r} != {plan.denom!r}")
+    if decoded.get("amount") != plan.amount:
+        problems.append(f"tx amount {decoded.get('amount')} != intended {plan.amount}")
+    if decoded.get("memo"):
+        problems.append(f"plain send must carry no memo, got {decoded.get('memo')!r}")
+
+    return problems
