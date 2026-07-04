@@ -20,6 +20,10 @@ VALID = {
         "Xwm4fpRLuvyQY4wgcbffLTMkVFAJKrxs8k",  # P2PKH ('X')
         "7gnwGHt17heGpG9Crfeh4KGpYNFugPhJdh",  # P2SH ('7')
     ],
+    "ZEC": [
+        "t1PZ6UUwARqz7pjkFbQh3M8bQ4rr5nHkPqM",  # transparent P2PKH ('t1')
+        "t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd",  # transparent P2SH ('t3')
+    ],
     "BCH": [
         "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a",
         "qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a",
@@ -49,6 +53,9 @@ def test_wrong_network_rejected():
     # A DASH address (starts X) is not BTC, and a DOGE address is not DASH.
     assert validate_destination_address("BTC", VALID["DASH"][0]) is not None
     assert validate_destination_address("DASH", VALID["DOGE"][0]) is not None
+    # A ZEC transparent address (starts t1/t3) is not BTC, and vice versa.
+    assert validate_destination_address("BTC", VALID["ZEC"][0]) is not None
+    assert validate_destination_address("ZEC", VALID["BTC"][1]) is not None
 
 
 def test_truncated_rejected():

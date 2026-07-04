@@ -55,6 +55,7 @@ ASSET = {
     "DOGE": "DOGE.DOGE",
     "BCH": "BCH.BCH",
     "DASH": "DASH.DASH",  # Maya-only pool; see docs/dash.md
+    "ZEC": "ZEC.ZEC",  # Maya-only pool; transparent (t-addr) only; see docs/zcash.md
 }
 
 

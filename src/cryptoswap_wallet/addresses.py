@@ -25,6 +25,9 @@ _RULES: dict[str, re.Pattern[str]] = {
     "BCH": re.compile(rf"^(bitcoincash:)?([qp]{_B32}{{40,60}}|[13]{_B58}{{24,34}})$"),
     # Dash: legacy base58 only (no segwit) — P2PKH 'X', P2SH '7'.
     "DASH": re.compile(rf"^[X7]{_B58}{{24,34}}$"),
+    # Zcash: transparent base58 addresses only (Maya has no shielded support) —
+    # P2PKH 't1', P2SH 't3'. Two-char prefix then base58 (35 chars total).
+    "ZEC": re.compile(rf"^t[13]{_B58}{{32,34}}$"),
     "ETH": re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "TRON": re.compile(rf"^T{_B58}{{33}}$"),
 }

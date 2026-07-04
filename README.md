@@ -84,7 +84,7 @@ capability grid above for the per-feature detail.
 | DOGE | Dogecoin | UTXO | partial | destination only (via `--dest`) |
 | BCH | Bitcoin Cash | UTXO | partial | destination only (via `--dest`) |
 | DASH | Dash | UTXO | partial | **Maya-only**; destination only (via `--dest`, `--backend maya`/`auto`). Wallet side (hold/bal/send/from) is a legacy-UTXO effort — see [docs/dash.md](docs/dash.md) |
-| ZEC | Zcash | UTXO | none | Maya-only |
+| ZEC | Zcash | UTXO | partial | **Maya-only**; destination only (via `--dest`, `--backend maya`/`auto`). Full wallet side is harder than DASH — Zcash's tx format can't be signed by bitcoinlib; see [docs/zcash.md](docs/zcash.md) |
 | RUNE | THORChain native | THORChain | none | |
 | CACAO | Maya native | Maya | none | Maya-only |
 | ATOM | Cosmos Hub | Cosmos | none | |

@@ -31,6 +31,7 @@ COINGECKO_IDS: dict[str, str] = {
     "DOGE": "dogecoin",
     "BCH": "bitcoin-cash",
     "DASH": "dash",
+    "ZEC": "zcash",
     "BNB": "binancecoin",
     "USDT-ETH": "tether",
     "USDT-TRON": "tether",

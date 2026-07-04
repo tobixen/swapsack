@@ -148,12 +148,15 @@ lowest-price routing across backends.
 
 - **Maya-only assets**: expose DASH, ZEC, ADA (Cardano), ARB (Arbitrum) — Maya
   has pools THORChain lacks. **Destination-only is just an `ASSET` entry + a
-  `--dest` rule** (DASH **DONE**; live `DASH.DASH` pool `Available` on Maya).
+  `--dest` rule** (DASH **DONE**, live `DASH.DASH` pool `Available`; ZEC
+  **DONE**, live `ZEC.ZEC` pool `Available`, checked 2026-07-03).
   The **full wallet side** is *not* that cheap for the UTXO ones: DASH/ZEC are
   legacy (non-segwit) UTXO chains with no Blockstream Esplora and no easy
   testnet, so hold/bal/send/from means a new legacy adapter + a data-source
   choice + generalized fee maths. See `docs/dash.md` for the DASH analysis and
-  phased plan (the same shape applies to ZEC).
+  phased plan. **ZEC is harder still**: its Overwinter/Sapling/NU5 tx format
+  (ZIP-143/243/225 sighash, consensus branch ID) can't be signed by bitcoinlib
+  even for transparent spends — a bespoke signer is needed. See `docs/zcash.md`.
 - **USDC on cheaper chains**: ETH.USDC is done (mirrors USDT-ETH). THORChain also
   pools USDC on AVAX/BASE and Maya on ARB — all far cheaper to use than ETH
   mainnet. Each needs a new EVM chain adapter (RPC, chain-id, native coin, dest
