@@ -23,7 +23,12 @@ automatically from git tags (PEP 440 / SemVer).
   destinations (DASH, ZEC and CACAO are Maya-only — route via
   `--backend maya`/`auto`; see `docs/dash.md`, `docs/zcash.md`, `docs/cacao.md`).
   CACAO uses 1e10 base units (not the usual 1e8), threaded through the quote/fee/
-  market display via `thorchain.asset_unit`. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
+  market display via `thorchain.asset_unit`.
+- MayaChain adapter (`chains/maya.py`): derives the `maya1` address
+  (m/44'/931'/0'/0/0, secp256k1, self-contained bech32) and reports the CACAO
+  balance from a mayanode REST node — wired into `address` and `balance`, with a
+  `--maya-api` override. Read-only; `send`/swap-from/liquidity (Cosmos
+  `MsgSend`/`MsgDeposit` signing) are not yet implemented — see `docs/cacao.md`. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
   for ERC-20/TRC-20 token sources (USDT-ETH, USDC-ETH, USDT-TRON) on swap — the whole
   token balance, exact since the fee is paid in the native coin, not the token.
   The TRX source signs a native TransferContract with

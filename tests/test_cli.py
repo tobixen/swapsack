@@ -376,14 +376,16 @@ def test_balance_bsc_rpc_flag_parses():
     assert args.bsc_rpc == "https://bsc.example"
 
 
-def test_wallet_adapters_include_bsc():
+def test_wallet_adapters_include_bsc_and_maya():
     from types import SimpleNamespace
 
     from cryptoswap_wallet.cli import _wallet_adapters
 
-    args = SimpleNamespace(esplora=None, eth_rpc=None, tron_api=None, bsc_rpc=None)
+    args = SimpleNamespace(
+        esplora=None, eth_rpc=None, tron_api=None, bsc_rpc=None, maya_api=None
+    )
     chains = {a.chain for a in _wallet_adapters(args)}
-    assert {"BTC", "ETH", "TRON", "BSC"} <= chains
+    assert {"BTC", "ETH", "TRON", "BSC", "MAYA"} <= chains
 
 
 def test_add_liquidity_parses():

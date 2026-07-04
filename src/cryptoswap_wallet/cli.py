@@ -121,6 +121,17 @@ def _bsc_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN20
     return BscAdapter(url, bip39_passphrase=passphrase)
 
 
+def _maya_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
+    from cryptoswap_wallet.chains.maya import DEFAULT_MAYANODE, MayaAdapter
+
+    url = (
+        getattr(args, "maya_api", None)
+        or os.environ.get("CRYPTOSWAP_WALLET_MAYA_API")
+        or DEFAULT_MAYANODE
+    )
+    return MayaAdapter(url, bip39_passphrase=passphrase)
+
+
 def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  # noqa: ANN201
     """Adapters whose balances `balance` reports — add a chain here and it scales."""
     return [
@@ -128,6 +139,7 @@ def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  #
         _eth_adapter(args, passphrase),
         _tron_adapter(args, passphrase),
         _bsc_adapter(args, passphrase),
+        _maya_adapter(args, passphrase),
     ]
 
 
@@ -239,6 +251,7 @@ def cmd_address(args: argparse.Namespace) -> int:
     from cryptoswap_wallet.chains.bsc import BscAdapter
     from cryptoswap_wallet.chains.btc import BtcAdapter
     from cryptoswap_wallet.chains.eth import EthAdapter
+    from cryptoswap_wallet.chains.maya import MayaAdapter
     from cryptoswap_wallet.chains.tron import TronAdapter
 
     mnemonic, passphrase = _load_mnemonic(args)
@@ -256,6 +269,7 @@ def cmd_address(args: argparse.Namespace) -> int:
         "(same EVM address as ETH)",
     )
     print("TRON:", TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
+    print("MAYA:", MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     return 0
 
 
@@ -1493,7 +1507,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--key")
     s.set_defaults(func=cmd_show_seed)
 
-    s = sub.add_parser("address", help="show derived BTC, ETH, BSC and TRON addresses")
+    s = sub.add_parser(
+        "address", help="show derived BTC, ETH, BSC, TRON and MAYA addresses"
+    )
     s.add_argument("--key")
     s.set_defaults(func=cmd_address)
 
@@ -1504,6 +1520,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--tron-api", help="TRON API base URL ($CRYPTOSWAP_WALLET_TRON_API)")
     s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($CRYPTOSWAP_WALLET_BSC_RPC)")
+    s.add_argument(
+        "--maya-api", help="MayaChain REST URL ($CRYPTOSWAP_WALLET_MAYA_API)"
+    )
     s.set_defaults(func=cmd_balance)
 
     s = sub.add_parser("quote", help="show a THORChain swap quote")

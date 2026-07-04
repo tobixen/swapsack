@@ -33,6 +33,7 @@ The wallet is still under rapid development as of 2026-07-03.  Missing features 
 | LTC       |      |     |  ✅ |      |      |      |     |
 | DOGE      |      |     |  ✅ |      |      |      |     |
 | BCH       |      |     |  ✅ |      |      |      |     |
+| CACAO     |  ✅  |  ✅ |  ✅ |      |      |      |     |
 
 ### Features explained
 
@@ -86,7 +87,7 @@ capability grid above for the per-feature detail.
 | DASH | Dash | UTXO | partial | **Maya-only**; destination only (via `--dest`, `--backend maya`/`auto`). Wallet side (hold/bal/send/from) is a legacy-UTXO effort — see [docs/dash.md](docs/dash.md) |
 | ZEC | Zcash | UTXO | partial | **Maya-only**; destination only (via `--dest`, `--backend maya`/`auto`). Full wallet side is harder than DASH — Zcash's tx format can't be signed by bitcoinlib; see [docs/zcash.md](docs/zcash.md) |
 | RUNE | THORChain native | THORChain | none | |
-| CACAO | Maya native | Maya | partial | **Maya-only**; destination only (via `--dest maya1…`, `--backend maya`/`auto`). 1e10 decimals (not 1e8). Full wallet side is a Cosmos-SDK chain effort (protobuf `MsgSend`/`MsgDeposit`); see [docs/cacao.md](docs/cacao.md) |
+| CACAO | Maya native | Maya | partial | **Maya-only**; 1e10 decimals (not 1e8). Hold + balance + destination (`--dest maya1…`) done. Send/from/liquidity need Cosmos-SDK `MsgSend`/`MsgDeposit` signing (in progress); see [docs/cacao.md](docs/cacao.md) |
 | ATOM | Cosmos Hub | Cosmos | none | |
 | XRP | XRP Ledger | XRP | none | |
 | SOL | Solana | Solana | none | |

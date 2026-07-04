@@ -89,8 +89,12 @@ broadcast test gated on a funded secret, mirroring the Nile TRC-20 loop.
 ## Recommended phasing
 
 - **Phase 0 — destination (`--to CACAO`). DONE**, including the 1e10 fix.
-- **Phase 1 — Hold + Balance (read-only).** maya1 derivation + balance via
-  mayanode. Testable without spending.
+- **Phase 1 — Hold + Balance (read-only). DONE.** `chains/maya.py`:
+  self-contained bech32 + `MayaAdapter.derive_address` (m/44'/931'/0'/0/0, HRP
+  `maya`) and `wallet_balance` via mayanode `/cosmos/bank/v1beta1/balances`.
+  Wired into `address` and `balance` (and a `--maya-api` override). The
+  derivation is cross-checked in `tests/test_maya.py` against a golden vector
+  that three independent BIP32 impls (bitcoinlib/eth-account/hdwallet) agree on.
 - **Phase 2 — Send / Sweep. New tx family.** Cosmos `MsgSend` protobuf signer +
   `verify_maya_send`. Opt-in mainnet broadcast test.
 - **Phase 3 — From (swap source) + Liq.** `MsgDeposit` with the swap/LP memo;
