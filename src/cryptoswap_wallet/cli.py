@@ -57,6 +57,7 @@ ASSET = {
     "DASH": "DASH.DASH",  # Maya-only pool; see docs/dash.md
     "ZEC": "ZEC.ZEC",  # Maya-only pool; transparent (t-addr) only; see docs/zcash.md
     "CACAO": "MAYA.CACAO",  # Maya native asset; 1e10 decimals; see docs/cacao.md
+    "RUNE": "THOR.RUNE",  # THORChain native asset (Cosmos MsgSend/MsgDeposit)
 }
 
 
@@ -132,6 +133,17 @@ def _maya_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN2
     return MayaAdapter(url, bip39_passphrase=passphrase)
 
 
+def _thor_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
+    from cryptoswap_wallet.chains.thor import DEFAULT_THORNODE, ThorAdapter
+
+    url = (
+        getattr(args, "thornode", None)
+        or os.environ.get("CRYPTOSWAP_WALLET_THORNODE")
+        or DEFAULT_THORNODE
+    )
+    return ThorAdapter(url, bip39_passphrase=passphrase)
+
+
 def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  # noqa: ANN201
     """Adapters whose balances `balance` reports — add a chain here and it scales."""
     return [
@@ -140,6 +152,7 @@ def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  #
         _tron_adapter(args, passphrase),
         _bsc_adapter(args, passphrase),
         _maya_adapter(args, passphrase),
+        _thor_adapter(args, passphrase),
     ]
 
 
@@ -252,6 +265,7 @@ def cmd_address(args: argparse.Namespace) -> int:
     from cryptoswap_wallet.chains.btc import BtcAdapter
     from cryptoswap_wallet.chains.eth import EthAdapter
     from cryptoswap_wallet.chains.maya import MayaAdapter
+    from cryptoswap_wallet.chains.thor import ThorAdapter
     from cryptoswap_wallet.chains.tron import TronAdapter
 
     mnemonic, passphrase = _load_mnemonic(args)
@@ -270,6 +284,7 @@ def cmd_address(args: argparse.Namespace) -> int:
     )
     print("TRON:", TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("MAYA:", MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
+    print("THOR:", ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     return 0
 
 
@@ -609,7 +624,9 @@ def cmd_swap(args: argparse.Namespace) -> int:
     if chain == "TRON":  # native TRX (TRC-20 tokens not yet a source)
         return _swap_from_tron(args)
     if chain == "MAYA":  # native CACAO (Cosmos MsgDeposit; Maya-only)
-        return _swap_from_maya(args)
+        return _swap_from_cosmos(args, _maya_adapter)
+    if chain == "THOR":  # native RUNE (Cosmos MsgDeposit)
+        return _swap_from_cosmos(args, _thor_adapter)
     print(f"swap source {args.from_} is not implemented yet", file=sys.stderr)
     return 2
 
@@ -623,32 +640,37 @@ def cmd_send(args: argparse.Namespace) -> int:
     if chain == "TRON":  # native TRX and TRC-20 tokens (USDT-TRON)
         return _send_tron(args)
     if chain == "MAYA":  # native CACAO (Cosmos MsgSend)
-        return _send_maya(args)
+        return _send_cosmos(args, _maya_adapter)
+    if chain == "THOR":  # native RUNE (Cosmos MsgSend)
+        return _send_cosmos(args, _thor_adapter)
     print(f"send for {args.asset} is not implemented yet", file=sys.stderr)
     return 2
 
 
-def _send_maya(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.chains.maya import CACAO_UNIT
-
+def _send_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN001
+    """Plain native send for a THORChain-family asset (CACAO/RUNE)."""
     recipient = args.address
-    problem = validate_destination_address("MAYA", recipient)
-    if problem:
-        print(f"recipient: {problem}", file=sys.stderr)
-        return 2
-    if args.amount == "max":
-        # MayaChain charges a fixed native tx fee separately from the sent amount,
-        # so an exact drain-to-zero sweep isn't known at build time (same reason
-        # native TRX has no sweep). Send a fixed amount instead.
-        print("--amount max is not supported for native CACAO send", file=sys.stderr)
-        return 2
-    amount = int((args.amount * CACAO_UNIT).to_integral_value(rounding=ROUND_HALF_EVEN))
     mnemonic, passphrase = _load_mnemonic(args)
-    with _maya_adapter(args, passphrase) as adapter:
+    with adapter_factory(args, passphrase) as adapter:
+        problem = validate_destination_address(adapter.chain, recipient)
+        if problem:
+            print(f"recipient: {problem}", file=sys.stderr)
+            return 2
+        if args.amount == "max":
+            # The chain charges a fixed native tx fee separately from the sent
+            # amount, so an exact drain-to-zero sweep isn't known at build time
+            # (same reason native TRX has no sweep). Send a fixed amount instead.
+            print(
+                f"--amount max is not supported for native {adapter.symbol} send",
+                file=sys.stderr,
+            )
+            return 2
+        unit = 10**adapter.decimals
+        amount = int((args.amount * unit).to_integral_value(rounding=ROUND_HALF_EVEN))
         prepared = adapter.build_and_verify_send(
             recipient=recipient, amount=amount, mnemonic=mnemonic
         )
-        print(f"send:    {amount / CACAO_UNIT:.8f} CACAO to {recipient}")
+        print(f"send:    {amount / unit:.8f} {adapter.symbol} to {recipient}")
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1122,13 +1144,15 @@ def _swap_from_tron(args: argparse.Namespace) -> int:
         return _confirm_and_execute(prepared, adapter, args)
 
 
-def _swap_from_maya(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.chains.maya import CACAO_UNIT
-
+def _swap_from_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN001
+    """Swap FROM a THORChain-family native asset (CACAO/RUNE) via MsgDeposit."""
     if args.amount == "max":
-        # A native CACAO sweep can't be exact — Maya charges a fixed native fee
+        # A native sweep can't be exact — the chain charges a fixed native fee
         # separately from the deposited amount (same as native TRX).
-        print("--amount max is not supported for native CACAO yet", file=sys.stderr)
+        print(
+            f"--amount max is not supported for native {args.from_} yet",
+            file=sys.stderr,
+        )
         return 2
     mnemonic, passphrase = _load_mnemonic(args)
     dest = _resolve_destination(args, mnemonic, passphrase)
@@ -1136,10 +1160,11 @@ def _swap_from_maya(args: argparse.Namespace) -> int:
         print("a --dest address is required for this destination", file=sys.stderr)
         return 2
 
-    # CACAO is 1e10 (not the 1e8 the shared _base_units assumes); the Maya quote
-    # API also speaks 1e10 for CACAO, so the request amount goes through as-is.
-    amount = int((args.amount * CACAO_UNIT).to_integral_value(rounding=ROUND_HALF_EVEN))
-    with _maya_adapter(args, passphrase) as adapter:
+    with adapter_factory(args, passphrase) as adapter:
+        # CACAO is 1e10, RUNE is 1e8 (not the shared _base_units 1e8 assumption);
+        # the quote API speaks the asset's native unit, so it goes through as-is.
+        unit = 10**adapter.decimals
+        amount = int((args.amount * unit).to_integral_value(rounding=ROUND_HALF_EVEN))
         request = SwapRequest(
             from_asset=ASSET[args.from_],
             to_asset=ASSET[args.to_],
@@ -1171,14 +1196,20 @@ def _swap_from_maya(args: argparse.Namespace) -> int:
 
         out = prepared.quote.expected_amount_out / asset_unit(ASSET[args.to_])
         print(f"via:     {backend.name}")
-        print(f"deposit: {amount / CACAO_UNIT:.8f} CACAO (MsgDeposit, no vault)")
+        print(f"deposit: {amount / unit:.8f} {adapter.symbol} (MsgDeposit, no vault)")
         print(f"expect:  {out:.8f} {args.to_} -> {dest}")
         print(f"memo:    {prepared.quote.memo}")
         _print_swap_costs(
             prepared.quote, args.from_, args.to_, amount, price_check=args.price_check
         )
-        print("inbound: Maya charges a fixed native CACAO tx fee, separate from the")
-        print("         deposit -> keep a little CACAO headroom below your balance")
+        print(
+            f"inbound: {adapter.chain} charges a fixed native {adapter.symbol} tx fee, "
+            "separate from"
+        )
+        print(
+            f"         the deposit -> keep a little {adapter.symbol} headroom below "
+            "your balance"
+        )
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1611,6 +1642,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--maya-api", help="MayaChain REST URL ($CRYPTOSWAP_WALLET_MAYA_API)"
     )
+    s.add_argument(
+        "--thornode", help="THORChain REST URL ($CRYPTOSWAP_WALLET_THORNODE)"
+    )
     s.set_defaults(func=cmd_balance)
 
     s = sub.add_parser("quote", help="show a THORChain swap quote")
@@ -1695,6 +1729,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--tron-api", help="TRON API base URL ($CRYPTOSWAP_WALLET_TRON_API)")
     s.add_argument(
         "--maya-api", help="MayaChain REST URL ($CRYPTOSWAP_WALLET_MAYA_API)"
+    )
+    s.add_argument(
+        "--thornode", help="THORChain REST URL ($CRYPTOSWAP_WALLET_THORNODE)"
     )
     s.set_defaults(func=cmd_send)
 

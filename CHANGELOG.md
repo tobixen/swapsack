@@ -41,7 +41,13 @@ automatically from git tags (PEP 440 / SemVer).
   `parse_quote` now tolerates the fields a native-source quote omits, and
   `prepare_swap` skips the inbound-address check for a native-source adapter.
   Broadcast unproven on mainnet. (Single-sided liquidity is n/a for the
-  settlement asset — that's the RUNE-leg of symmetric LP.) `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
+  settlement asset — that's the RUNE-leg of symmetric LP.)
+- RUNE (THORChain native): hold + balance + destination + `send` + swap-**from**,
+  mirroring CACAO. The Maya adapter was refactored into a shared
+  `chains.cosmos.CosmosAdapter` (THORChain and Maya are the same Cosmos-SDK
+  software); `maya.py`/`thor.py` are now thin config, and the protobuf module was
+  renamed `maya_tx.py` -> `cosmos_tx.py`. RUNE uses the standard 1e8 base units
+  (no decimals special-casing). Spend paths unproven on mainnet. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
   for ERC-20/TRC-20 token sources (USDT-ETH, USDC-ETH, USDT-TRON) on swap — the whole
   token balance, exact since the fee is paid in the native coin, not the token.
   The TRX source signs a native TransferContract with

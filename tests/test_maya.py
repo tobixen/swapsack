@@ -12,12 +12,12 @@ import pytest
 
 pytest.importorskip("bitcoinlib")
 
-from cryptoswap_wallet.chains.maya import (  # noqa: E402
-    MayaAdapter,
+from cryptoswap_wallet.chains.cosmos import (  # noqa: E402
     bech32_decode,
     bech32_encode,
     parse_balances,
 )
+from cryptoswap_wallet.chains.maya import MayaAdapter  # noqa: E402
 
 # Standard BIP39 test mnemonic -> its maya1 address at m/44'/931'/0'/0/0.
 TEST_MNEMONIC = (
@@ -68,11 +68,11 @@ def test_parse_balances_sums_cacao_and_ignores_others():
         ],
         "pagination": {"total": "2"},
     }
-    assert parse_balances(payload) == 5_000_000_000
+    assert parse_balances(payload, "cacao") == 5_000_000_000
 
 
 def test_parse_balances_of_fresh_account_is_zero():
-    assert parse_balances({"balances": [], "pagination": {"total": "0"}}) == 0
+    assert parse_balances({"balances": [], "pagination": {"total": "0"}}, "cacao") == 0
 
 
 def test_wallet_balance_reports_cacao_at_1e10(monkeypatch):
@@ -93,7 +93,7 @@ def test_build_and_verify_send_passes_gate_and_signs_validly(monkeypatch):
 
     from eth_keys import keys
 
-    from cryptoswap_wallet.chains import maya_tx
+    from cryptoswap_wallet.chains import cosmos_tx
 
     adapter = MayaAdapter()
     # Avoid the network: pin account + chain id.
@@ -108,11 +108,11 @@ def test_build_and_verify_send_passes_gate_and_signs_validly(monkeypatch):
     # sign() -> a base64 TxRaw whose signature verifies over the SignDoc.
     (tx_b64,) = adapter.sign(prepared.built)
     tx_raw = base64.b64decode(tx_b64)
-    fields = maya_tx._read_fields(tx_raw)
+    fields = cosmos_tx._read_fields(tx_raw)
     body_bytes, auth_bytes = fields[1][0], fields[2][0]
     signature = fields[3][0]
     assert len(signature) == 64
-    doc = maya_tx.sign_doc(body_bytes, auth_bytes, "mayachain-mainnet-v1", 4)
+    doc = cosmos_tx.sign_doc(body_bytes, auth_bytes, "mayachain-mainnet-v1", 4)
     digest = hashlib.sha256(doc).digest()
     signer = keys.PrivateKey(prepared.built.private_key).public_key
     recovered = [
@@ -126,7 +126,7 @@ def test_build_and_verify_swap_deposit_passes_gate(monkeypatch):
     import time
     from types import SimpleNamespace
 
-    from cryptoswap_wallet.chains import maya_tx
+    from cryptoswap_wallet.chains import cosmos_tx
 
     adapter = MayaAdapter()
     monkeypatch.setattr(adapter, "fetch_account", lambda address: (4, 0))
@@ -147,7 +147,7 @@ def test_build_and_verify_swap_deposit_passes_gate(monkeypatch):
     )
     assert prepared.problems == []
     # The built body carries a MsgDeposit of the intended CACAO amount + memo.
-    decoded = maya_tx.decode_msg_deposit_body(prepared.built.body_bytes)
+    decoded = cosmos_tx.decode_msg_deposit_body(prepared.built.body_bytes)
     assert decoded["coins"] == [("MAYA.CACAO", "500000000000000")]
     assert decoded["memo"] == quote.memo
 
@@ -155,10 +155,10 @@ def test_build_and_verify_swap_deposit_passes_gate(monkeypatch):
 def test_build_and_verify_swap_deposit_catches_tampered_memo():
     import time
 
-    from cryptoswap_wallet.verify import MayaDepositPlan, verify_maya_deposit
+    from cryptoswap_wallet.verify import CosmosDepositPlan, verify_cosmos_deposit
 
     # A memo that does not pay the intended destination must be flagged.
-    plan = MayaDepositPlan(
+    plan = CosmosDepositPlan(
         asset="MAYA.CACAO",
         amount="500000000000000",
         memo="=:BTC.BTC:bc1qattacker000000000000000000000000000000",
@@ -174,5 +174,5 @@ def test_build_and_verify_swap_deposit_catches_tampered_memo():
     }
     assert any(
         "does not pay destination" in p
-        for p in verify_maya_deposit(decoded=decoded, plan=plan, now=int(time.time()))
+        for p in verify_cosmos_deposit(decoded=decoded, plan=plan, now=int(time.time()))
     )

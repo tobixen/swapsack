@@ -33,6 +33,8 @@ VALID = {
     "TRON": ["TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"],
     # Maya native chain (Cosmos-SDK bech32), for a CACAO destination.
     "MAYA": ["maya10sy79jhw9hw9sqwdgu0k4mw4qawzl7czewzs47"],
+    # THORChain native chain (Cosmos-SDK bech32), for a RUNE destination.
+    "THOR": ["thor1gm00vwsfcp48enm4uv9e5dhm37jtd0ye27wrx0"],
 }
 
 
@@ -61,6 +63,9 @@ def test_wrong_network_rejected():
     # A Maya (maya1) address is not BTC, and a BTC address is not Maya.
     assert validate_destination_address("BTC", VALID["MAYA"][0]) is not None
     assert validate_destination_address("MAYA", VALID["BTC"][1]) is not None
+    # A THOR (thor1) address is not a MAYA (maya1) one, and vice versa.
+    assert validate_destination_address("MAYA", VALID["THOR"][0]) is not None
+    assert validate_destination_address("THOR", VALID["MAYA"][0]) is not None
 
 
 def test_truncated_rejected():

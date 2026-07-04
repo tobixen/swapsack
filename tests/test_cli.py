@@ -61,8 +61,8 @@ def test_streaming_kwargs_helper_reads_args():
 def test_market_comparison_skips_unmapped_asset_without_network():
     from cryptoswap_wallet.cli import _market_comparison
 
-    # RUNE has no CoinGecko id in the map -> returns None before any HTTP call.
-    assert _market_comparison("RUNE", "BTC", 100_000_000, 1) is None
+    # TCY has no CoinGecko id in the map -> returns None before any HTTP call.
+    assert _market_comparison("TCY", "BTC", 100_000_000, 1) is None
 
 
 def _patch_feed(monkeypatch, prices):
@@ -376,16 +376,21 @@ def test_balance_bsc_rpc_flag_parses():
     assert args.bsc_rpc == "https://bsc.example"
 
 
-def test_wallet_adapters_include_bsc_and_maya():
+def test_wallet_adapters_include_bsc_maya_and_thor():
     from types import SimpleNamespace
 
     from cryptoswap_wallet.cli import _wallet_adapters
 
     args = SimpleNamespace(
-        esplora=None, eth_rpc=None, tron_api=None, bsc_rpc=None, maya_api=None
+        esplora=None,
+        eth_rpc=None,
+        tron_api=None,
+        bsc_rpc=None,
+        maya_api=None,
+        thornode=None,
     )
     chains = {a.chain for a in _wallet_adapters(args)}
-    assert {"BTC", "ETH", "TRON", "BSC", "MAYA"} <= chains
+    assert {"BTC", "ETH", "TRON", "BSC", "MAYA", "THOR"} <= chains
 
 
 def test_add_liquidity_parses():

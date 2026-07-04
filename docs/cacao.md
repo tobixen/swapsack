@@ -1,5 +1,13 @@
 # Maya CACAO support — design notes
 
+> **Shared with RUNE.** THORChain and MayaChain are the same Cosmos-SDK software,
+> so the wallet side described here lives in a shared
+> `chains/cosmos.py::CosmosAdapter` (protobuf/signing in `chains/cosmos_tx.py`);
+> `maya.py` (CACAO, 1e10) and `thor.py` (RUNE, 1e8) are thin config. Everything
+> below applies to RUNE too, with HRP `thor`, chain-id `thorchain-1`, and 1e8
+> base units (so RUNE has no decimals landmine).
+
+
 Status: **destination-only is DONE** (`swap --to CACAO --dest maya1... --backend
 maya`/`auto`). The **full wallet side (Hold/Bal/Send/Sweep/From/Liq) is not
 started** — unlike the UTXO coins, CACAO is the *native* asset of MayaChain, a

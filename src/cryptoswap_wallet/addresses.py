@@ -32,6 +32,8 @@ _RULES: dict[str, re.Pattern[str]] = {
     "TRON": re.compile(rf"^T{_B58}{{33}}$"),
     # Maya native chain (Cosmos-SDK bech32, 'maya' HRP) — for a CACAO payout.
     "MAYA": re.compile(rf"^maya1{_B32}{{37,58}}$"),
+    # THORChain native chain (Cosmos-SDK bech32, 'thor' HRP) — for a RUNE payout.
+    "THOR": re.compile(rf"^thor1{_B32}{{37,58}}$"),
 }
 
 

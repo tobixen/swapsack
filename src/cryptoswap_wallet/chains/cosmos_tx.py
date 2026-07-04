@@ -1,10 +1,12 @@
-"""Minimal Cosmos-SDK transaction assembly + signing for MayaChain.
+"""Minimal Cosmos-SDK transaction assembly + signing for THORChain-family chains.
 
-Pure and dependency-free (no ``grpcio``/``cosmpy`` at runtime): the only protobuf
-messages MayaChain needs are small and fixed, so they are hand-serialized here
-and the wire format is validated **byte-for-byte against cosmpy** in the tests
-(``tests/test_maya_tx.py``). Kept separate from the network-facing adapter so the
-money-sensitive serialization/signing is easy to read and test offline.
+Chain-agnostic: the same messages serve MayaChain (CACAO) and THORChain (RUNE),
+which share the Cosmos-SDK wire format. Pure and dependency-free (no
+``grpcio``/``cosmpy`` at runtime): the only protobuf messages needed are small
+and fixed, so they are hand-serialized here and the wire format is validated
+**byte-for-byte against cosmpy** in the tests (``tests/test_cosmos_tx.py``). Kept
+separate from the network-facing adapter so the money-sensitive
+serialization/signing is easy to read and test offline.
 
 Signing is SIGN_MODE_DIRECT: the signature covers ``sha256`` of the serialized
 ``SignDoc`` (body_bytes + auth_info_bytes + chain_id + account_number), as a

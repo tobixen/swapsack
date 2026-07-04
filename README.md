@@ -34,14 +34,15 @@ The wallet is still under rapid development as of 2026-07-03.  Missing features 
 | DOGE      |      |     |  ✅ |      |      |      |     |
 | BCH       |      |     |  ✅ |      |      |      |     |
 | CACAO     |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |      |     |
+| RUNE      |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |      |     |
 
 ### Features explained
 
 * **Hold** — derive an `address`, hold a balance, receive funds
 * **Bal**  — show the `balance` (native, tracked tokens like USDT, and any THORChain/Maya liquidity positions)
 * **To**   — use as a `swap` *destination* (for a currency whose address the wallet can't derive yet, give an external one via `--dest`)
-* **From** — use as a `swap` *source* (the asset you spend). ◑ = CACAO's native swap-from (a Cosmos `MsgDeposit`, no inbound vault) is implemented + gated + unit-tested but its broadcast is **unproven on mainnet** — there is no Maya testnet
-* **Send** — `send` to an external address (a plain transfer, no swap). ✅ = implemented and tested; ◑ = USDC-ETH rides the *same* ERC-20 send path as USDT-ETH (only the contract/decimals differ) but isn't separately covered by a test, and CACAO's Cosmos `MsgSend` is implemented + unit-tested (protobuf byte-exact vs cosmpy, signature verified) but its broadcast is **unproven on mainnet** — there is no Maya testnet
+* **From** — use as a `swap` *source* (the asset you spend). ◑ = the native swap-from for CACAO/RUNE (a Cosmos `MsgDeposit`, no inbound vault) is implemented + gated + unit-tested but its broadcast is **unproven on mainnet** — there is no Maya/THORChain testnet wired up
+* **Send** — `send` to an external address (a plain transfer, no swap). ✅ = implemented and tested; ◑ = USDC-ETH rides the *same* ERC-20 send path as USDT-ETH (only the contract/decimals differ) but isn't separately covered by a test, and the native CACAO/RUNE Cosmos `MsgSend` is implemented + unit-tested (protobuf byte-exact vs cosmpy, signature verified) but its broadcast is **unproven on mainnet** — there is no Maya/THORChain testnet wired up
 * **Sweep** — `--amount max` sends the maximum amount. ✅ = works: UTXO and token sweeps end at 0 (a token's gas is paid in the native coin); **native account coins (ETH/TRX) intentionally retain a small gas reserve** — the fee is only known at send time, and you *want* some left to move tokens or swap later, so the wallet warns rather than draining you to 0. ◑ = not yet (native TRX).
 * **Liq**  — `add-liquidity` and `withdraw-liquidity` provide/withdraw *single-sided* liquidity, now including ERC-20 tokens (e.g. USDT-ETH on Maya, via the router). Experimental; see below.
 
@@ -86,7 +87,7 @@ capability grid above for the per-feature detail.
 | BCH | Bitcoin Cash | UTXO | partial | destination only (via `--dest`) |
 | DASH | Dash | UTXO | partial | **Maya-only**; destination only (via `--dest`, `--backend maya`/`auto`). Wallet side (hold/bal/send/from) is a legacy-UTXO effort — see [docs/dash.md](docs/dash.md) |
 | ZEC | Zcash | UTXO | partial | **Maya-only**; destination only (via `--dest`, `--backend maya`/`auto`). Full wallet side is harder than DASH — Zcash's tx format can't be signed by bitcoinlib; see [docs/zcash.md](docs/zcash.md) |
-| RUNE | THORChain native | THORChain | none | |
+| RUNE | THORChain native | THORChain | partial | Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`) done — reuses the shared Cosmos-SDK adapter (RUNE is 1e8). Spend paths ship unproven on mainnet (no testnet); see [docs/cacao.md](docs/cacao.md) |
 | CACAO | Maya native | Maya | partial | **Maya-only**; 1e10 decimals (not 1e8). Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`, no vault) done; single-sided liquidity n/a for the settlement asset (it's the RUNE-leg of symmetric LP, TODO #4). Spend paths ship unproven on mainnet (no Maya testnet); see [docs/cacao.md](docs/cacao.md) |
 | ATOM | Cosmos Hub | Cosmos | none | |
 | XRP | XRP Ledger | XRP | none | |

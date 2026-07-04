@@ -525,19 +525,19 @@ def verify_tron_token_send(
 
 
 @dataclasses.dataclass(frozen=True)
-class MayaSendPlan:
-    """What we intend a plain native-CACAO send to do (MsgSend, no memo)."""
+class CosmosSendPlan:
+    """What we intend a plain native send (CACAO/RUNE) to do (MsgSend, no memo)."""
 
     from_addr: str
     recipient: str
     denom: str
-    amount: str  # CACAO native (1e10) base units, as the on-chain string
+    amount: str  # native base units (CACAO 1e10 / RUNE 1e8), as the on-chain string
 
 
-def verify_maya_send(*, decoded: dict, plan: MayaSendPlan) -> list[str]:
+def verify_cosmos_send(*, decoded: dict, plan: CosmosSendPlan) -> list[str]:
     """Return reasons a decoded MsgSend body does not match ``plan``; empty is safe.
 
-    ``decoded`` is :func:`cryptoswap_wallet.chains.maya_tx.decode_msg_send_body`
+    ``decoded`` is :func:`cryptoswap_wallet.chains.cosmos_tx.decode_msg_send_body`
     output — i.e. what was *actually serialized*, so a build bug that bound the
     wrong recipient/amount is caught before signing.
     """
@@ -562,23 +562,25 @@ def verify_maya_send(*, decoded: dict, plan: MayaSendPlan) -> list[str]:
 
 
 @dataclasses.dataclass(frozen=True)
-class MayaDepositPlan:
-    """What we intend a MayaChain ``MsgDeposit`` (swap from native CACAO) to do.
+class CosmosDepositPlan:
+    """What we intend a native ``MsgDeposit`` (swap from CACAO/RUNE) to do.
 
     A native swap has no inbound vault — the memo drives it — so the gate binds
     the deposited coin/amount, the memo, our own signer, and that the memo pays
     the intended destination.
     """
 
-    asset: str  # "MAYA.CACAO"
-    amount: str  # 1e10 base units, as the on-chain string
+    asset: str  # "MAYA.CACAO" / "THOR.RUNE"
+    amount: str  # native base units, as the on-chain string
     memo: str
     destination: str
-    signer: bytes  # our 20-byte account (must match the maya1 we derived)
+    signer: bytes  # our 20-byte account (must match the address we derived)
     expiry: int
 
 
-def verify_maya_deposit(*, decoded: dict, plan: MayaDepositPlan, now: int) -> list[str]:
+def verify_cosmos_deposit(
+    *, decoded: dict, plan: CosmosDepositPlan, now: int
+) -> list[str]:
     """Return reasons a decoded MsgDeposit body does not match ``plan``; empty is ok."""
     problems: list[str] = []
 
