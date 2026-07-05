@@ -7,6 +7,14 @@ automatically from git tags (PEP 440 / SemVer).
 ## [Unreleased]
 
 ### Added
+- Two-sided (symmetric) liquidity — building blocks: `liquidity.symmetric_add_memo`
+  / `liquidity.pair_amount` (protocol amount at the pool ratio; handles CACAO's
+  1e10 vs RUNE/asset 1e8) and `CosmosAdapter.build_and_verify_native_deposit`
+  (the RUNE/CACAO `MsgDeposit` leg), all unit-tested. The two-leg CLI
+  orchestration (prepare-both-then-broadcast + partial-failure handling) is the
+  remaining step; THORChain LP is currently paused so the RUNE side is refused
+  until re-enabled, while Maya (asset + CACAO) is open. See
+  `docs/liquidity-symmetric.md`.
 - Shell tab-completion via argcomplete (`register-python-argcomplete cryptoswap-wallet`).
 - THORChain REST client, pre-broadcast verify gate, and encrypted keystore
   (HD seeds + raw keys, AES-256-GCM, atomic writes).

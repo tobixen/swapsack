@@ -50,8 +50,14 @@ Owner's requested order; two-sided liquidity comes *after* these.
    The same backend also unlocks RUNE as a swap asset (to/from), so it is not
    wasted work. Note that one-sided LP already carries ~50% RUNE price exposure;
    symmetric mainly buys *no entry slip* in exchange for sourcing and holding
-   RUNE. Sensible sub-phasing: (a) `thor1` derivation + RUNE balance (read-only,
-   testable now); (b) `MsgDeposit` sign/broadcast; (c) symmetric add/withdraw.
+   RUNE. Sub-phasing: (a) `thor1` derivation + RUNE balance **DONE**;
+   (b) `MsgDeposit` sign/broadcast **DONE** (RUNE + CACAO); (c) symmetric
+   add/withdraw — **building blocks DONE + tested** (`symmetric_add_memo`,
+   `pair_amount`, `CosmosAdapter.build_and_verify_native_deposit`); the two-leg
+   CLI orchestration (prepare-both-then-broadcast, partial-failure handling,
+   asset-sender pairing) is the remaining step. See `docs/liquidity-symmetric.md`.
+   Note THORChain LP is currently paused (`PAUSELP`) — symmetric works on Maya
+   (asset + CACAO) today; RUNE when THORChain re-enables.
 
 ## Integration tests towards testnet / stagenet
 

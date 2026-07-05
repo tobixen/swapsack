@@ -321,6 +321,53 @@ class CosmosAdapter(HttpClient):
         )
         return Prepared(quote=quote, built=built, plan=plan, problems=problems)
 
+    # --- native deposit with an arbitrary memo (liquidity add/withdraw) -----
+
+    def build_and_verify_native_deposit(
+        self,
+        *,
+        memo: str,
+        amount: int,
+        mnemonic: str,
+        now: int,
+        expiry: int | None = None,
+        path: str = DEFAULT_DERIVATION,
+        gas_limit: int = DEFAULT_GAS_LIMIT,
+    ) -> Prepared:
+        """Build + gate a native ``MsgDeposit`` carrying ``memo`` (e.g. an LP add).
+
+        Unlike :meth:`build_and_verify` there is no swap quote/destination — the
+        gate binds the deposited coin/amount, the exact ``memo`` and our signer.
+        Used for the protocol (RUNE/CACAO) leg of a symmetric liquidity add.
+        """
+        from cryptoswap_wallet.chains import cosmos_tx
+
+        private_key, public_key = self._keys(mnemonic, path)
+        sender = self.derive_address(mnemonic, path)
+        _, signer_bytes = bech32_decode(sender)
+        amount_str = str(amount)
+        deposit = cosmos_tx.msg_deposit([(self.asset, amount_str)], memo, signer_bytes)
+        body_bytes = cosmos_tx.tx_body([(cosmos_tx.MSGDEPOSIT_TYPE_URL, deposit)], "")
+        built = self._built(
+            body_bytes=body_bytes,
+            private_key=private_key,
+            public_key=public_key,
+            sender=sender,
+            gas_limit=gas_limit,
+        )
+        plan = CosmosDepositPlan(
+            asset=self.asset,
+            amount=amount_str,
+            memo=memo,
+            destination="",  # LP add: no swap destination to bind in the memo
+            signer=signer_bytes,
+            expiry=expiry if expiry is not None else now + 3600,
+        )
+        problems = verify_cosmos_deposit(
+            decoded=cosmos_tx.decode_msg_deposit_body(body_bytes), plan=plan, now=now
+        )
+        return Prepared(quote=None, built=built, plan=plan, problems=problems)
+
     # --- sign + broadcast ---------------------------------------------------
 
     def sign(self, built: BuiltCosmosTx) -> list[str]:

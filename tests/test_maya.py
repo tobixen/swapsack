@@ -152,6 +152,31 @@ def test_build_and_verify_swap_deposit_passes_gate(monkeypatch):
     assert decoded["memo"] == quote.memo
 
 
+def test_build_and_verify_native_deposit_for_symmetric_lp(monkeypatch):
+    import time
+
+    from cryptoswap_wallet.chains import cosmos_tx
+    from cryptoswap_wallet.liquidity import symmetric_add_memo
+
+    adapter = MayaAdapter()
+    monkeypatch.setattr(adapter, "fetch_account", lambda address: (4, 2))
+    monkeypatch.setattr(adapter, "fetch_chain_id", lambda: "mayachain-mainnet-v1")
+
+    # Protocol leg of a symmetric BTC+CACAO add: MsgDeposit CACAO, memo pairs the
+    # BTC address.
+    memo = symmetric_add_memo("BTC.BTC", "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
+    prepared = adapter.build_and_verify_native_deposit(
+        memo=memo,
+        amount=558_000_000_000_000,
+        mnemonic=TEST_MNEMONIC,
+        now=int(time.time()),
+    )
+    assert prepared.problems == []
+    decoded = cosmos_tx.decode_msg_deposit_body(prepared.built.body_bytes)
+    assert decoded["coins"] == [("MAYA.CACAO", "558000000000000")]
+    assert decoded["memo"] == memo
+
+
 def test_build_and_verify_swap_deposit_catches_tampered_memo():
     import time
 
