@@ -209,6 +209,15 @@ def prepare_swap(
         )
     if not quote.memo:
         raise SwapAborted("THORChain quote returned no memo (missing destination?)")
+    # parse_quote tolerates a missing inbound_address because native (RUNE/
+    # CACAO) quotes legitimately have none — but an external-chain source pays
+    # *to* that vault, so an empty one (degraded/malformed node response) must
+    # abort here, not crash inside signing or build a tx around "".
+    if not getattr(adapter, "native_source", False) and not quote.inbound_address:
+        raise SwapAborted(
+            "quote returned no inbound vault address (malformed or degraded "
+            "node response); not building a transaction"
+        )
 
     return adapter.build_and_verify(
         quote=quote, request=request, now=now, **build_kwargs
@@ -253,6 +262,14 @@ def prepare_liquidity(
                 f"be observed and then refunded minus gas. Not broadcasting."
             )
     deposit_amount = status.dust_threshold if amount is None else amount
+    # parse_inbound_addresses tolerates a missing dust_threshold (parses as 0),
+    # but a 0-value deposit is money lost: gas burned on ETH on a tx the vault
+    # ignores, a below-dust output the network rejects on BTC.
+    if deposit_amount <= 0:
+        raise SwapAborted(
+            f"no usable dust threshold for {adapter.chain} (degraded "
+            f"inbound_addresses response?); refusing a 0-value deposit"
+        )
     return adapter.build_and_verify_deposit(
         vault=status.address, memo=memo, amount=deposit_amount, now=now, **build_kwargs
     )

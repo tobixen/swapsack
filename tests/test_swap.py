@@ -23,10 +23,13 @@ VAULT = "bc1qvault"
 
 
 def make_quote(
-    min_in: int = 7761, memo: str | None = "=:e:0xdest", expiry: int = 10**12
+    min_in: int = 7761,
+    memo: str | None = "=:e:0xdest",
+    expiry: int = 10**12,
+    inbound_address: str = VAULT,
 ):
     return Quote(
-        inbound_address=VAULT,
+        inbound_address=inbound_address,
         expected_amount_out=6768430,
         memo=memo,
         fees=SwapFees("ETH.ETH", 15820, 0, 13590, 29410, 19, 43),
@@ -43,13 +46,13 @@ def make_quote(
     )
 
 
-def make_status(chain="BTC", tradable=True):
+def make_status(chain="BTC", tradable=True, dust_threshold=1000):
     return ChainStatus(
         chain=chain,
         gas_rate=3,
         gas_rate_units="satsperbyte",
         outbound_fee=1058,
-        dust_threshold=1000,
+        dust_threshold=dust_threshold,
         halted=not tradable,
         global_trading_paused=False,
         chain_trading_paused=False,
@@ -58,14 +61,17 @@ def make_status(chain="BTC", tradable=True):
 
 
 class FakeThor:
-    def __init__(self, quote=None, tradable=True, chain="BTC", mimir=None):
+    def __init__(
+        self, quote=None, tradable=True, chain="BTC", mimir=None, dust_threshold=1000
+    ):
         self._quote = quote or make_quote()
         self._tradable = tradable
         self._chain = chain
         self._mimir = mimir or {}
+        self._dust = dust_threshold
 
     def inbound_addresses(self):
-        return {self._chain: make_status(self._chain, self._tradable)}
+        return {self._chain: make_status(self._chain, self._tradable, self._dust)}
 
     def quote_swap(self, *args, **kwargs):
         return self._quote
@@ -218,6 +224,27 @@ def test_prepare_translates_generic_thorchain_error_into_abort():
         prepare(thor=thor)
 
 
+def test_prepare_aborts_when_quote_omits_inbound_address():
+    # parse_quote tolerates a missing inbound_address (native quotes have
+    # none), but for an external-chain source an empty vault must abort loudly
+    # before any money-path work — not crash inside signing or, worse, build a
+    # tx around "".
+    with pytest.raises(SwapAborted, match="inbound"):
+        prepare(thor=FakeThor(quote=make_quote(inbound_address="")))
+
+
+def test_prepare_native_source_tolerates_missing_inbound_address():
+    # A native MsgDeposit has no inbound vault; the empty field is legitimate.
+    p = prepare_swap(
+        thorchain=FakeThor(chain="BTC", quote=make_quote(inbound_address="")),
+        adapter=_native_adapter("THOR"),
+        request=make_request(from_asset="THOR.RUNE"),
+        now=0,
+        mnemonic="m",
+    )
+    assert p.safe
+
+
 def test_prepare_surfaces_adapter_problems():
     p = prepare(adapter=FakeAdapter(problems=["vault mismatch"]))
     assert not p.safe
@@ -337,6 +364,20 @@ def test_prepare_liquidity_defaults_to_dust_when_amount_none():
         now=0,
     )
     assert p.plan.amount == 1000  # dust_threshold from make_status
+
+
+def test_prepare_liquidity_aborts_on_zero_dust_threshold():
+    # A degraded inbound_addresses entry parses with dust_threshold=0; a
+    # withdraw (amount=None) would then build and broadcast a 0-value deposit —
+    # gas burned on ETH, a rejected below-dust output on BTC. Abort instead.
+    with pytest.raises(SwapAborted, match="dust"):
+        prepare_liquidity(
+            thorchain=FakeThor(dust_threshold=0),
+            adapter=FakeAdapter(),
+            memo="-:BTC.BTC:10000",
+            amount=None,
+            now=0,
+        )
 
 
 def test_prepare_liquidity_aborts_when_halted():
