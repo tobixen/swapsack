@@ -443,6 +443,31 @@ def test_swap_from_native_auto_pins_home_backend(
     assert captured["backend"] == home
 
 
+def test_send_validates_recipient_before_dispatch(monkeypatch, capsys):
+    # The recipient sanity check lives once in cmd_send, before any handler,
+    # keystore or network work — the per-chain handlers each carried (or, for
+    # BTC, forgot) their own copy.
+    import cryptoswap_wallet.cli as cli
+
+    called = []
+    monkeypatch.setattr(cli, "_send_btc", lambda args: called.append(1) or 0)
+    args = build_parser().parse_args(
+        # a TRON-looking address for a BTC send
+        [
+            "send",
+            "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH",
+            "--asset",
+            "BTC",
+            "--amount",
+            "0.1",
+        ]
+    )
+    rc = cli.cmd_send(args)
+    assert rc == 2
+    assert not called  # refused before the handler ran
+    assert "does not look like" in capsys.readouterr().err
+
+
 def test_send_tron_sub_precision_amount_aborts_cleanly(monkeypatch, capsys):
     """TronAdapter.to_sun/to_token_native raise ValueError for amounts finer
     than the chain's precision; _send_tron must print the standard ABORTED

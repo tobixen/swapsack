@@ -662,6 +662,12 @@ def cmd_swap(args: argparse.Namespace) -> int:
 
 def cmd_send(args: argparse.Namespace) -> int:
     chain = ASSET[args.asset].split(".", 1)[0]
+    # Recipient sanity check once, before any keystore/network work — the
+    # per-chain handlers each carried (or forgot) their own copy.
+    problem = validate_destination_address(chain, args.address)
+    if problem:
+        print(f"recipient: {problem}", file=sys.stderr)
+        return 2
     if chain == "BTC":
         return _send_btc(args)
     if chain == "ETH":  # native ETH and ERC-20 tokens (USDT-ETH / USDC-ETH)
@@ -681,10 +687,6 @@ def _send_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN
     recipient = args.address
     mnemonic, passphrase = _load_mnemonic(args)
     with adapter_factory(args, passphrase) as adapter:
-        problem = validate_destination_address(adapter.chain, recipient)
-        if problem:
-            print(f"recipient: {problem}", file=sys.stderr)
-            return 2
         if args.amount == "max":
             # The chain charges a fixed native tx fee separately from the sent
             # amount, so an exact drain-to-zero sweep isn't known at build time
@@ -709,10 +711,6 @@ def _send_eth(args: argparse.Namespace) -> int:
 
     asset = ASSET[args.asset]
     recipient = args.address
-    problem = validate_destination_address("ETH", recipient)
-    if problem:
-        print(f"recipient: {problem}", file=sys.stderr)
-        return 2
     is_token = "-" in asset
     sweep = args.amount == "max"
     mnemonic, passphrase = _load_mnemonic(args)
@@ -764,10 +762,6 @@ def _send_tron(args: argparse.Namespace) -> int:
 
     asset = ASSET[args.asset]
     recipient = args.address
-    problem = validate_destination_address("TRON", recipient)
-    if problem:
-        print(f"recipient: {problem}", file=sys.stderr)
-        return 2
     is_token = "-" in asset
     sweep = args.amount == "max"
     if sweep and not is_token:

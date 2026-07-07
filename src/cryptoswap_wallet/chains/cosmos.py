@@ -23,6 +23,7 @@ from bitcoinlib.encoding import hash160
 from bitcoinlib.keys import HDKey
 from bitcoinlib.mnemonic import Mnemonic
 
+from cryptoswap_wallet.chains import cosmos_tx
 from cryptoswap_wallet.chains.base import BalanceReport
 from cryptoswap_wallet.net import HTTP_ERRORS, HttpClient
 from cryptoswap_wallet.swap import BroadcastError, Prepared
@@ -222,8 +223,6 @@ class CosmosAdapter(HttpClient):
         sender: str,
         gas_limit: int,
     ) -> BuiltCosmosTx:
-        from cryptoswap_wallet.chains import cosmos_tx
-
         account_number, sequence = self.fetch_account(sender)
         return BuiltCosmosTx(
             body_bytes=body_bytes,
@@ -248,8 +247,6 @@ class CosmosAdapter(HttpClient):
         decodes the *serialized* body and binds sender/recipient/denom/amount and
         the absence of a memo — a wrong recipient here is an unrefundable loss.
         """
-        from cryptoswap_wallet.chains import cosmos_tx
-
         private_key, public_key = self._keys(mnemonic, path)
         sender = self.derive_address(mnemonic, path)
         amount_str = str(amount)
@@ -277,7 +274,52 @@ class CosmosAdapter(HttpClient):
         )
         return Prepared(quote=None, built=built, plan=plan, problems=problems)
 
-    # --- swapping FROM the native asset (MsgDeposit, no inbound vault) -------
+    # --- native MsgDeposit (swap-from and LP legs share one build+gate) ------
+
+    def _prepare_deposit(
+        self,
+        *,
+        memo: str,
+        amount: int,
+        mnemonic: str,
+        now: int,
+        destination: str,
+        expiry: int,
+        quote,  # noqa: ANN001 (thorchain.Quote | None)
+        path: str,
+        gas_limit: int,
+    ) -> Prepared:
+        """Build + gate a native ``MsgDeposit`` carrying ``memo``.
+
+        The single money path both deposit flavours ride: the gate binds the
+        deposited coin/amount, the exact ``memo``, our signer, the ``expiry``
+        and (when given) that the memo pays ``destination``.
+        """
+        private_key, public_key = self._keys(mnemonic, path)
+        sender = self.derive_address(mnemonic, path)
+        _, signer_bytes = bech32_decode(sender)
+        amount_str = str(amount)
+        deposit = cosmos_tx.msg_deposit([(self.asset, amount_str)], memo, signer_bytes)
+        body_bytes = cosmos_tx.tx_body([(cosmos_tx.MSGDEPOSIT_TYPE_URL, deposit)], "")
+        built = self._built(
+            body_bytes=body_bytes,
+            private_key=private_key,
+            public_key=public_key,
+            sender=sender,
+            gas_limit=gas_limit,
+        )
+        plan = CosmosDepositPlan(
+            asset=self.asset,
+            amount=amount_str,
+            memo=memo,
+            destination=destination,
+            signer=signer_bytes,
+            expiry=expiry,
+        )
+        problems = verify_cosmos_deposit(
+            decoded=cosmos_tx.decode_msg_deposit_body(body_bytes), plan=plan, now=now
+        )
+        return Prepared(quote=quote, built=built, plan=plan, problems=problems)
 
     def build_and_verify(
         self,
@@ -295,36 +337,17 @@ class CosmosAdapter(HttpClient):
         unit for the native asset). The quote memo drives the swap; the gate binds
         the deposited coin/amount, memo, our signer, and that the memo pays dest.
         """
-        from cryptoswap_wallet.chains import cosmos_tx
-
-        private_key, public_key = self._keys(mnemonic, path)
-        sender = self.derive_address(mnemonic, path)
-        _, signer_bytes = bech32_decode(sender)
-        amount_str = str(request.amount)
-        memo = quote.memo or ""
-        deposit = cosmos_tx.msg_deposit([(self.asset, amount_str)], memo, signer_bytes)
-        body_bytes = cosmos_tx.tx_body([(cosmos_tx.MSGDEPOSIT_TYPE_URL, deposit)], "")
-        built = self._built(
-            body_bytes=body_bytes,
-            private_key=private_key,
-            public_key=public_key,
-            sender=sender,
+        return self._prepare_deposit(
+            memo=quote.memo or "",
+            amount=request.amount,
+            mnemonic=mnemonic,
+            now=now,
+            destination=request.destination,
+            expiry=quote.expiry,
+            quote=quote,
+            path=path,
             gas_limit=gas_limit,
         )
-        plan = CosmosDepositPlan(
-            asset=self.asset,
-            amount=amount_str,
-            memo=memo,
-            destination=request.destination,
-            signer=signer_bytes,
-            expiry=quote.expiry,
-        )
-        problems = verify_cosmos_deposit(
-            decoded=cosmos_tx.decode_msg_deposit_body(body_bytes), plan=plan, now=now
-        )
-        return Prepared(quote=quote, built=built, plan=plan, problems=problems)
-
-    # --- native deposit with an arbitrary memo (liquidity add/withdraw) -----
 
     def build_and_verify_native_deposit(
         self,
@@ -343,39 +366,21 @@ class CosmosAdapter(HttpClient):
         gate binds the deposited coin/amount, the exact ``memo`` and our signer.
         Used for the protocol (RUNE/CACAO) leg of a symmetric liquidity add.
         """
-        from cryptoswap_wallet.chains import cosmos_tx
-
-        private_key, public_key = self._keys(mnemonic, path)
-        sender = self.derive_address(mnemonic, path)
-        _, signer_bytes = bech32_decode(sender)
-        amount_str = str(amount)
-        deposit = cosmos_tx.msg_deposit([(self.asset, amount_str)], memo, signer_bytes)
-        body_bytes = cosmos_tx.tx_body([(cosmos_tx.MSGDEPOSIT_TYPE_URL, deposit)], "")
-        built = self._built(
-            body_bytes=body_bytes,
-            private_key=private_key,
-            public_key=public_key,
-            sender=sender,
+        return self._prepare_deposit(
+            memo=memo,
+            amount=amount,
+            mnemonic=mnemonic,
+            now=now,
+            destination="",  # LP add: no swap destination to bind in the memo
+            expiry=expiry if expiry is not None else now + 3600,
+            quote=None,
+            path=path,
             gas_limit=gas_limit,
         )
-        plan = CosmosDepositPlan(
-            asset=self.asset,
-            amount=amount_str,
-            memo=memo,
-            destination="",  # LP add: no swap destination to bind in the memo
-            signer=signer_bytes,
-            expiry=expiry if expiry is not None else now + 3600,
-        )
-        problems = verify_cosmos_deposit(
-            decoded=cosmos_tx.decode_msg_deposit_body(body_bytes), plan=plan, now=now
-        )
-        return Prepared(quote=None, built=built, plan=plan, problems=problems)
 
     # --- sign + broadcast ---------------------------------------------------
 
     def sign(self, built: BuiltCosmosTx) -> list[str]:
-        from cryptoswap_wallet.chains import cosmos_tx
-
         doc = cosmos_tx.sign_doc(
             built.body_bytes,
             built.auth_info_bytes,
