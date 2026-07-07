@@ -53,6 +53,9 @@ automatically from git tags (PEP 440 / SemVer).
   mirroring CACAO. Both ride a shared `chains.cosmos.CosmosAdapter` (THORChain
   and Maya are the same Cosmos-SDK software); `maya.py`/`thor.py` are thin
   config. RUNE uses the standard 1e8 base units (no decimals special-casing).
+  A native source deposits on its own network via `MsgDeposit`, so it is pinned
+  to its home backend (no price routing; a foreign `--backend` is refused, and
+  `prepare_swap` double-checks the quoting network).
   Spend paths unproven on mainnet. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
   for ERC-20/TRC-20 token sources (USDT-ETH, USDC-ETH, USDT-TRON) on swap — the whole
   token balance, exact since the fee is paid in the native coin, not the token.
@@ -80,6 +83,9 @@ automatically from git tags (PEP 440 / SemVer).
   small or high-fee swaps THORChain refuses at the default. A rejected quote now
   aborts cleanly with an actionable message (no traceback); the common
   `emit ... less than price limit` case explains that fees exceed the tolerance.
+  The `quote` subcommand is informational and requests no price limit, so it
+  always shows the price — however bad — even when a swap at the default
+  tolerance would be refused.
 - Registry-based multi-chain `balance` (native coins plus tracked ERC-20/TRC-20
   token balances — USDT-ETH, USDC-ETH and USDT-TRON; now also reports THORChain/Maya
   liquidity positions: total redeemable value in the asset — the RUNE/CACAO side

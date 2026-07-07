@@ -1,5 +1,28 @@
 # Code review — 2026-07-07
 
+> **✅ RESOLVED (2026-07-07).** All 23 findings below are addressed, each fix
+> with a regression test where applicable (suite: 389 passed). Commits:
+> - **#2** `6ebcac5` (home-backend pinning + prepare_swap wrong-network guard)
+> - **#3** `4c8a067` (`--stream-interval` requires ≥1)
+> - **#4** `09843a4` (token deposits honour `self.chain_id`; BSC signs as 56)
+> - **#5/#6** `7da06ce` (zero-dust and empty-inbound-address guards)
+> - **#7/#19** `dd97380` (explicit `token=` param; no memo-parsing)
+> - **#8/#10/#17** `fbceb05` (per-asset `_base_units`; 1e-10 parse floor;
+>   `main()` SwapAborted backstop)
+> - **#9** `ff46579` (`quote` requests no price limit)
+> - **#11** `a7ebbca` (TRON send ValueError → clean abort)
+> - **#1** `a548fe3` (migration warning; the strip itself is intentional —
+>   see the resolution note below)
+> - **#12–#14** `a21aa03` (DERIVABLE_CHAINS incl. MAYA/THOR; help strings;
+>   CHANGELOG/docs symbol names)
+> - **#18/#20–#23** `8a04ec6` (shared `effective_tolerance_bps`; dead code;
+>   double split; unit cross-check tests; pool-less `balance` skip)
+> - **#15/#16** `464a67b` (cosmos `_prepare_deposit`; recipient validation
+>   hoisted into `cmd_send` — the rest of the per-chain send skeletons stay
+>   separate deliberately: the sweep/fee branching genuinely differs per chain)
+>
+> The findings are retained below as the historical record.
+
 **Scope:** changes since `8fd9e26` (everything after the 2026-06-30 review fixes: CACAO/RUNE
 native support, shared Cosmos adapter, two-sided liquidity building blocks, testnet support).
 **Effort:** high — 3 correctness finder angles + 1 cleanup angle, independent per-location
