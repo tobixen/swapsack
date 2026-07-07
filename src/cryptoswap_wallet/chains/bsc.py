@@ -6,10 +6,10 @@ only overrides the chain-specific surface (native symbol, RPC, tracked tokens).
 
 Swaps are deliberately NOT implemented here. THORChain has BSC trading halted
 (``HALTBSCTRADING=1``, a post-exploit governance halt) and Maya has no BSC
-pools, so there is nothing to swap against. The inherited swap builders also bake
-in Ethereum's chain id (1), which is wrong for BSC (56) — so the swap entry point
-is overridden to fail loudly rather than build a mis-chained transaction. Revisit
-when ``inbound_addresses`` shows BSC ``chain_trading_paused: false``.
+pools, so there is nothing to swap against — the swap entry point is overridden
+to fail loudly. The inherited *send* paths work: the adapter passes BSC's chain
+id (56) so they sign for the right network. Revisit swaps when
+``inbound_addresses`` shows BSC ``chain_trading_paused: false``.
 
 Gotcha: BSC's USDC/USDT are 18-decimal BEP-20 tokens, NOT 6-decimal like their
 Ethereum namesakes — hence a BSC-specific tracked-token table.
@@ -21,6 +21,7 @@ from cryptoswap_wallet.chains.eth import EthAdapter
 
 # Keyless public BSC JSON-RPC node (same provider family as the ETH/TRON defaults).
 DEFAULT_BSC_RPC = "https://bsc-rpc.publicnode.com"
+BSC_CHAIN_ID = 56
 
 # BEP-20 tokens the wallet tracks for `balance` (symbol, contract, decimals).
 # Both are 18 decimals on BSC (verified on-chain via decimals()), unlike the
@@ -50,7 +51,9 @@ class BscAdapter(EthAdapter):
         timeout: float = 20.0,
         bip39_passphrase: str = "",
     ) -> None:
-        super().__init__(rpc_url, timeout, bip39_passphrase=bip39_passphrase)
+        super().__init__(
+            rpc_url, timeout, bip39_passphrase=bip39_passphrase, chain_id=BSC_CHAIN_ID
+        )
 
     def build_and_verify(self, **kwargs: object) -> None:
         raise NotImplementedError(

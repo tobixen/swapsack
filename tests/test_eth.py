@@ -273,6 +273,47 @@ def test_eth_token_verify_clean():
     assert problems == []
 
 
+def test_eth_token_deposit_honours_configured_chain_id():
+    # A Sepolia adapter must sign token txs for its own chain id too — a
+    # hardcoded mainnet 1 would emit a validly-signed *mainnet* transaction —
+    # and the gate must accept the adapter's chain id, not a constant.
+    from cryptoswap_wallet.chains.eth import verify_eth_token_swap
+    from cryptoswap_wallet.swap import SwapRequest
+
+    request = SwapRequest(
+        from_asset=USDT_ASSET,
+        to_asset="BTC.BTC",
+        amount=500_000_000,
+        destination="bc1qexampledest",
+    )
+    built = EthAdapter(chain_id=11155111).build_token_swap(
+        mnemonic=MNEMONIC,
+        request=request,
+        quote=_eth_token_quote("=:b:bc1qexampledest"),
+        nonce=7,
+        max_fee_per_gas=20_000_000_000,
+        max_priority_fee_per_gas=1_000_000_000,
+        decimals=6,
+    )
+    assert built.approve_tx["chainId"] == 11155111
+    assert built.deposit_tx["chainId"] == 11155111
+    problems = verify_eth_token_swap(
+        built=built, destination="bc1qexampledest", now=0, max_fee_wei=10**18
+    )
+    assert problems == []
+
+
+def test_eth_token_verify_rejects_tampered_chain_id():
+    from cryptoswap_wallet.chains.eth import verify_eth_token_swap
+
+    built = _build_usdt()
+    built.deposit_tx["chainId"] = 56
+    problems = verify_eth_token_swap(
+        built=built, destination="bc1qexampledest", now=0, max_fee_wei=10**18
+    )
+    assert any("chainId" in p for p in problems)
+
+
 def test_eth_token_verify_rejects_wrong_destination():
     from cryptoswap_wallet.chains.eth import verify_eth_token_swap
 

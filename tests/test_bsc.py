@@ -60,6 +60,26 @@ def test_bsc_token_decimals_use_trusted_constant():
     assert adapter.token_decimals(usdc_contract.upper()) == 18
 
 
+def test_bsc_send_signs_for_chain_id_56():
+    # The inherited EVM send path must sign with BSC's chain id — with
+    # Ethereum's 1 the node rejects the tx, and worse, the emitted raw tx is a
+    # fully valid *mainnet* transaction paying the same recipient in ETH.
+    adapter = BscAdapter()
+    assert adapter.chain_id == 56
+    prepared = adapter.build_and_verify_send(
+        recipient="0x1111111111111111111111111111111111111111",
+        amount=100_000,  # 1e8 units -> 0.001 BNB
+        asset="BSC.BNB",
+        mnemonic=MNEMONIC,
+        nonce=0,
+        max_fee_per_gas=3_000_000_000,
+        max_priority_fee_per_gas=1_000_000_000,
+        max_fee_wei=10**16,
+    )
+    assert prepared.problems == []
+    assert prepared.built.tx["chainId"] == 56
+
+
 def test_bsc_swaps_not_supported():
     with pytest.raises(NotImplementedError, match="BSC swaps are not supported"):
         BscAdapter().build_and_verify(quote=None, request=None, now=0, mnemonic="")

@@ -163,6 +163,7 @@ class EthTokenBuiltSwap:
     native_amount: int
     memo: str
     expiry: int
+    chain_id: int = CHAIN_ID
 
     @property
     def txs(self) -> list[dict[str, Any]]:
@@ -200,7 +201,7 @@ def verify_eth_token_swap(
         problems.append(f"deposit 'to' {deposit['to']} != router {built.router}")
     if approve["value"] != 0 or deposit["value"] != 0:
         problems.append("token txs must not send ETH value")
-    if approve["chainId"] != CHAIN_ID or deposit["chainId"] != CHAIN_ID:
+    if approve["chainId"] != built.chain_id or deposit["chainId"] != built.chain_id:
         problems.append("wrong chainId")
 
     try:
@@ -270,8 +271,7 @@ class EthAdapter(HttpClient):
         self.bip39_passphrase = bip39_passphrase
         # EVM chain id used when building/signing txs (1 = mainnet). Set to a
         # testnet id (e.g. Sepolia 11155111) alongside a matching RPC to send on
-        # a testnet. Only wired through the native + send paths; token swaps stay
-        # mainnet-only for now.
+        # a testnet.
         self.chain_id = chain_id
 
     def _key(self, mnemonic: str, path: str) -> LocalAccount:
@@ -445,7 +445,7 @@ class EthAdapter(HttpClient):
         vault = to_checksum_address(vault)
         common = {
             "type": 2,
-            "chainId": CHAIN_ID,
+            "chainId": self.chain_id,
             "value": 0,
             "maxFeePerGas": max_fee_per_gas,
             "maxPriorityFeePerGas": max_priority_fee_per_gas,
@@ -474,6 +474,7 @@ class EthAdapter(HttpClient):
             native_amount=native,
             memo=memo,
             expiry=expiry,
+            chain_id=self.chain_id,
         )
 
     def build_token_swap(
