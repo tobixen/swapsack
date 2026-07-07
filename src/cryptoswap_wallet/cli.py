@@ -33,6 +33,10 @@ from cryptoswap_wallet.swap import (
 )
 from cryptoswap_wallet.thorchain import THORCHAIN_UNIT, asset_unit
 
+# The finest base unit across all supported assets (CACAO's 1e10) — the
+# parse-time floor for --amount; the per-asset floor lives in _base_units.
+FINEST_UNIT = 10**10
+
 try:
     from cryptoswap_wallet._version import __version__
 except ImportError:  # not built yet (e.g. running from a fresh checkout)
@@ -579,7 +583,8 @@ def cmd_quote(args: argparse.Namespace) -> int:
         return 2
     from cryptoswap_wallet.backends import best_quote, gather_quotes
 
-    amount = _base_units(args.amount)
+    # The quote API speaks the *source asset's* native unit (CACAO is 1e10).
+    amount = _base_units(args.amount, asset_unit(ASSET[args.from_]))
     # Only decrypt the keystore if we actually need to derive the destination.
     if args.dest is None and _derivable_chain(args.to_) in ("BTC", "ETH", "TRON"):
         mnemonic, passphrase = _load_mnemonic(args)
@@ -666,7 +671,7 @@ def _send_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN
             )
             return 2
         unit = 10**adapter.decimals
-        amount = int((args.amount * unit).to_integral_value(rounding=ROUND_HALF_EVEN))
+        amount = _base_units(args.amount, unit)
         prepared = adapter.build_and_verify_send(
             recipient=recipient, amount=amount, mnemonic=mnemonic
         )
@@ -1175,10 +1180,10 @@ def _swap_from_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa
                 file=sys.stderr,
             )
             return 1
-        # CACAO is 1e10, RUNE is 1e8 (not the shared _base_units 1e8 assumption);
-        # the quote API speaks the asset's native unit, so it goes through as-is.
+        # CACAO is 1e10, RUNE is 1e8; the quote API speaks the asset's native
+        # unit, so the scaled amount goes through as-is.
         unit = 10**adapter.decimals
-        amount = int((args.amount * unit).to_integral_value(rounding=ROUND_HALF_EVEN))
+        amount = _base_units(args.amount, unit)
         request = SwapRequest(
             from_asset=ASSET[args.from_],
             to_asset=ASSET[args.to_],
@@ -1496,9 +1501,11 @@ def _amount(value: str) -> Decimal | str:
         raise argparse.ArgumentTypeError(
             f"amount must be a positive number or 'max', got {value!r}"
         )
-    if amount * THORCHAIN_UNIT < 1:
+    # The finest base unit any supported asset has is CACAO's 1e-10; the
+    # per-asset floor is enforced in _base_units, where the unit is known.
+    if amount * FINEST_UNIT < 1:
         raise argparse.ArgumentTypeError(
-            f"amount {value!r} is below one base unit (1e-8); too small to send"
+            f"amount {value!r} is below one base unit (1e-10); too small to send"
         )
     return amount
 
@@ -1526,13 +1533,23 @@ def _pos_int(value: str) -> int:
     return n
 
 
-def _base_units(amount: Decimal) -> int:
-    """Scale a human ``--amount`` (whole --from units) to THORChain 1e8 base units.
+def _base_units(amount: Decimal, unit: int = THORCHAIN_UNIT) -> int:
+    """Scale a human ``--amount`` (whole asset units) to integer base units.
 
-    Decimal end-to-end: a large amount like ``93393106.59778857`` must not pick
-    up a float rounding error and be signed/broadcast one base unit off.
+    ``unit`` is the asset's base unit (THORChain's shared 1e8 by default; CACAO
+    is 1e10). Decimal end-to-end: a large amount like ``93393106.59778857`` must
+    not pick up a float rounding error and be signed/broadcast one base unit off.
+
+    Raises :class:`SwapAborted` when the amount rounds to zero base units — a
+    0-value tx burns a fee on a no-op (main() turns an escaped SwapAborted into
+    the standard ABORTED message).
     """
-    return int((amount * THORCHAIN_UNIT).to_integral_value(rounding=ROUND_HALF_EVEN))
+    scaled = int((amount * unit).to_integral_value(rounding=ROUND_HALF_EVEN))
+    if scaled < 1:
+        raise SwapAborted(
+            f"amount {amount} is below one base unit (1/{unit}); too small to send"
+        )
+    return scaled
 
 
 def _add_swap_args(sub: argparse.ArgumentParser) -> None:
@@ -1782,7 +1799,13 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(args, "func", None):
         parser.print_help()
         return 1
-    return args.func(args)
+    try:
+        return args.func(args)
+    except SwapAborted as exc:
+        # Backstop for handlers with no local handler (e.g. _base_units raising
+        # from cmd_quote): the standard ABORTED message, never a traceback.
+        print(f"ABORTED: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

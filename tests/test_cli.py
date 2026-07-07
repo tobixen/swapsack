@@ -816,16 +816,90 @@ def test_base_units_round_trip_simple():
 
 
 @pytest.mark.parametrize("cmd", ["swap", "send"])
-def test_amount_rejects_sub_base_unit(cmd):
-    # 1e-9 scales to 0.1 base units -> would round to 0 and burn a fee on a
-    # no-op send; reject at parse time.
+def test_amount_rejects_below_finest_unit(cmd):
+    # The parse-time floor is the finest supported base unit (CACAO's 1e-10);
+    # anything below can't be a whole number of base units for ANY asset.
     argv = (
-        ["send", "bc1qx", "--amount", "0.000000001"]
+        ["send", "bc1qx", "--amount", "0.00000000001"]
         if cmd == "send"
-        else ["swap", "--amount", "0.000000001"]
+        else ["swap", "--amount", "0.00000000001"]
     )
     with pytest.raises(SystemExit):
         build_parser().parse_args(argv)
+
+
+def test_amount_accepts_cacao_scale_amounts():
+    # 5e-9 is 50 CACAO base units (1e-10) — a perfectly sendable amount that
+    # the old 1e-8 parse floor wrongly refused. The asset is unknown at parse
+    # time, so per-asset enforcement lives in _base_units.
+    from cryptoswap_wallet.cli import _amount
+
+    assert _amount("0.000000005") == Decimal("0.000000005")
+
+
+def test_base_units_rejects_amount_rounding_to_zero():
+    # 1e-9 scales to 0.1 of a 1e8 base unit -> would round to 0 and burn a fee
+    # on a no-op send. The guard moved here from _amount, where the per-asset
+    # unit wasn't known; with CACAO's 1e10 unit the same amount is fine.
+    from cryptoswap_wallet.cli import _base_units
+    from cryptoswap_wallet.swap import SwapAborted
+
+    with pytest.raises(SwapAborted, match="base unit"):
+        _base_units(Decimal("0.000000001"))
+    assert _base_units(Decimal("0.000000001"), 10**10) == 10
+
+
+def test_main_prints_aborted_for_escaped_swap_aborted(monkeypatch, capsys):
+    # _base_units can raise SwapAborted from handlers with no local handler
+    # (e.g. cmd_quote); main() must turn it into the standard ABORTED message,
+    # not a traceback.
+    import cryptoswap_wallet.cli as cli
+    from cryptoswap_wallet.swap import SwapAborted
+
+    def boom(args):
+        raise SwapAborted("test escape")
+
+    monkeypatch.setattr(cli, "cmd_quote", boom)
+    rc = cli.main(["quote", "--amount", "1"])
+    assert rc == 1
+    assert "ABORTED: test escape" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("from_asset", "expected"),
+    [("CACAO", 100 * 10**10), ("BTC", 100 * 10**8)],
+)
+def test_quote_scales_amount_per_source_asset(monkeypatch, from_asset, expected):
+    # The quote API speaks the source asset's native unit (CACAO is 1e10, not
+    # the shared 1e8): a fixed-1e8 scaling quoted 1/100th of the typed CACAO
+    # amount — a wildly misleading price preview.
+    import cryptoswap_wallet.backends as backends_mod
+    import cryptoswap_wallet.cli as cli
+
+    captured = {}
+
+    def fake_gather(backends, from_a, to_a, amount, dest, **kw):
+        captured["amount"] = amount
+        return []
+
+    monkeypatch.setattr(backends_mod, "gather_quotes", fake_gather)
+    monkeypatch.setattr(cli, "_backends_for", lambda args: [])
+    args = build_parser().parse_args(
+        [
+            "quote",
+            "--from",
+            from_asset,
+            "--to",
+            "ETH",
+            "--amount",
+            "100",
+            "--dest",
+            "0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+        ]
+    )
+    rc = cli.cmd_quote(args)
+    assert rc == 1  # our stub returns no quotes
+    assert captured["amount"] == expected
 
 
 # --- BIP-39 passphrase threaded out of the keystore (finding #1) ---
