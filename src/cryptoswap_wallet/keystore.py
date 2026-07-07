@@ -20,6 +20,7 @@ import contextlib
 import dataclasses
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, ClassVar
@@ -200,8 +201,26 @@ class Keystore:
         entries = [_entry_from_dict(d) for d in payload["entries"]]
         # A v1 keystore's stored BIP-39 passphrase was never applied to
         # derivation, so any funds are at empty-passphrase addresses. Drop it so
-        # v2 derivation keeps deriving the same addresses (see ENVELOPE_VERSION).
+        # v2 derivation keeps deriving the same addresses (see ENVELOPE_VERSION)
+        # — but never silently: the next save writes v2 without the passphrase,
+        # permanently erasing a stored secret, so tell the user to note it down.
         if int(envelope.get("version", 1)) < 2:
+            stripped = [
+                e.label
+                for e in entries
+                if isinstance(e, HdKey) and e.passphrase is not None
+            ]
+            if stripped:
+                print(
+                    f"WARNING: dropping the stored BIP-39 passphrase from HD "
+                    f"key(s) {', '.join(stripped)}: this v1 keystore never "
+                    f"applied it to derivation, so your funds sit at "
+                    f"empty-passphrase addresses. The next save upgrades to v2 "
+                    f"and discards the passphrase permanently — note it down "
+                    f"now if you need it elsewhere (re-add with "
+                    f"`add-hd --bip39-passphrase` to actually use it).",
+                    file=sys.stderr,
+                )
             entries = [
                 dataclasses.replace(e, passphrase=None)
                 if isinstance(e, HdKey) and e.passphrase is not None
