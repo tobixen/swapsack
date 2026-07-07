@@ -1513,6 +1513,16 @@ def _nonneg_int(value: str) -> int:
     return n
 
 
+def _pos_int(value: str) -> int:
+    """argparse type for a positive integer (streaming interval: 0 is NOT "off" —
+    it would request streaming handling, dropping the price tolerance, while the
+    node returns a plain non-streaming quote with LIM=0)."""
+    n = _nonneg_int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
+    return n
+
+
 def _base_units(amount: Decimal) -> int:
     """Scale a human ``--amount`` (whole --from units) to THORChain 1e8 base units.
 
@@ -1551,7 +1561,7 @@ def _add_swap_args(sub: argparse.ArgumentParser) -> None:
     )
     sub.add_argument(
         "--stream-interval",
-        type=_nonneg_int,
+        type=_pos_int,
         metavar="BLOCKS",
         help="streaming swap: blocks between sub-swaps (>=1). Splits the trade "
         "over time so each hits the pool smaller, sharply cutting slippage on "

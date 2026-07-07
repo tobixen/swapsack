@@ -52,6 +52,22 @@ def test_streaming_interval_rejects_negative():
         )
 
 
+def test_streaming_interval_rejects_zero():
+    # 0 is NOT "off": downstream checks are `is not None`, so interval 0 would
+    # drop the price tolerance (LIM=0) while the node returns a plain
+    # non-streaming quote — a swap with no slippage protection at all.
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["swap", "--amount", "0.1", "--stream-interval", "0"])
+
+
+def test_streaming_quantity_zero_still_allowed():
+    # 0 = "let the network pick" for the quantity (unlike the interval).
+    args = build_parser().parse_args(
+        ["swap", "--amount", "0.1", "--stream-interval", "1", "--stream-quantity", "0"]
+    )
+    assert args.stream_quantity == 0
+
+
 def test_streaming_kwargs_helper_reads_args():
     from cryptoswap_wallet.cli import _streaming_kwargs
 
