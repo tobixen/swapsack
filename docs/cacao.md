@@ -71,7 +71,7 @@ itself:
 3. **Send.** A Cosmos-SDK bank `MsgSend`, signed `SIGN_MODE_DIRECT` (protobuf
    `SignDoc`) with secp256k1, then broadcast. **This is a new tx family** (not
    UTXO, not EVM, not TRON) — needs protobuf tx assembly + account-number /
-   sequence lookup. A `verify_maya_send` gate (recipient + amount, no memo)
+   sequence lookup. A `verify_cosmos_send` gate (recipient + amount, no memo)
    mirrors the others.
 4. **From (swap source) + Liquidity.** A `MsgDeposit` (Maya/THORChain-specific
    Cosmos msg) carrying CACAO + the `=:`/`+:` memo. **This is exactly TODO #4's
@@ -103,13 +103,13 @@ broadcast test gated on a funded secret, mirroring the Nile TRC-20 loop.
   Wired into `address` and `balance` (and a `--maya-api` override). The
   derivation is cross-checked in `tests/test_maya.py` against a golden vector
   that three independent BIP32 impls (bitcoinlib/eth-account/hdwallet) agree on.
-- **Phase 2 — Send. DONE (broadcast unproven on mainnet).** `chains/maya_tx.py`
+- **Phase 2 — Send. DONE (broadcast unproven on mainnet).** `chains/cosmos_tx.py`
   hand-rolls the Cosmos protobuf (TxBody/AuthInfo/SignDoc/TxRaw + MsgSend) and
   SIGN_MODE_DIRECT signing (sha256(SignDoc) -> 64-byte low-S secp256k1 via
   eth-keys), with **no `grpcio`/`cosmpy` runtime dep**; the wire format is
-  validated byte-for-byte against cosmpy in `tests/test_maya_tx.py`. The adapter
+  validated byte-for-byte against cosmpy in `tests/test_cosmos_tx.py`. The adapter
   fetches account-number/sequence + chain-id, builds+signs, and broadcasts via
-  `/cosmos/tx/v1beta1/txs`; a `verify_maya_send` gate decodes the *serialized*
+  `/cosmos/tx/v1beta1/txs`; a `verify_cosmos_send` gate decodes the *serialized*
   body and binds sender/recipient/denom/amount/no-memo. Wired into `send`
   (`--asset CACAO`). Caveat: no Maya testnet, so broadcast — and the exact
   fee/gas convention (currently empty fee coins + gas 2e6, letting the chain
@@ -120,11 +120,13 @@ broadcast test gated on a funded secret, mirroring the Nile TRC-20 loop.
   vault** — confirmed against a live quote, which returns `inbound_address:
   null`) carrying the CACAO coin at 1e10, signs it (reusing the Phase-2
   machinery) and broadcasts. The `MsgDeposit` wire format is validated by
-  decoding a **real on-chain deposit** (`tests/test_maya_tx.py`), and a
-  `verify_maya_deposit` gate binds the coin/amount/memo/signer and that the memo
+  decoding a **real on-chain deposit** (`tests/test_cosmos_tx.py`), and a
+  `verify_cosmos_deposit` gate binds the coin/amount/memo/signer and that the memo
   pays the destination. `parse_quote` was made tolerant of the fields a
-  native-source quote omits (inbound_address/dust/gas), and `prepare_swap` skips
-  the inbound-address check for a `native_source` adapter. Amount scale (1e10) is
+  native-source quote omits (inbound_address/dust/gas), and for a
+  `native_source` adapter `prepare_swap` replaces the tradability check with a
+  wrong-network guard (the deposit executes on the adapter's own chain, so the
+  quoting backend must be the home network). Amount scale (1e10) is
   the same bank denom as `MsgSend`, cross-checked against the quote's
   `recommended_min_amount_in`. Sweep is refused (fixed native fee).
 - **Liquidity for CACAO is not a single-sided operation.** CACAO is the

@@ -38,24 +38,22 @@ automatically from git tags (PEP 440 / SemVer).
   `--maya-api` override.
 - `send --asset CACAO`: a native CACAO transfer as a Cosmos `MsgSend`. The
   protobuf tx assembly + SIGN_MODE_DIRECT signing are hand-rolled in
-  `chains/maya_tx.py` (no `grpcio`/`cosmpy` runtime dep) and validated
-  byte-for-byte against cosmpy in the tests; a `verify_maya_send` gate binds the
+  `chains/cosmos_tx.py` (no `grpcio`/`cosmpy` runtime dep) and validated
+  byte-for-byte against cosmpy in the tests; a `verify_cosmos_send` gate binds the
   serialized recipient/amount/denom before signing. Broadcast is unproven on
   mainnet (no Maya testnet) — see `docs/cacao.md`.
 - `swap --from CACAO`: native CACAO as a swap source, built as a Cosmos
   `MsgDeposit` (memo-driven, no inbound vault). The `MsgDeposit` wire format is
-  validated by decoding a real on-chain deposit; a `verify_maya_deposit` gate
+  validated by decoding a real on-chain deposit; a `verify_cosmos_deposit` gate
   binds the coin/amount/memo/signer and that the memo pays the destination.
-  `parse_quote` now tolerates the fields a native-source quote omits, and
-  `prepare_swap` skips the inbound-address check for a native-source adapter.
+  `parse_quote` now tolerates the fields a native-source quote omits.
   Broadcast unproven on mainnet. (Single-sided liquidity is n/a for the
   settlement asset — that's the RUNE-leg of symmetric LP.)
 - RUNE (THORChain native): hold + balance + destination + `send` + swap-**from**,
-  mirroring CACAO. The Maya adapter was refactored into a shared
-  `chains.cosmos.CosmosAdapter` (THORChain and Maya are the same Cosmos-SDK
-  software); `maya.py`/`thor.py` are now thin config, and the protobuf module was
-  renamed `maya_tx.py` -> `cosmos_tx.py`. RUNE uses the standard 1e8 base units
-  (no decimals special-casing). Spend paths unproven on mainnet. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
+  mirroring CACAO. Both ride a shared `chains.cosmos.CosmosAdapter` (THORChain
+  and Maya are the same Cosmos-SDK software); `maya.py`/`thor.py` are thin
+  config. RUNE uses the standard 1e8 base units (no decimals special-casing).
+  Spend paths unproven on mainnet. `--amount max` sweep for BTC/ETH (swap and add-liquidity) and
   for ERC-20/TRC-20 token sources (USDT-ETH, USDC-ETH, USDT-TRON) on swap — the whole
   token balance, exact since the fee is paid in the native coin, not the token.
   The TRX source signs a native TransferContract with

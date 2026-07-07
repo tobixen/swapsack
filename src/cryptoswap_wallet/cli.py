@@ -399,8 +399,43 @@ def _report_liquidity(
 
 
 def _derivable_chain(to_: str) -> str:
-    """The destination chain prefix (BTC/ETH/TRON are derivable; others need --dest)."""
+    """The destination chain prefix (see DERIVABLE_CHAINS; others need --dest)."""
     return ASSET[to_].split(".", 1)[0]
+
+
+# Chains whose destination address the wallet can derive from the seed —
+# the single source of truth for both _resolve_destination and cmd_quote's
+# "do we need to decrypt the keystore" check.
+DERIVABLE_CHAINS = ("BTC", "ETH", "TRON", "MAYA", "THOR")
+
+
+def _derive_destination_address(
+    chain: str, mnemonic: str, passphrase: str = ""
+) -> str | None:
+    """Our receive address on ``chain``, or None when it needs an explicit --dest."""
+    if chain == "ETH":
+        from cryptoswap_wallet.chains.eth import EthAdapter
+
+        return EthAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+    if chain == "BTC":
+        from cryptoswap_wallet.chains.btc import BtcAdapter
+
+        return BtcAdapter(bip39_passphrase=passphrase).derive_address(
+            mnemonic, BTC_RECEIVE_PATH
+        )
+    if chain == "TRON":
+        from cryptoswap_wallet.chains.tron import TronAdapter
+
+        return TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+    if chain == "MAYA":
+        from cryptoswap_wallet.chains.maya import MayaAdapter
+
+        return MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+    if chain == "THOR":
+        from cryptoswap_wallet.chains.thor import ThorAdapter
+
+        return ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+    return None  # unknown target chain: caller must pass --dest
 
 
 def _resolve_destination(
@@ -417,22 +452,7 @@ def _resolve_destination(
     # TRON.USDT lands at the same Tron address as native TRX, ETH.USDT at the
     # ETH address, etc. The BIP-39 passphrase must be applied here too, or an
     # auto-derived --dest would pay an address the user cannot spend.
-    chain = _derivable_chain(args.to_)
-    if chain == "ETH":
-        from cryptoswap_wallet.chains.eth import EthAdapter
-
-        return EthAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
-    if chain == "BTC":
-        from cryptoswap_wallet.chains.btc import BtcAdapter
-
-        return BtcAdapter(bip39_passphrase=passphrase).derive_address(
-            mnemonic, BTC_RECEIVE_PATH
-        )
-    if chain == "TRON":
-        from cryptoswap_wallet.chains.tron import TronAdapter
-
-        return TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
-    return None  # unknown target chain: caller must pass --dest
+    return _derive_destination_address(_derivable_chain(args.to_), mnemonic, passphrase)
 
 
 def _backends_for(args: argparse.Namespace):  # noqa: ANN202 (list[Backend], lazy import)
@@ -586,7 +606,7 @@ def cmd_quote(args: argparse.Namespace) -> int:
     # The quote API speaks the *source asset's* native unit (CACAO is 1e10).
     amount = _base_units(args.amount, asset_unit(ASSET[args.from_]))
     # Only decrypt the keystore if we actually need to derive the destination.
-    if args.dest is None and _derivable_chain(args.to_) in ("BTC", "ETH", "TRON"):
+    if args.dest is None and _derivable_chain(args.to_) in DERIVABLE_CHAINS:
         mnemonic, passphrase = _load_mnemonic(args)
     else:
         mnemonic, passphrase = None, ""
@@ -1671,7 +1691,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_show_seed)
 
     s = sub.add_parser(
-        "address", help="show derived BTC, ETH, BSC, TRON and MAYA addresses"
+        "address", help="show derived BTC, ETH, BSC, TRON, MAYA and THOR addresses"
     )
     s.add_argument("--key")
     s.set_defaults(func=cmd_address)
@@ -1746,7 +1766,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_withdraw_liquidity)
 
     s = sub.add_parser(
-        "send", help="send to an external address (no swap); BTC/ETH/TRON/CACAO"
+        "send",
+        help="send to an external address (no swap); BTC/ETH/TRON/CACAO/RUNE",
     )
     s.add_argument("address", help="recipient address")
     s.add_argument(

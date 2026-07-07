@@ -778,6 +778,45 @@ def test_swap_to_ltc_parses():
     assert ASSET[args.to_] == "LTC.LTC"
 
 
+def test_resolve_destination_derives_maya_and_thor():
+    # The MAYA/THOR adapters expose derive_address, so `swap --to CACAO/RUNE`
+    # must not demand a --dest the wallet itself prints in `address`.
+    import cryptoswap_wallet.cli as cli
+
+    args = build_parser().parse_args(["swap", "--to", "CACAO", "--amount", "1"])
+    assert (
+        cli._resolve_destination(args, MNEMONIC)
+        == "maya1gm00vwsfcp48enm4uv9e5dhm37jtd0ye2fs0sl"
+    )
+    args = build_parser().parse_args(["swap", "--to", "RUNE", "--amount", "1"])
+    assert (
+        cli._resolve_destination(args, MNEMONIC)
+        == "thor1gm00vwsfcp48enm4uv9e5dhm37jtd0ye27wrx0"
+    )
+
+
+def test_quote_derives_cacao_destination(monkeypatch):
+    # cmd_quote's derivable-chain set must be the same one _resolve_destination
+    # uses (they were two hardcoded copies that drifted independently).
+    import cryptoswap_wallet.backends as backends_mod
+    import cryptoswap_wallet.cli as cli
+
+    captured = {}
+
+    def fake_gather(backends, from_a, to_a, amount, dest, **kw):
+        captured["dest"] = dest
+        return []
+
+    monkeypatch.setattr(backends_mod, "gather_quotes", fake_gather)
+    monkeypatch.setattr(cli, "_backends_for", lambda args: [])
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
+    args = build_parser().parse_args(
+        ["quote", "--from", "BTC", "--to", "CACAO", "--amount", "1"]
+    )
+    assert cli.cmd_quote(args) == 1  # our stub returns no quotes
+    assert captured["dest"] == "maya1gm00vwsfcp48enm4uv9e5dhm37jtd0ye2fs0sl"
+
+
 def test_resolve_destination_rejects_bad_dest():
     from cryptoswap_wallet.cli import _resolve_destination
 
