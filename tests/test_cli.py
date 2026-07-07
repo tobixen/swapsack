@@ -443,6 +443,45 @@ def test_swap_from_native_auto_pins_home_backend(
     assert captured["backend"] == home
 
 
+def test_send_tron_sub_precision_amount_aborts_cleanly(monkeypatch, capsys):
+    """TronAdapter.to_sun/to_token_native raise ValueError for amounts finer
+    than the chain's precision; _send_tron must print the standard ABORTED
+    message (like _swap_from_tron does), not leak a traceback."""
+    import cryptoswap_wallet.cli as cli
+
+    class FakeAdapter:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def build_and_verify_send(self, **kwargs):
+            raise ValueError(
+                "amount 10 (1e8 units) is not a whole number of sun; "
+                "TRX precision is 1e6"
+            )
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr(cli, "_tron_adapter", lambda args, passphrase="": FakeAdapter())
+
+    args = build_parser().parse_args(
+        [
+            "send",
+            "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH",
+            "--asset",
+            "TRX",
+            "--amount",
+            "0.0000001",
+        ]
+    )
+    rc = cli._send_tron(args)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "ABORTED" in err
+    assert "sun" in err
+
+
 def test_swap_from_tron_native_max_still_rejected():
     """Native TRX sweep stays unsupported (it needs a TRX fee reserve)."""
     import cryptoswap_wallet.cli as cli

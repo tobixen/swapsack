@@ -771,9 +771,16 @@ def _send_tron(args: argparse.Namespace) -> int:
                 "separate from the tokens sent:",
                 "keep spare TRX in the account",
             )
-        prepared = adapter.build_and_verify_send(
-            recipient=recipient, amount=amount, asset=asset, mnemonic=mnemonic
-        )
+        try:
+            prepared = adapter.build_and_verify_send(
+                recipient=recipient, amount=amount, asset=asset, mnemonic=mnemonic
+            )
+        except ValueError as exc:
+            # to_sun/to_token_native reject amounts finer than the chain's
+            # precision (TRX is 1e6) — a clean abort, not a traceback (the
+            # swap path catches the same pair).
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
         print(f"send:    {amount / THORCHAIN_UNIT:.8f} {args.asset} to {recipient}")
         return _confirm_and_execute(prepared, adapter, args)
 
