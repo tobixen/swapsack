@@ -1356,6 +1356,9 @@ def _liquidity_eth(
                 print("no ETH router on this backend — token LP needs it")
                 return 2
             build_extra["router"] = eth_status.router
+            # The adapter takes the contract explicitly; it must not parse it
+            # out of the memo (a symmetric add memo has a suffix after it).
+            build_extra["token"] = token
             _warn(
                 "token liquidity add — 2 transactions (approve + deposit):",
                 "gas is paid in ETH, separate from the tokens deposited",

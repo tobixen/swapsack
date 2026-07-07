@@ -383,6 +383,9 @@ LP_ROUTER = "0xe3985E6b61b814F7Cdb188766562ba71b446B46d"
 LP_VAULT = "0x6a16f961e24e6e90bd9f950f768dc42a7f305664"
 
 
+USDT_CONTRACT = USDT_ASSET.split("-", 1)[1]
+
+
 def _lp_deposit_kwargs(**over):
     kw = dict(
         vault=LP_VAULT,
@@ -396,6 +399,7 @@ def _lp_deposit_kwargs(**over):
         max_priority_fee_per_gas=1_000_000_000,
         max_fee_wei=10**16,
         router=LP_ROUTER,
+        token=USDT_CONTRACT,
     )
     kw.update(over)
     return kw
@@ -436,12 +440,44 @@ def test_eth_token_lp_withdraw_is_native_dust_not_a_token_deposit():
     # build an approve+deposit pair.
     memo = f"-:{USDT_ASSET}:5000"
     prepared = EthAdapter().build_and_verify_deposit(
-        **_lp_deposit_kwargs(memo=memo, amount=1000)
+        **_lp_deposit_kwargs(memo=memo, amount=1000, token=None)
     )
     assert prepared.problems == []
     built = prepared.built
     assert not hasattr(built, "approve_tx")  # native EthBuiltSwap, not token pair
     assert built.data == "0x" + memo.encode().hex()
+
+
+def test_eth_token_lp_add_symmetric_memo_keeps_contract_and_memo_intact():
+    # A symmetric add memo carries a ":<paired_address>" suffix after the pool
+    # (+:ETH.USDT-0X…:maya1…). The token contract comes from the caller, NOT
+    # from parsing the memo — memo-splitting would swallow the suffix into the
+    # contract and crash token_decimals / to_checksum_address.
+    from cryptoswap_wallet.chains.eth import DEPOSIT_SELECTOR, _decode_call
+    from cryptoswap_wallet.liquidity import symmetric_add_memo
+
+    memo = symmetric_add_memo(USDT_ASSET.upper(), "maya1qqlz5hu2rtr8y")
+    prepared = EthAdapter().build_and_verify_deposit(**_lp_deposit_kwargs(memo=memo))
+    assert prepared.problems == []
+    built = prepared.built
+    assert built.token.lower() == USDT_CONTRACT.lower()
+    _v, d_token, _a, d_memo, _e = _decode_call(
+        built.deposit_tx["data"],
+        DEPOSIT_SELECTOR,
+        ["address", "address", "uint256", "string", "uint256"],
+    )
+    assert d_token.lower() == USDT_CONTRACT.lower()
+    assert d_memo == memo  # paired address survives untouched
+
+
+def test_eth_token_pool_add_without_token_aborts():
+    # Defensive: a token-pool add without an explicit token contract would
+    # deposit native ETH against a token pool — mispaired at the vault. Refuse
+    # rather than guess the contract out of the memo.
+    from cryptoswap_wallet.swap import SwapAborted
+
+    with pytest.raises(SwapAborted, match="token"):
+        EthAdapter().build_and_verify_deposit(**_lp_deposit_kwargs(token=None))
 
 
 @pytest.mark.network

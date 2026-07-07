@@ -706,22 +706,24 @@ class EthAdapter(HttpClient):
         max_priority_fee_per_gas: int,
         max_fee_wei: int,
         router: str | None = None,
+        token: str | None = None,
     ) -> Prepared:
         # An ERC-20 LP *add* (memo "+:ETH.USDT-0x…") is a token deposit: approve +
         # router.depositWithExpiry, exactly like a token swap but with the LP memo
-        # and no destination to bind. Needs the backend's ETH router. A *withdraw*
-        # ("-:POOL:bps") — even of a token pool — is instead a dust native-ETH
-        # trigger from the provider address, so it falls through to the native
-        # path below; hence we key on "+:" and a token pool, not just "-" in memo.
-        if memo.startswith("+") and "-" in memo:
+        # and no destination to bind. Needs the backend's ETH router. The caller
+        # passes the ``token`` contract explicitly (it knows the asset); parsing
+        # it out of the memo would break on a symmetric add memo, whose
+        # ":<paired_address>" suffix follows the pool. A *withdraw* ("-:POOL:bps")
+        # — even of a token pool — is instead a dust native-ETH trigger from the
+        # provider address, so it takes the native path below (token=None).
+        if token is not None:
             if not router:
                 raise SwapAborted("token liquidity needs the backend's ETH router")
-            token_contract = memo.split(":", 1)[1].split("-", 1)[1]
-            decimals = self.token_decimals(token_contract)
+            decimals = self.token_decimals(token)
             expiry = now + 3600
             built_token = self._build_token_deposit(
                 account=self._key(mnemonic, DEFAULT_ETH_DERIVATION),
-                token=token_contract,
+                token=token,
                 router=router,
                 vault=vault,
                 native=amount * 10**decimals // 10**8,
@@ -739,6 +741,13 @@ class EthAdapter(HttpClient):
             )
             return Prepared(
                 quote=None, built=built_token, plan=built_token, problems=problems
+            )
+        # Defensive: an add against a token pool (a "-" in the pool segment)
+        # without an explicit token would deposit native ETH against that pool —
+        # mispaired at the vault. Refuse rather than guess a contract.
+        if memo.startswith("+") and "-" in memo.split(":")[1]:
+            raise SwapAborted(
+                "token-pool liquidity add needs an explicit token contract"
             )
 
         built = self.build_unsigned_swap(
