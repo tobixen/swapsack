@@ -158,6 +158,38 @@ def test_prepare_works_for_eth_chain_too():
     assert p.safe
 
 
+def _native_adapter(chain="THOR"):
+    adapter = FakeAdapter(chain=chain)
+    adapter.native_source = True
+    return adapter
+
+
+def test_prepare_native_source_aborts_on_foreign_network():
+    # Maya quoting THOR.RUNE: the backend lists THOR among its *inbound*
+    # (external) chains, but a native MsgDeposit executes on THORChain itself —
+    # the deposit would carry a memo priced for the other network's pools.
+    with pytest.raises(SwapAborted, match="external"):
+        prepare_swap(
+            thorchain=FakeThor(chain="THOR"),
+            adapter=_native_adapter("THOR"),
+            request=make_request(from_asset="THOR.RUNE"),
+            now=0,
+            mnemonic="m",
+        )
+
+
+def test_prepare_native_source_passes_on_home_network():
+    # The home network never lists its own native chain in inbound_addresses.
+    p = prepare_swap(
+        thorchain=FakeThor(chain="BTC"),
+        adapter=_native_adapter("THOR"),
+        request=make_request(from_asset="THOR.RUNE"),
+        now=0,
+        mnemonic="m",
+    )
+    assert p.safe
+
+
 class _RaisingThor(FakeThor):
     def __init__(self, message, **kw):
         super().__init__(**kw)

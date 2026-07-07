@@ -22,6 +22,13 @@ DEFAULT_THORNODE = "https://thornode.thorchain.network"
 DEFAULT_MAYANODE = "https://mayanode.mayachain.info"
 
 
+# A native asset (RUNE/CACAO) is swapped by depositing on its own network via
+# MsgDeposit, so only that network's backend can serve it — the other network
+# treats the asset as an external chain (inbound vault + MsgSend, which
+# CosmosAdapter does not implement). Keyed by the adapter's chain.
+NATIVE_HOME_BACKEND = {"THOR": "thorchain", "MAYA": "maya"}
+
+
 @dataclasses.dataclass(frozen=True)
 class Backend:
     name: str

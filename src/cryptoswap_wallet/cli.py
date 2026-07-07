@@ -1161,6 +1161,20 @@ def _swap_from_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa
         return 2
 
     with adapter_factory(args, passphrase) as adapter:
+        from cryptoswap_wallet.backends import NATIVE_HOME_BACKEND, get_backend
+
+        # A native source deposits on its own network via MsgDeposit, so only
+        # the home network's backend can serve it — no price routing here, and
+        # an explicit foreign --backend would send a foreign-priced memo.
+        home = NATIVE_HOME_BACKEND[adapter.chain]
+        if args.backend not in ("auto", home):
+            print(
+                f"ABORTED: native {adapter.symbol} swaps deposit on "
+                f"{adapter.chain} itself; only the {home} backend can serve "
+                f"them (got --backend {args.backend})",
+                file=sys.stderr,
+            )
+            return 1
         # CACAO is 1e10, RUNE is 1e8 (not the shared _base_units 1e8 assumption);
         # the quote API speaks the asset's native unit, so it goes through as-is.
         unit = 10**adapter.decimals
@@ -1172,14 +1186,7 @@ def _swap_from_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa
             destination=dest,
         )
         try:
-            backend = _select_backend(
-                args,
-                from_asset=request.from_asset,
-                to_asset=request.to_asset,
-                amount=amount,
-                destination=dest,
-                tolerance_bps=args.tolerance_bps,
-            )
+            backend = get_backend(home)
             with backend.client as thor:
                 prepared = prepare_swap(
                     thorchain=thor,

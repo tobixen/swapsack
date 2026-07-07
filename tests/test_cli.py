@@ -4,7 +4,13 @@ from decimal import Decimal
 
 import pytest
 
-from cryptoswap_wallet.cli import ASSET, build_parser
+# The native-swap tests construct cosmos adapters, whose first bitcoinlib import
+# has noisy side effects (a leaked file handle + a SQLAlchemy deprecation
+# warning) that `filterwarnings = ["error"]` would otherwise turn into a
+# spurious in-test failure. Mirrors the other bitcoinlib-backed tests.
+pytest.importorskip("bitcoinlib")
+
+from cryptoswap_wallet.cli import ASSET, build_parser  # noqa: E402
 
 
 def test_swap_defaults():
@@ -345,6 +351,80 @@ def test_swap_from_tron_token_sweep_uses_full_balance(monkeypatch):
     rc = cli._swap_from_tron(args)
     assert rc == 1  # aborted via our stub, not a "not supported" rejection
     assert captured["amount"] == 2_300_000_000  # 23 USDT in THORChain 1e8 units
+
+
+@pytest.mark.parametrize(
+    ("from_asset", "factory", "wrong_backend", "home"),
+    [
+        ("RUNE", "_thor_adapter", "maya", "thorchain"),
+        ("CACAO", "_maya_adapter", "thorchain", "maya"),
+    ],
+)
+def test_swap_from_native_refuses_foreign_backend(
+    monkeypatch, capsys, from_asset, factory, wrong_backend, home
+):
+    """A native source deposits on its own network via MsgDeposit, so an explicit
+    --backend naming the *other* network must abort before any network call —
+    the deposit would land on the home chain carrying a foreign-priced memo
+    (refunded minus the native fee at best)."""
+    import cryptoswap_wallet.cli as cli
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr(cli, "_resolve_destination", lambda args, m, p="": "bc1qdest")
+
+    args = build_parser().parse_args(
+        [
+            "swap",
+            "--from",
+            from_asset,
+            "--to",
+            "BTC",
+            "--amount",
+            "1",
+            "--backend",
+            wrong_backend,
+        ]
+    )
+    rc = cli._swap_from_cosmos(args, getattr(cli, factory))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "ABORTED" in err
+    assert home in err
+
+
+@pytest.mark.parametrize(
+    ("from_asset", "factory", "home"),
+    [
+        ("RUNE", "_thor_adapter", "thorchain"),
+        ("CACAO", "_maya_adapter", "maya"),
+    ],
+)
+def test_swap_from_native_auto_pins_home_backend(
+    monkeypatch, from_asset, factory, home
+):
+    """--backend auto must not price-route a native source: only the home
+    network's backend can serve a MsgDeposit swap."""
+    import cryptoswap_wallet.backends as backends_mod
+    import cryptoswap_wallet.cli as cli
+    from cryptoswap_wallet.swap import SwapAborted
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr(cli, "_resolve_destination", lambda args, m, p="": "bc1qdest")
+
+    captured = {}
+
+    def fake_get_backend(name):
+        captured["backend"] = name
+        raise SwapAborted("captured")  # short-circuit before any network/quote
+
+    monkeypatch.setattr(backends_mod, "get_backend", fake_get_backend)
+
+    args = build_parser().parse_args(
+        ["swap", "--from", from_asset, "--to", "BTC", "--amount", "1"]
+    )
+    rc = cli._swap_from_cosmos(args, getattr(cli, factory))
+    assert rc == 1
+    assert captured["backend"] == home
 
 
 def test_swap_from_tron_native_max_still_rejected():
