@@ -778,6 +778,60 @@ def test_swap_to_ltc_parses():
     assert ASSET[args.to_] == "LTC.LTC"
 
 
+def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
+    # BSC has no pools on either network and the settlement assets (CACAO/RUNE)
+    # have no pool of themselves — probing them is guaranteed-404 HTTP round
+    # trips (up to the full timeout each) for zero information.
+    import cryptoswap_wallet.backends as backends_mod
+    import cryptoswap_wallet.cli as cli
+
+    class FakeReport:
+        addresses = ("addr1",)
+
+        def format(self):
+            return "X: 1.0"
+
+    class FakeAdapter:
+        def __init__(self, chain, lp_pools=True):
+            self.chain = chain
+            self.asset = f"{chain}.{chain}"
+            self.lp_pools = lp_pools
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wallet_balance(self, mnemonic):
+            return FakeReport()
+
+    probed = []
+    monkeypatch.setattr(
+        cli, "_report_liquidity", lambda backends, asset, addrs: probed.append(asset)
+    )
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("m", ""))
+    monkeypatch.setattr(
+        cli,
+        "_wallet_adapters",
+        lambda args, p="": [FakeAdapter("BTC"), FakeAdapter("BSC", lp_pools=False)],
+    )
+    monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
+    args = build_parser().parse_args(["balance"])
+    assert cli.cmd_balance(args) == 0
+    assert probed == ["BTC.BTC"]
+
+
+def test_poolless_adapters_are_flagged():
+    from cryptoswap_wallet.chains.bsc import BscAdapter
+    from cryptoswap_wallet.chains.btc import BtcAdapter
+    from cryptoswap_wallet.chains.cosmos import CosmosAdapter
+
+    assert BscAdapter.lp_pools is False  # no BSC pools anywhere (documented)
+    assert CosmosAdapter.lp_pools is False  # settlement assets: no own pool
+    assert getattr(BtcAdapter, "lp_pools", True) is True
+
+
 def test_resolve_destination_derives_maya_and_thor():
     # The MAYA/THOR adapters expose derive_address, so `swap --to CACAO/RUNE`
     # must not demand a --dest the wallet itself prints in `address`.

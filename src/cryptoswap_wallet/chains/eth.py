@@ -641,7 +641,7 @@ class EthAdapter(HttpClient):
         account = self._key(mnemonic, path)
         token = to_checksum_address(asset.split("-", 1)[1])
         to = to_checksum_address(recipient)
-        decimals = self.token_decimals(asset.split("-", 1)[1])
+        decimals = self.token_decimals(token)
         native = amount * 10**decimals // 10**8
         data = encode_transfer(to, native)
         tx = {

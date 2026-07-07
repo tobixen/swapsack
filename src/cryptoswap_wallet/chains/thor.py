@@ -12,7 +12,6 @@ from cryptoswap_wallet.chains.cosmos import CosmosAdapter
 
 DEFAULT_THORNODE = "https://thornode.thorchain.network"
 RUNE_DECIMALS = 8
-RUNE_UNIT = 10**RUNE_DECIMALS
 
 
 class ThorAdapter(CosmosAdapter):

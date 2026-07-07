@@ -59,7 +59,10 @@ class ChainStatus:
 # CACAO is the exception: it is 1e10 (10 decimals). Amounts denominated in the
 # destination asset (quote output, fee breakdown) must divide by the asset's own
 # unit, not the 1e8 default, or CACAO renders 100x too large. Keyed by the full
-# THORChain/Maya asset string (e.g. "MAYA.CACAO").
+# THORChain/Maya asset string (e.g. "MAYA.CACAO"). Must agree with the adapter
+# decimals (maya.CACAO_DECIMALS etc.) — this module stays free of the heavy
+# adapter imports, so tests cross-check the two instead of deriving one from
+# the other.
 _ASSET_UNITS: dict[str, int] = {"MAYA.CACAO": 10**10}
 
 
@@ -70,6 +73,20 @@ def asset_unit(asset: str) -> int:
     1e10 CACAO) need an entry.
     """
     return _ASSET_UNITS.get(asset, THORCHAIN_UNIT)
+
+
+def effective_tolerance_bps(
+    tolerance_bps: int | None, streaming_interval: int | None
+) -> int | None:
+    """The tolerance to send with a quote request: streaming forces ``None``.
+
+    A tolerance limit and streaming don't mix on THORChain/Maya — a tight price
+    limit defeats streaming's own slip management, and the node then reports the
+    base (non-streamed) emit and refuses. The single rule both backend selection
+    (``gather_quotes``) and the swap (``prepare_swap``) apply, so they cannot
+    drift and quote at different limits.
+    """
+    return None if streaming_interval is not None else tolerance_bps
 
 
 @dataclasses.dataclass(frozen=True)

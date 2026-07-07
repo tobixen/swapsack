@@ -319,9 +319,13 @@ def cmd_balance(args: argparse.Namespace) -> int:
                     )
                     continue
                 print(report.format())
-                _report_liquidity(backends, adapter.asset, report.addresses)
-                for pool_asset in _token_pool_assets(adapter):
-                    _report_liquidity(backends, pool_asset, report.addresses)
+                # Adapters flag themselves pool-less (BSC: no pools anywhere;
+                # CACAO/RUNE: settlement assets have no pool of themselves) —
+                # probing those is guaranteed-404 round-trips.
+                if getattr(adapter, "lp_pools", True):
+                    _report_liquidity(backends, adapter.asset, report.addresses)
+                    for pool_asset in _token_pool_assets(adapter):
+                        _report_liquidity(backends, pool_asset, report.addresses)
                 _report_token_balances(adapter, mnemonic)
     finally:
         for backend in backends:

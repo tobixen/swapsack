@@ -8,17 +8,7 @@ from cryptoswap_wallet.pricefeed import (
     loss_vs_market_bps,
     market_out,
     parse_prices,
-    parse_spot,
 )
-
-
-def test_parse_spot_extracts_usd_and_skips_malformed():
-    payload = {
-        "bitcoin": {"usd": 60072},
-        "ethereum": {"usd": 1612.35},
-        "broken": {},  # no usd key -> dropped
-    }
-    assert parse_spot(payload) == {"bitcoin": 60072.0, "ethereum": 1612.35}
 
 
 def test_parse_prices_keeps_every_currency():
@@ -30,6 +20,11 @@ def test_parse_prices_keeps_every_currency():
         "bitcoin": {"usd": 60701.0, "eur": 53313.0},
         "dash": {"usd": 33.69, "eur": 29.59},
     }
+
+
+def test_parse_prices_skips_malformed_entries():
+    payload = {"bitcoin": {"usd": 60072}, "broken": "n/a"}
+    assert parse_prices(payload) == {"bitcoin": {"usd": 60072.0}}
 
 
 def test_loss_amount_is_destination_units_below_market():

@@ -21,6 +21,7 @@ from cryptoswap_wallet.thorchain import (
     ChainStatus,
     Quote,
     ThorchainError,
+    effective_tolerance_bps,
 )
 
 
@@ -187,10 +188,8 @@ def prepare_swap(
             raise SwapAborted(f"{adapter.chain} is not currently tradable on THORChain")
 
     try:
-        # A tolerance limit and streaming don't mix on THORChain/Maya (a tight
-        # LIM defeats streaming's own slip management, and the node reports the
-        # base emit and refuses), so streaming drops tolerance_bps and lets the
-        # network set LIM=0 and manage slippage over the sub-swaps.
+        # Streaming drops tolerance_bps (LIM=0) — the same shared rule backend
+        # selection applies, so the executed swap quotes at the same limit.
         quote = thorchain.quote_swap(
             request.from_asset,
             request.to_asset,
@@ -198,7 +197,7 @@ def prepare_swap(
             request.destination,
             streaming_interval=streaming_interval,
             streaming_quantity=streaming_quantity,
-            tolerance_bps=None if streaming_interval is not None else tolerance_bps,
+            tolerance_bps=effective_tolerance_bps(tolerance_bps, streaming_interval),
         )
     except ThorchainError as exc:
         raise SwapAborted(_explain_quote_error(exc, tolerance_bps)) from exc

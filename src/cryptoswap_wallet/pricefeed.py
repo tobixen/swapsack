@@ -41,20 +41,9 @@ COINGECKO_IDS: dict[str, str] = {
 }
 
 
-def parse_spot(payload: dict) -> dict[str, float]:
-    """Extract ``{coin_id: usd_price}`` from a CoinGecko ``simple/price`` body."""
-    return {
-        coin: float(v["usd"])
-        for coin, v in payload.items()
-        if isinstance(v, dict) and "usd" in v
-    }
-
-
 def parse_prices(payload: dict) -> dict[str, dict[str, float]]:
-    """Extract ``{coin_id: {currency: price}}`` from a ``simple/price`` body.
-
-    Multi-currency form of :func:`parse_spot` (e.g. USD *and* EUR in one call).
-    """
+    """Extract ``{coin_id: {currency: price}}`` from a ``simple/price`` body
+    (e.g. USD *and* EUR in one call). Malformed entries are skipped."""
     return {
         coin: {cur: float(price) for cur, price in v.items()}
         for coin, v in payload.items()

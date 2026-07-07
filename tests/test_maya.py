@@ -201,3 +201,16 @@ def test_build_and_verify_swap_deposit_catches_tampered_memo():
         "does not pay destination" in p
         for p in verify_cosmos_deposit(decoded=decoded, plan=plan, now=int(time.time()))
     )
+
+
+def test_cacao_unit_agrees_with_thorchain_asset_units():
+    # CACAO's decimals live in two import-independent places: the adapter
+    # (drives tx amounts) and thorchain._ASSET_UNITS (drives display scaling).
+    # thorchain.py must stay free of the heavy adapter imports, so this test
+    # is the coupling — if one changes without the other, quoted outputs and
+    # fee breakdowns go 100x wrong relative to the tx actually built.
+    from cryptoswap_wallet.chains.maya import CACAO_DECIMALS, MayaAdapter
+    from cryptoswap_wallet.thorchain import asset_unit
+
+    assert MayaAdapter.decimals == CACAO_DECIMALS
+    assert 10**MayaAdapter.decimals == asset_unit("MAYA.CACAO")

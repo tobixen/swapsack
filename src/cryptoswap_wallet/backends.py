@@ -12,7 +12,12 @@ import dataclasses
 import os
 
 from cryptoswap_wallet.net import HTTP_ERRORS
-from cryptoswap_wallet.thorchain import Quote, ThorchainClient, ThorchainError
+from cryptoswap_wallet.thorchain import (
+    Quote,
+    ThorchainClient,
+    ThorchainError,
+    effective_tolerance_bps,
+)
 
 # thornode.thorchain.liquify.com's TLS cert expired 2024-02-07 (never renewed)
 # and the ninerealms gateways were retired (no A record), so default to a node
@@ -74,17 +79,15 @@ def gather_quotes(
     """
     # tolerance_bps is always passed explicitly (None -> the client omits the
     # param -> no limit); merely leaving the kwarg off would let the client
-    # fall back to its DEFAULT_TOLERANCE_BPS and refuse the quote.
-    extra: dict[str, int | None] = {"tolerance_bps": tolerance_bps}
+    # fall back to its DEFAULT_TOLERANCE_BPS and refuse the quote. Streaming
+    # forces LIM=0 via the shared effective_tolerance_bps rule.
+    extra: dict[str, int | None] = {
+        "tolerance_bps": effective_tolerance_bps(tolerance_bps, streaming_interval)
+    }
     if streaming_interval is not None:
-        # A tolerance limit and streaming don't mix on THORChain/Maya: a tight
-        # price limit defeats streaming's own slip management, and the node then
-        # reports the base (non-streamed) emit and refuses — streaming forces
-        # LIM=0.
         extra["streaming_interval"] = streaming_interval
         if streaming_quantity is not None:
             extra["streaming_quantity"] = streaming_quantity
-        extra["tolerance_bps"] = None
     results: list[tuple[Backend, Quote]] = []
     for backend in backends:
         try:

@@ -71,3 +71,12 @@ def test_build_and_verify_send_signs_validly_for_rune(monkeypatch):
         for v in (0, 1)
     ]
     assert signer in recovered
+
+
+def test_rune_unit_agrees_with_thorchain_asset_units():
+    # Mirror of test_maya's cross-check: RUNE uses the shared 1e8 default.
+    from cryptoswap_wallet.chains.thor import RUNE_DECIMALS, ThorAdapter
+    from cryptoswap_wallet.thorchain import asset_unit
+
+    assert ThorAdapter.decimals == RUNE_DECIMALS
+    assert 10**ThorAdapter.decimals == asset_unit("THOR.RUNE")
