@@ -65,25 +65,26 @@ def gather_quotes(
     """Quote every backend; drop ones that can't serve this swap (no pool, halted,
     below minimum, no memo, or a network error).
 
-    ``tolerance_bps`` is threaded into each quote when given, so backend
-    selection happens at the same tolerance the swap will lock in; when omitted,
-    the client's default tolerance applies. ``streaming_interval``/
-    ``streaming_quantity`` request a streaming (slip-reducing) quote so backend
-    selection reflects the same streamed price the swap will use.
+    ``tolerance_bps`` is threaded into each quote, so backend selection happens
+    at the same tolerance the swap will lock in. ``None`` sends *no* limit — the
+    informational ``quote`` path, where the price must come back even when fees
+    exceed any default tolerance. ``streaming_interval``/``streaming_quantity``
+    request a streaming (slip-reducing) quote so backend selection reflects the
+    same streamed price the swap will use.
     """
-    extra: dict[str, int | None] = {}
+    # tolerance_bps is always passed explicitly (None -> the client omits the
+    # param -> no limit); merely leaving the kwarg off would let the client
+    # fall back to its DEFAULT_TOLERANCE_BPS and refuse the quote.
+    extra: dict[str, int | None] = {"tolerance_bps": tolerance_bps}
     if streaming_interval is not None:
         # A tolerance limit and streaming don't mix on THORChain/Maya: a tight
         # price limit defeats streaming's own slip management, and the node then
-        # reports the base (non-streamed) emit and refuses. Force LIM=0 by
-        # passing tolerance_bps=None *explicitly* — merely omitting it would let
-        # the client fall back to its DEFAULT_TOLERANCE_BPS and refuse the swap.
+        # reports the base (non-streamed) emit and refuses — streaming forces
+        # LIM=0.
         extra["streaming_interval"] = streaming_interval
         if streaming_quantity is not None:
             extra["streaming_quantity"] = streaming_quantity
         extra["tolerance_bps"] = None
-    elif tolerance_bps is not None:
-        extra["tolerance_bps"] = tolerance_bps
     results: list[tuple[Backend, Quote]] = []
     for backend in backends:
         try:

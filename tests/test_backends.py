@@ -74,6 +74,25 @@ def test_gather_quotes_threads_tolerance_bps():
     assert captured.get("tolerance_bps") == 1500
 
 
+def test_gather_quotes_none_tolerance_means_no_limit():
+    # tolerance_bps=None (the informational `quote` path) must be forwarded
+    # explicitly so NO limit is sent. Merely omitting the kwarg would let the
+    # client's DEFAULT_TOLERANCE_BPS (300) refuse any swap whose fees exceed
+    # it — making small swaps unquotable with no flag to raise the limit.
+    captured = {}
+
+    class CapturingClient:
+        def quote_swap(self, *args, **kwargs):
+            captured.update(kwargs)
+            return make_quote(100)
+
+    gather_quotes(
+        [Backend("x", CapturingClient())], "BTC.BTC", "ETH.ETH", 178100, "0xdest"
+    )
+    assert "tolerance_bps" in captured
+    assert captured["tolerance_bps"] is None
+
+
 def test_gather_quotes_threads_streaming_params():
     captured = {}
 
