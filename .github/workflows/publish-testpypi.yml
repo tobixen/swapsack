@@ -1,0 +1,47 @@
+name: Dry-run publish to TestPyPI
+
+# Manual rehearsal of the real PyPI release (publish.yml), targeting TestPyPI.
+# Triggered by hand only (workflow_dispatch) so it can NEVER fire on a v* tag
+# alongside the production workflow.
+#
+# There is no git tag for a dry run, so the version is injected via
+# SETUPTOOLS_SCM_PRETEND_VERSION (hatch-vcs honours the generic setuptools_scm
+# var). This yields a clean PEP 440 version with no "+g<sha>" local segment,
+# which the index would otherwise reject. Bump the input (rc1 -> rc2 -> ...) on
+# each run: TestPyPI, like PyPI, refuses to re-upload an existing version.
+#
+# Unlike publish.yml this omits the `pytest -m network` gate: that gate exists to
+# block low-quality *releases*, whereas this workflow only rehearses the publish
+# mechanism, and a THORChain outage should not block the rehearsal.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "PEP 440 version to publish to TestPyPI (bump each run)"
+        required: true
+        default: "0.1.0rc1"
+
+jobs:
+  publish-testpypi:
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/swapsack
+    permissions:
+      id-token: write  # TestPyPI trusted publishing
+    env:
+      SETUPTOOLS_SCM_PRETEND_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # hatch-vcs still inspects git history
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
