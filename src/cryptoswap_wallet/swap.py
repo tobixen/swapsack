@@ -260,15 +260,14 @@ def prepare_liquidity(
                 f"THORChain has LP deposits paused (mimir {reason}); an add would "
                 f"be observed and then refunded minus gas. Not broadcasting."
             )
+    # A withdraw (amount=None) triggers with a nominal deposit of the chain's
+    # dust_threshold. That is legitimately 0 on EVM chains (Maya reports "0" for
+    # ETH/ARB/KUJI/THOR): a 0-value native tx carrying the memo is exactly how
+    # those chains trigger a withdraw, so 0 must NOT be treated as an error here
+    # — doing so locked every EVM LP position. UTXO chains report a real
+    # nonzero dust; a genuinely below-dust BTC output (only from a malformed
+    # node response) is rejected by the network at broadcast, not silently lost.
     deposit_amount = status.dust_threshold if amount is None else amount
-    # parse_inbound_addresses tolerates a missing dust_threshold (parses as 0),
-    # but a 0-value deposit is money lost: gas burned on ETH on a tx the vault
-    # ignores, a below-dust output the network rejects on BTC.
-    if deposit_amount <= 0:
-        raise SwapAborted(
-            f"no usable dust threshold for {adapter.chain} (degraded "
-            f"inbound_addresses response?); refusing a 0-value deposit"
-        )
     return adapter.build_and_verify_deposit(
         vault=status.address, memo=memo, amount=deposit_amount, now=now, **build_kwargs
     )

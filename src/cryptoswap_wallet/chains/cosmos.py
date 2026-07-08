@@ -148,9 +148,6 @@ class CosmosAdapter(HttpClient):
     default_chain_id: str
     default_node: str
     native_source = True
-    # The settlement asset is the base of every pool — it has no pool of its
-    # own, so `balance` must not probe an LP position in it.
-    lp_pools = False
 
     def __init__(
         self,

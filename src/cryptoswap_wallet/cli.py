@@ -1565,16 +1565,18 @@ def _base_units(amount: Decimal, unit: int = THORCHAIN_UNIT) -> int:
     is 1e10). Decimal end-to-end: a large amount like ``93393106.59778857`` must
     not pick up a float rounding error and be signed/broadcast one base unit off.
 
-    Raises :class:`SwapAborted` when the amount rounds to zero base units — a
-    0-value tx burns a fee on a no-op (main() turns an escaped SwapAborted into
-    the standard ABORTED message).
+    Raises :class:`SwapAborted` when the amount is below one whole base unit —
+    checked on the *unrounded* product, so a sub-unit amount like 0.6 base units
+    is rejected rather than ROUND_HALF_EVEN'd up to 1 and silently over-sent. A
+    0-value (or over-sent) tx is money the user didn't ask to move; main() turns
+    an escaped SwapAborted into the standard ABORTED message.
     """
-    scaled = int((amount * unit).to_integral_value(rounding=ROUND_HALF_EVEN))
-    if scaled < 1:
+    product = amount * unit
+    if product < 1:
         raise SwapAborted(
             f"amount {amount} is below one base unit (1/{unit}); too small to send"
         )
-    return scaled
+    return int(product.to_integral_value(rounding=ROUND_HALF_EVEN))
 
 
 def _add_swap_args(sub: argparse.ArgumentParser) -> None:

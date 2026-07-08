@@ -850,11 +850,60 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
 def test_poolless_adapters_are_flagged():
     from cryptoswap_wallet.chains.bsc import BscAdapter
     from cryptoswap_wallet.chains.btc import BtcAdapter
-    from cryptoswap_wallet.chains.cosmos import CosmosAdapter
+    from cryptoswap_wallet.chains.maya import MayaAdapter
+    from cryptoswap_wallet.chains.thor import ThorAdapter
 
     assert BscAdapter.lp_pools is False  # no BSC pools anywhere (documented)
-    assert CosmosAdapter.lp_pools is False  # settlement assets: no own pool
+    # CACAO is Maya's settlement asset — no MAYA.CACAO pool on Maya, and
+    # THORChain doesn't trade Maya assets — so it is genuinely pool-less.
+    assert MayaAdapter.lp_pools is False
+    # RUNE is THORChain's settlement asset (no pool on THORChain) but Maya runs
+    # a live THOR.RUNE pool, so RUNE LP positions DO exist and must be probed.
+    assert getattr(ThorAdapter, "lp_pools", True) is True
     assert getattr(BtcAdapter, "lp_pools", True) is True
+
+
+def test_balance_probes_rune_pool_on_maya(monkeypatch):
+    # Regression: RUNE has a live THOR.RUNE pool on Maya, so `balance` must
+    # still probe THOR.RUNE — a blanket cosmos lp_pools=False silently hid
+    # RUNE LP positions (funds appeared to vanish from the accounting). The
+    # fake mirrors the real ThorAdapter's lp_pools flag so the class attribute
+    # drives the probe decision.
+    import cryptoswap_wallet.backends as backends_mod
+    import cryptoswap_wallet.cli as cli
+    from cryptoswap_wallet.chains.thor import ThorAdapter
+
+    class FakeReport:
+        addresses = ("thor1abc",)
+
+        def format(self):
+            return "RUNE: 1.0"
+
+    class FakeThorAdapter:
+        chain = "THOR"
+        asset = "THOR.RUNE"
+        lp_pools = getattr(ThorAdapter, "lp_pools", True)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wallet_balance(self, mnemonic):
+            return FakeReport()
+
+    probed = []
+    monkeypatch.setattr(
+        cli, "_report_liquidity", lambda backends, asset, addrs: probed.append(asset)
+    )
+    monkeypatch.setattr(cli, "_report_token_balances", lambda a, m: None)
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("m", ""))
+    monkeypatch.setattr(cli, "_wallet_adapters", lambda args, p="": [FakeThorAdapter()])
+    monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
+    args = build_parser().parse_args(["balance"])
+    assert cli.cmd_balance(args) == 0
+    assert probed == ["THOR.RUNE"]
 
 
 def test_resolve_destination_derives_maya_and_thor():
@@ -994,7 +1043,7 @@ def test_amount_accepts_cacao_scale_amounts():
     assert _amount("0.000000005") == Decimal("0.000000005")
 
 
-def test_base_units_rejects_amount_rounding_to_zero():
+def test_base_units_rejects_amount_below_one_base_unit():
     # 1e-9 scales to 0.1 of a 1e8 base unit -> would round to 0 and burn a fee
     # on a no-op send. The guard moved here from _amount, where the per-asset
     # unit wasn't known; with CACAO's 1e10 unit the same amount is fine.
@@ -1004,6 +1053,21 @@ def test_base_units_rejects_amount_rounding_to_zero():
     with pytest.raises(SwapAborted, match="base unit"):
         _base_units(Decimal("0.000000001"))
     assert _base_units(Decimal("0.000000001"), 10**10) == 10
+
+
+def test_base_units_rejects_sub_unit_amount_that_would_round_up():
+    # Regression: an amount in (0.5, 1) base units (e.g. 0.6 sat) must be
+    # rejected, NOT silently rounded UP to 1 and sent — that ships ~1.67x what
+    # the user typed. The floor is one *whole* base unit, checked on the
+    # unrounded product, not on the ROUND_HALF_EVEN result.
+    from cryptoswap_wallet.cli import _base_units
+    from cryptoswap_wallet.swap import SwapAborted
+
+    with pytest.raises(SwapAborted, match="base unit"):
+        _base_units(Decimal("0.000000006"))  # 0.6 sat at 1e8
+    # A whole base unit and above still scales (1.5 sat rounds to 2, unchanged).
+    assert _base_units(Decimal("0.00000001")) == 1
+    assert _base_units(Decimal("0.000000015")) == 2
 
 
 def test_main_prints_aborted_for_escaped_swap_aborted(monkeypatch, capsys):

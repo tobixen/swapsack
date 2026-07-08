@@ -366,18 +366,19 @@ def test_prepare_liquidity_defaults_to_dust_when_amount_none():
     assert p.plan.amount == 1000  # dust_threshold from make_status
 
 
-def test_prepare_liquidity_aborts_on_zero_dust_threshold():
-    # A degraded inbound_addresses entry parses with dust_threshold=0; a
-    # withdraw (amount=None) would then build and broadcast a 0-value deposit —
-    # gas burned on ETH, a rejected below-dust output on BTC. Abort instead.
-    with pytest.raises(SwapAborted, match="dust"):
-        prepare_liquidity(
-            thorchain=FakeThor(dust_threshold=0),
-            adapter=FakeAdapter(),
-            memo="-:BTC.BTC:10000",
-            amount=None,
-            now=0,
-        )
+def test_prepare_liquidity_withdraw_allows_zero_dust_threshold():
+    # dust_threshold == 0 is legitimate on EVM chains (Maya reports "0" for
+    # ETH/ARB/KUJI/THOR — verified live): a 0-value native trigger tx IS the
+    # withdraw mechanism there. prepare_liquidity must NOT treat it as degraded,
+    # or every EVM LP withdraw would abort and lock the position.
+    p = prepare_liquidity(
+        thorchain=FakeThor(dust_threshold=0),
+        adapter=FakeAdapter(),
+        memo="-:ETH.ETH:10000",
+        amount=None,
+        now=0,
+    )
+    assert p.plan.amount == 0
 
 
 def test_prepare_liquidity_aborts_when_halted():

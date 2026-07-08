@@ -23,6 +23,11 @@ class MayaAdapter(CosmosAdapter):
     chain = "MAYA"
     asset = "MAYA.CACAO"
     symbol = "CACAO"
+    # CACAO is Maya's settlement asset: there is no MAYA.CACAO pool on Maya, and
+    # THORChain doesn't trade Maya assets — so it is genuinely pool-less and
+    # `balance` skips the guaranteed-404 LP probe. (RUNE differs: Maya runs a
+    # live THOR.RUNE pool, so ThorAdapter keeps the default lp_pools=True.)
+    lp_pools = False
     hrp = "maya"
     denom = "cacao"
     decimals = CACAO_DECIMALS
