@@ -144,7 +144,7 @@ zsh and fish work too; see the [argcomplete docs](https://github.com/kislyuk/arg
 
 ## Related projects
 
-This project started out from a personal needs.  When asking Claude Opus to search for existing products, it found nothing.  Later, when searching for the (temporary) name of this package as well as doing research on possible permanent names, different software appeared on the radar.  Here is a comparision:
+This project started out from a personal need.  When asking Claude Opus to search for existing products, it found nothing.  Later, when searching for the (temporary) name of this package as well as doing research on possible permanent names, different software appeared on the radar.  Here is a comparison:
 
 The CLI / library niche for *non-custodial cross-chain swaps* appears
 unoccupied — GUI swap-wallets for phones, web and desktop are plentiful, but the
@@ -160,6 +160,57 @@ closest Python packages on PyPI do something else entirely:
 
 Neither is multi-chain *and* swap-capable from a terminal or as a library, which
 is the gap this project fills.
+
+### Name-collision neighbours on GitHub (surveyed 2026-07-08)
+
+Several GitHub projects share a name with this project or live in the same
+"crypto swap" search space; none turned out to compete in this niche:
+
+- **[swaponline/MultiCurrencyWallet](https://github.com/swaponline/MultiCurrencyWallet)**
+  — the only substantial one (~540 stars, MIT, TypeScript, still active). A
+  client-side **web GUI** wallet (BTC, ETH/ERC-20, BSC, Polygon + tokens) with
+  a P2P **atomic-swap** exchange and a 0x orderbook, aimed at white-label /
+  embedded deployment (WordPress plugin, iframe widgets). Same spirit —
+  non-custodial multi-currency wallet with built-in swapping — but a browser
+  app rather than a library/CLI, and its swaps need a live counterparty on
+  their own orderbook instead of an AMM. Interesting prior art, but not a
+  *backend* this project could route to: the liquidity is whoever happens to
+  be on the other side of the order.
+- **[MatthewShelby/swap](https://github.com/MatthewShelby/swap)** — a dead
+  (last push 2024, 0 stars) single-page BSC swap dApp whose flow is "approve
+  the operator to increase the allowance", i.e. a centralized operator spends
+  your tokens for you. Not a wallet, not a library; nothing to extract.
+- **[yoyoemily/crypto-swap](https://github.com/yoyoemily/crypto-swap)** — a
+  small Node CLI / LLM-skill wrapper around **LightningEX**
+  (`api.lightningex.io`), an instant-exchange service (ChangeNOW-style: place
+  an order, send coins to their deposit address, receive the other asset back).
+  0 stars, but the closest in *shape* — swaps driven from a CLI. It holds no
+  keys, though: it's an API client for a custodial exchange service, not a
+  wallet. The underlying idea (instant-exchange services as extra backends) is
+  discussed below.
+- **ParaSwap-Crypto-Swap** (GitHub org, deliberately not linked) — **SEO spam
+  impersonating** the real ParaSwap (whose actual code lives under
+  [VeloraDEX](https://github.com/VeloraDEX)): a lone `.github` profile repo
+  full of keyword stuffing, with a "GET ParaSwap" button pointing at a
+  third-party `github.io` page. Avoid. The *real* ParaSwap/Velora is a
+  same-chain EVM DEX aggregator — see below.
+
+### Backend ideas from the survey
+
+- **Same-chain EVM DEX aggregators (ParaSwap/Velora, 1inch, 0x)** —
+  THORChain/Maya only trade *between* their pooled assets, and same-chain
+  token↔token swaps (e.g. USDT-ETH↔USDC-ETH) route needlessly through the
+  pools. A DEX aggregator would cover those with one signed on-chain
+  transaction — fully non-custodial, and it would slot naturally into
+  `--backend auto`. The most promising candidate.
+- **Instant-exchange APIs (LightningEX, ChangeNOW, SideShift, …)** — huge coin
+  coverage (hundreds of assets) behind a trivial REST API, but the operator
+  holds your funds mid-swap (custodial in flight, occasionally
+  KYC/AML-frozen), which cuts against this project's non-custodial premise.
+  Only worth adding with loud labeling, if ever.
+- **P2P atomic swaps (à la MultiCurrencyWallet)** — trust-minimized in theory,
+  but they require a counterparty/orderbook network; there is no liquidity
+  pool to route against. Not planned.
 
 ## Development
 
