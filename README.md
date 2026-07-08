@@ -173,21 +173,13 @@ Several GitHub projects share a name with this project or live in the same
   embedded deployment (WordPress plugin, iframe widgets). Same spirit —
   non-custodial multi-currency wallet with built-in swapping — but a browser
   app rather than a library/CLI, and its swaps need a live counterparty on
-  their own orderbook instead of an AMM. Interesting prior art, but not a
-  *backend* this project could route to: the liquidity is whoever happens to
-  be on the other side of the order.
-- **[MatthewShelby/swap](https://github.com/MatthewShelby/swap)** — a dead
-  (last push 2024, 0 stars) single-page BSC swap dApp whose flow is "approve
-  the operator to increase the allowance", i.e. a centralized operator spends
-  your tokens for you. Not a wallet, not a library; nothing to extract.
+  their own orderbook instead of an AMM.
+- **[MatthewShelby/swap](https://github.com/MatthewShelby/swap)** — dead and mostly irrelevant.
 - **[yoyoemily/crypto-swap](https://github.com/yoyoemily/crypto-swap)** — a
   small Node CLI / LLM-skill wrapper around **LightningEX**
-  (`api.lightningex.io`), an instant-exchange service (ChangeNOW-style: place
-  an order, send coins to their deposit address, receive the other asset back).
-  0 stars, but the closest in *shape* — swaps driven from a CLI. It holds no
+  (`api.lightningex.io`), an instant-exchange service.  0 stars, but the closest in *shape* — swaps driven from a CLI. It holds no
   keys, though: it's an API client for a custodial exchange service, not a
-  wallet. The underlying idea (instant-exchange services as extra backends) is
-  discussed below.
+  wallet.
 - **ParaSwap-Crypto-Swap** (GitHub org, deliberately not linked) — **SEO spam
   impersonating** the real ParaSwap (whose actual code lives under
   [VeloraDEX](https://github.com/VeloraDEX)): a lone `.github` profile repo
@@ -210,7 +202,7 @@ Several GitHub projects share a name with this project or live in the same
   Only worth adding with loud labeling, if ever.
 - **P2P atomic swaps (à la MultiCurrencyWallet)** — trust-minimized in theory,
   but they require a counterparty/orderbook network; there is no liquidity
-  pool to route against. Not planned.
+  pool to route against.
 
 ## Development
 
