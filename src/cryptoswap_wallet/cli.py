@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
 
@@ -160,13 +161,36 @@ def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  #
     ]
 
 
+def _load_keystore(path: Path | str, passphrase: str) -> Keystore:
+    """Load a keystore and surface the v1->v2 passphrase-strip warning.
+
+    ``Keystore.load`` is deliberately silent (a library layer) and only records
+    which HD keys lost a stored BIP-39 passphrase in the migration; the
+    user-facing warning belongs here, at the CLI boundary. The strip itself is
+    intentional (v1 never applied the passphrase, so funds sit at empty-
+    passphrase addresses), but the next save erases the secret permanently.
+    """
+    keystore = Keystore.load(path, passphrase)
+    if keystore.stripped_passphrase_labels:
+        labels = ", ".join(keystore.stripped_passphrase_labels)
+        _warn(
+            f"dropping the stored BIP-39 passphrase from HD key(s) {labels}:",
+            "this v1 keystore never applied it to derivation, so your funds sit "
+            "at empty-passphrase addresses",
+            "the next save upgrades to v2 and discards the passphrase "
+            "permanently — note it down now if you need it elsewhere",
+            "(re-add with `add-hd --bip39-passphrase` to actually use it)",
+        )
+    return keystore
+
+
 def _load_mnemonic(args: argparse.Namespace) -> tuple[str, str]:
     """Return ``(mnemonic, bip39_passphrase)`` for the selected HD key.
 
     The BIP-39 passphrase is ``""`` when the key has none (and always ``""`` for
     a v1 keystore, where it was stripped on load — see keystore.ENVELOPE_VERSION).
     """
-    keystore = Keystore.load(_keystore_path(args), _passphrase())
+    keystore = _load_keystore(_keystore_path(args), _passphrase())
     for entry in keystore.entries:
         if isinstance(entry, HdKey) and (args.key is None or entry.label == args.key):
             passphrase = entry.passphrase.reveal() if entry.passphrase else ""
@@ -205,7 +229,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_add_hd(args: argparse.Namespace) -> int:
     path = _keystore_path(args)
     pw = _passphrase()
-    keystore = Keystore.load(path, pw)
+    keystore = _load_keystore(path, pw)
     if args.generate:
         from cryptoswap_wallet.chains.btc import generate_mnemonic
 
@@ -233,7 +257,7 @@ def cmd_add_hd(args: argparse.Namespace) -> int:
 
 
 def cmd_show_seed(args: argparse.Namespace) -> int:
-    keystore = Keystore.load(_keystore_path(args), _passphrase())
+    keystore = _load_keystore(_keystore_path(args), _passphrase())
     for entry in keystore.entries:
         if isinstance(entry, HdKey) and (args.key is None or entry.label == args.key):
             print(entry.mnemonic.reveal())
@@ -248,7 +272,7 @@ def cmd_show_seed(args: argparse.Namespace) -> int:
 def cmd_add_raw(args: argparse.Namespace) -> int:
     path = _keystore_path(args)
     pw = _passphrase()
-    keystore = Keystore.load(path, pw)
+    keystore = _load_keystore(path, pw)
     secret = args.secret or getpass.getpass("private key: ")
     keystore.add_raw(args.label, args.chain, secret)
     keystore.save(path, pw)
@@ -257,7 +281,7 @@ def cmd_add_raw(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    keystore = Keystore.load(_keystore_path(args), _passphrase())
+    keystore = _load_keystore(_keystore_path(args), _passphrase())
     for entry in keystore.entries:
         chain = getattr(entry, "chain", "")
         print(f"{entry.label}\t{entry.kind}\t{chain}")
@@ -407,39 +431,58 @@ def _derivable_chain(to_: str) -> str:
     return ASSET[to_].split(".", 1)[0]
 
 
-# Chains whose destination address the wallet can derive from the seed —
-# the single source of truth for both _resolve_destination and cmd_quote's
-# "do we need to decrypt the keystore" check.
-DERIVABLE_CHAINS = ("BTC", "ETH", "TRON", "MAYA", "THOR")
+def _derive_btc(mnemonic: str, passphrase: str) -> str:
+    from cryptoswap_wallet.chains.btc import BtcAdapter
+
+    return BtcAdapter(bip39_passphrase=passphrase).derive_address(
+        mnemonic, BTC_RECEIVE_PATH
+    )
+
+
+def _derive_eth(mnemonic: str, passphrase: str) -> str:
+    from cryptoswap_wallet.chains.eth import EthAdapter
+
+    return EthAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+
+
+def _derive_tron(mnemonic: str, passphrase: str) -> str:
+    from cryptoswap_wallet.chains.tron import TronAdapter
+
+    return TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+
+
+def _derive_maya(mnemonic: str, passphrase: str) -> str:
+    from cryptoswap_wallet.chains.maya import MayaAdapter
+
+    return MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+
+
+def _derive_thor(mnemonic: str, passphrase: str) -> str:
+    from cryptoswap_wallet.chains.thor import ThorAdapter
+
+    return ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+
+
+# The one source of truth for "which destination chains can we derive from the
+# seed": chain -> deriver. DERIVABLE_CHAINS (used by cmd_quote to decide whether
+# to decrypt the keystore) is the key set, so the tuple and the derivation
+# capability cannot drift apart.
+_DESTINATION_DERIVERS: dict[str, Callable[[str, str], str]] = {
+    "BTC": _derive_btc,
+    "ETH": _derive_eth,
+    "TRON": _derive_tron,
+    "MAYA": _derive_maya,
+    "THOR": _derive_thor,
+}
+DERIVABLE_CHAINS = tuple(_DESTINATION_DERIVERS)
 
 
 def _derive_destination_address(
     chain: str, mnemonic: str, passphrase: str = ""
 ) -> str | None:
     """Our receive address on ``chain``, or None when it needs an explicit --dest."""
-    if chain == "ETH":
-        from cryptoswap_wallet.chains.eth import EthAdapter
-
-        return EthAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
-    if chain == "BTC":
-        from cryptoswap_wallet.chains.btc import BtcAdapter
-
-        return BtcAdapter(bip39_passphrase=passphrase).derive_address(
-            mnemonic, BTC_RECEIVE_PATH
-        )
-    if chain == "TRON":
-        from cryptoswap_wallet.chains.tron import TronAdapter
-
-        return TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
-    if chain == "MAYA":
-        from cryptoswap_wallet.chains.maya import MayaAdapter
-
-        return MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
-    if chain == "THOR":
-        from cryptoswap_wallet.chains.thor import ThorAdapter
-
-        return ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
-    return None  # unknown target chain: caller must pass --dest
+    deriver = _DESTINATION_DERIVERS.get(chain)
+    return deriver(mnemonic, passphrase) if deriver else None
 
 
 def _resolve_destination(

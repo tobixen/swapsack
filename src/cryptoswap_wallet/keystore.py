@@ -20,7 +20,6 @@ import contextlib
 import dataclasses
 import json
 import os
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, ClassVar
@@ -128,6 +127,10 @@ class Keystore:
     """A collection of key entries, encryptable to / decryptable from disk."""
 
     entries: list[KeyEntry] = dataclasses.field(default_factory=list)
+    # Labels whose BIP-39 passphrase was dropped by the v1->v2 migration on the
+    # most recent load (see ``load``). Transient (never persisted); the CLI
+    # renders a warning from it so the storage layer stays silent.
+    stripped_passphrase_labels: list[str] = dataclasses.field(default_factory=list)
 
     def labels(self) -> list[str]:
         return [e.label for e in self.entries]
@@ -201,33 +204,25 @@ class Keystore:
         entries = [_entry_from_dict(d) for d in payload["entries"]]
         # A v1 keystore's stored BIP-39 passphrase was never applied to
         # derivation, so any funds are at empty-passphrase addresses. Drop it so
-        # v2 derivation keeps deriving the same addresses (see ENVELOPE_VERSION)
-        # — but never silently: the next save writes v2 without the passphrase,
-        # permanently erasing a stored secret, so tell the user to note it down.
+        # v2 derivation keeps deriving the same addresses (see ENVELOPE_VERSION).
+        # The next save writes v2 without the passphrase, permanently erasing a
+        # stored secret — so record which labels were stripped and let the CLI
+        # warn the user. The storage layer itself stays silent (no stray output
+        # for library consumers, and nothing to route through -W filters).
+        stripped: list[str] = []
         if int(envelope.get("version", 1)) < 2:
             stripped = [
                 e.label
                 for e in entries
                 if isinstance(e, HdKey) and e.passphrase is not None
             ]
-            if stripped:
-                print(
-                    f"WARNING: dropping the stored BIP-39 passphrase from HD "
-                    f"key(s) {', '.join(stripped)}: this v1 keystore never "
-                    f"applied it to derivation, so your funds sit at "
-                    f"empty-passphrase addresses. The next save upgrades to v2 "
-                    f"and discards the passphrase permanently — note it down "
-                    f"now if you need it elsewhere (re-add with "
-                    f"`add-hd --bip39-passphrase` to actually use it).",
-                    file=sys.stderr,
-                )
             entries = [
                 dataclasses.replace(e, passphrase=None)
                 if isinstance(e, HdKey) and e.passphrase is not None
                 else e
                 for e in entries
             ]
-        return cls(entries=entries)
+        return cls(entries=entries, stripped_passphrase_labels=stripped)
 
 
 def _atomic_write(path: Path, data: bytes) -> None:

@@ -906,6 +906,20 @@ def test_balance_probes_rune_pool_on_maya(monkeypatch):
     assert probed == ["THOR.RUNE"]
 
 
+def test_derivable_chains_all_actually_derive():
+    # DERIVABLE_CHAINS and the derivation logic must be one source: every chain
+    # the tuple advertises must actually produce an address (no drift where the
+    # tuple lists a chain that _derive_destination_address returns None for, or
+    # vice versa).
+    from cryptoswap_wallet.cli import DERIVABLE_CHAINS, _derive_destination_address
+
+    for chain in DERIVABLE_CHAINS:
+        addr = _derive_destination_address(chain, MNEMONIC)
+        assert addr, f"{chain} in DERIVABLE_CHAINS but derived nothing"
+    # A chain not in the set derives nothing (needs an explicit --dest).
+    assert _derive_destination_address("LTC", MNEMONIC) is None
+
+
 def test_resolve_destination_derives_maya_and_thor():
     # The MAYA/THOR adapters expose derive_address, so `swap --to CACAO/RUNE`
     # must not demand a --dest the wallet itself prints in `address`.
@@ -1208,6 +1222,32 @@ def test_load_mnemonic_returns_bip39_passphrase(tmp_path, monkeypatch):
     mnemonic, passphrase = cli._load_mnemonic(args)
     assert mnemonic == MNEMONIC
     assert passphrase == "extra-word"
+
+
+def test_cli_renders_v1_passphrase_strip_warning(tmp_path, monkeypatch, capsys):
+    # The v1 passphrase-strip warning lives at the CLI boundary (keystore.load
+    # is silent and only records the labels). Loading a v1-with-passphrase
+    # keystore through the CLI must print it, naming the key.
+    import json as _json
+
+    import cryptoswap_wallet.cli as cli
+    from cryptoswap_wallet.keystore import Keystore
+
+    path = tmp_path / "ks.json"
+    ks = Keystore()
+    ks.add_hd("w", MNEMONIC, passphrase="extra-word")
+    ks.save(path, "pw", n=1024)
+    env = _json.loads(path.read_text())
+    env["version"] = 1
+    path.write_text(_json.dumps(env))
+    monkeypatch.setenv("CRYPTOSWAP_WALLET_KEYSTORE", str(path))
+    monkeypatch.setenv("CRYPTOSWAP_WALLET_PASSPHRASE", "pw")
+
+    args = build_parser().parse_args(["address"])
+    cli._load_mnemonic(args)
+    err = capsys.readouterr().err
+    assert "w" in err
+    assert "passphrase" in err
 
 
 # --- uncaught InsufficientFunds on a non-sweep BTC swap (finding #4) ---

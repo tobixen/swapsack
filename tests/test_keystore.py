@@ -66,10 +66,11 @@ def test_v1_keystore_strips_bip39_passphrase(tmp_path):
     assert loaded.entries[0].passphrase is None
 
 
-def test_v1_passphrase_strip_warns_on_stderr(tmp_path, capsys):
-    # The strip is deliberate but destroys a stored secret on the next save —
-    # it must not be silent: name the key and say why the passphrase was
-    # dropped so the user can note it down before it is gone.
+def test_v1_passphrase_strip_records_labels_silently(tmp_path, capsys):
+    # The strip is deliberate but destroys a stored secret on the next save.
+    # The library layer stays silent (no stray print outside the CLI) and
+    # instead reports which labels it stripped, so the CLI boundary can render
+    # the warning.
     path = tmp_path / "ks.json"
     ks = Keystore()
     ks.add_hd("withpw", MNEMONIC, passphrase="extra-word")
@@ -78,14 +79,12 @@ def test_v1_passphrase_strip_warns_on_stderr(tmp_path, capsys):
     env["version"] = 1
     path.write_text(json.dumps(env))
 
-    Keystore.load(path, PW)
-    err = capsys.readouterr().err
-    assert "withpw" in err
-    assert "passphrase" in err
-    assert "never applied" in err
+    loaded = Keystore.load(path, PW)
+    assert loaded.stripped_passphrase_labels == ["withpw"]
+    assert capsys.readouterr().err == ""  # library must not print
 
 
-def test_v1_keystore_without_passphrase_loads_silently(tmp_path, capsys):
+def test_v1_keystore_without_passphrase_records_nothing(tmp_path, capsys):
     path = tmp_path / "ks.json"
     ks = Keystore()
     ks.add_hd("plain", MNEMONIC)
@@ -94,7 +93,8 @@ def test_v1_keystore_without_passphrase_loads_silently(tmp_path, capsys):
     env["version"] = 1
     path.write_text(json.dumps(env))
 
-    Keystore.load(path, PW)
+    loaded = Keystore.load(path, PW)
+    assert loaded.stripped_passphrase_labels == []
     assert capsys.readouterr().err == ""
 
 
