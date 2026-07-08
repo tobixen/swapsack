@@ -1,12 +1,31 @@
-# cryptoswap wallet
+# What is this
 
-A python/CLI multi-currency wallet that may do non-custodial cross-chain swaps via [THORChain](https://thorchain.org/).
+It's a **Python library** and a **CLI** for holding, sending, receiving and swapping **multiple** cryptocurrencies.
+
+Non-custodial cross-chain swaps are supported via [THORChain](https://thorchain.org/) and [Maya](https://www.mayaprotocol.com/).
 
 ⚠️ This project is vibed-up ... what could possibly go wrong?
 
 **Don't use this wallet for more funds than what you can afford to lose**.  Bugs in the code may easily cause **irreversible loss of funds**.  Even if all the code is perfect, consider that this is a **hot wallet**, an attacker that gains a foothold on the computer running this wallet software may potentially manage to drain the funds in the wallet.
 
 The rest of this document is partially AI-generated.
+
+## Related projects
+
+The CLI / library niche for *non-custodial cross-chain swaps* appears
+unoccupied — GUI swap-wallets for phones, web and desktop are plentiful, but the
+closest Python packages on PyPI do something else entirely:
+
+- **[`pywallet`](https://github.com/ranaroussi/pywallet)** — a BIP32/HD
+  key-and-address *generator* (BTC, ETH, LTC, DASH, DOGE, …). No balances, no
+  broadcasting, no network I/O and no swaps; last released 2018. It's a
+  key-derivation helper, not a spendable wallet.
+- **[`multiwallet`](https://github.com/mflaxman/multiwallet)** — a PyQt5
+  **desktop GUI** for *stateless multisig Bitcoin* (airgapped seedpicker +
+  PSBT). Bitcoin-only, cold-storage focused, no swaps; last released 2020.
+
+Neither is multi-chain *and* swap-capable from a terminal or as a library, which
+is the gap this project fills.
 
 ## Installation
 
@@ -144,7 +163,7 @@ zsh and fish work too; see the [argcomplete docs](https://github.com/kislyuk/arg
 
 ```sh
 make dev           # set up the environment (uv)
-make test          # unit tests (live network tests excluded)
+gmake test          # unit tests (live network tests excluded)
 make test-network  # opt-in: read-only integration tests vs live THORChain
 make lint          # ruff check + format check
 ```
