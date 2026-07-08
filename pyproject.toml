@@ -39,6 +39,15 @@ Issues = "https://github.com/tobixen/swapsack/issues"
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.15", "pre-commit>=4"]
 
+[tool.uv]
+# On Python 3.13/3.14 there is no prebuilt coincurve wheel (pulled in transitively
+# by tronpy), so it builds from sdist. coincurve 20.0.0 still passes the
+# `cmake.verbose` setting that scikit-build-core 1.0 (released 2026-07-06) turned
+# into a hard build error — which is what broke CI on 3.13/3.14. Pin the build
+# backend below 1.0 until the tronpy/coincurve chain ships a fix or 3.13/3.14
+# wheels. Runtime deps are unaffected (this only constrains build environments).
+build-constraint-dependencies = ["scikit-build-core<1.0"]
+
 [tool.hatch.version]
 source = "vcs"
 

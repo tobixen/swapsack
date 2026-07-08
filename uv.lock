@@ -6,6 +6,9 @@ resolution-markers = [
     "python_full_version != '3.14.*'",
 ]
 
+[manifest]
+build-constraints = [{ name = "scikit-build-core", specifier = "<1.0" }]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
