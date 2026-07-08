@@ -16,7 +16,7 @@ from typing import Protocol
 
 # DEFAULT_TOLERANCE_BPS lives in thorchain (re-exported here for callers like
 # cli) so the client default and this protocol default can't drift apart.
-from cryptoswap_wallet.thorchain import (
+from swapsack.thorchain import (
     DEFAULT_TOLERANCE_BPS,
     ChainStatus,
     Quote,

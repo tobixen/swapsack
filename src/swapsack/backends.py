@@ -11,8 +11,8 @@ from __future__ import annotations
 import dataclasses
 import os
 
-from cryptoswap_wallet.net import HTTP_ERRORS
-from cryptoswap_wallet.thorchain import (
+from swapsack.net import HTTP_ERRORS
+from swapsack.thorchain import (
     Quote,
     ThorchainClient,
     ThorchainError,
@@ -22,7 +22,7 @@ from cryptoswap_wallet.thorchain import (
 # thornode.thorchain.liquify.com's TLS cert expired 2024-02-07 (never renewed)
 # and the ninerealms gateways were retired (no A record), so default to a node
 # that currently resolves + serves a valid cert. Override with
-# CRYPTOSWAP_WALLET_THORNODE if this one degrades.
+# SWAPSACK_THORNODE if this one degrades.
 DEFAULT_THORNODE = "https://thornode.thorchain.network"
 DEFAULT_MAYANODE = "https://mayanode.mayachain.info"
 
@@ -41,8 +41,8 @@ class Backend:
 
 
 def default_backends() -> list[Backend]:
-    thornode = os.environ.get("CRYPTOSWAP_WALLET_THORNODE") or DEFAULT_THORNODE
-    mayanode = os.environ.get("CRYPTOSWAP_WALLET_MAYANODE") or DEFAULT_MAYANODE
+    thornode = os.environ.get("SWAPSACK_THORNODE") or DEFAULT_THORNODE
+    mayanode = os.environ.get("SWAPSACK_MAYANODE") or DEFAULT_MAYANODE
     return [
         Backend("thorchain", ThorchainClient(thornode)),
         Backend("maya", ThorchainClient(mayanode, path_prefix="mayachain")),

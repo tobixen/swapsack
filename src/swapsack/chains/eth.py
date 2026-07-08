@@ -20,12 +20,12 @@ from eth_abi import encode as abi_encode
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 
-from cryptoswap_wallet.chains.base import BalanceReport
-from cryptoswap_wallet.chains.coins import InsufficientFunds
-from cryptoswap_wallet.net import HttpClient
-from cryptoswap_wallet.swap import BroadcastError, Prepared, SwapAborted, SwapRequest
-from cryptoswap_wallet.thorchain import Quote
-from cryptoswap_wallet.verify import (
+from swapsack.chains.base import BalanceReport
+from swapsack.chains.coins import InsufficientFunds
+from swapsack.net import HttpClient
+from swapsack.swap import BroadcastError, Prepared, SwapAborted, SwapRequest
+from swapsack.thorchain import Quote
+from swapsack.verify import (
     WEI_PER_THORCHAIN_UNIT,
     EthSendPlan,
     EthSwapPlan,

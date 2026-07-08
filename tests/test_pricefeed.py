@@ -2,7 +2,7 @@
 
 import pytest
 
-from cryptoswap_wallet.pricefeed import (
+from swapsack.pricefeed import (
     COINGECKO_IDS,
     loss_amount,
     loss_vs_market_bps,

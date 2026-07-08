@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("eth_account")
 
-from cryptoswap_wallet.chains.tron import TronAdapter, base58check_encode  # noqa: E402
+from swapsack.chains.tron import TronAdapter, base58check_encode  # noqa: E402
 
 MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon "
@@ -140,7 +140,7 @@ def test_to_sun_converts_and_rejects_subsun():
 
 
 def _fake_built(to, amount_sun, memo, *, amount_override=None):
-    from cryptoswap_wallet.chains.tron import BuiltTronTx
+    from swapsack.chains.tron import BuiltTronTx
 
     return BuiltTronTx(
         tx=None,
@@ -183,7 +183,7 @@ def _trc20_calldata(to_base58: str, amount: int) -> str:
 
 
 def _fake_token_built(to_vault, amount, memo, *, contract=USDT_TRON_CONTRACT):
-    from cryptoswap_wallet.chains.tron import BuiltTronTx
+    from swapsack.chains.tron import BuiltTronTx
 
     return BuiltTronTx(
         tx=None,
@@ -199,7 +199,7 @@ def _fake_token_built(to_vault, amount, memo, *, contract=USDT_TRON_CONTRACT):
 def _token_request_and_quote():
     from types import SimpleNamespace
 
-    from cryptoswap_wallet.swap import SwapRequest
+    from swapsack.swap import SwapRequest
 
     vault = "TWhCKmPTJL8k9ugzoQStN68KcAWUSzWWas"
     dest = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
@@ -366,7 +366,7 @@ def test_tron_token_send_gate_flags_tampered_recipient(monkeypatch):
 def test_broadcast_translates_tronpy_error_with_headroom_hint():
     from tronpy.exceptions import ValidationError
 
-    from cryptoswap_wallet.swap import BroadcastError
+    from swapsack.swap import BroadcastError
 
     class _FakeTx:
         txid = "deadbeef"
@@ -388,7 +388,7 @@ def test_broadcast_translates_tronpy_error_with_headroom_hint():
 
 
 def test_decode_trc20_transfer_calldata():
-    from cryptoswap_wallet.chains.tron import decode_trc20_transfer
+    from swapsack.chains.tron import decode_trc20_transfer
 
     # transfer(TR7NH..., 1_000_000): selector + padded 20-byte addr + uint256
     calldata = (
@@ -402,7 +402,7 @@ def test_decode_trc20_transfer_calldata():
 
 
 def test_decode_trc20_transfer_rejects_wrong_selector():
-    from cryptoswap_wallet.chains.tron import decode_trc20_transfer
+    from swapsack.chains.tron import decode_trc20_transfer
 
     with pytest.raises(ValueError, match="selector"):
         decode_trc20_transfer("deadbeef" + "0" * 128)
@@ -418,7 +418,7 @@ def test_tron_build_unsigned_trc20_transfer_live_nile():
     broadcast."""
     from eth_account import Account
 
-    from cryptoswap_wallet.chains.tron import decode_trc20_transfer
+    from swapsack.chains.tron import decode_trc20_transfer
 
     Account.enable_unaudited_hdwallet_features()
     _, fresh = Account.create_with_mnemonic()
@@ -439,14 +439,14 @@ def test_tron_build_unsigned_trc20_transfer_live_nile():
 
 
 # Env that funds the full broadcast loop below; see the test docstring.
-NILE_MNEMONIC = os.environ.get("CRYPTOSWAP_WALLET_NILE_MNEMONIC")
-NILE_TOKEN = os.environ.get("CRYPTOSWAP_WALLET_NILE_TOKEN")
+NILE_MNEMONIC = os.environ.get("SWAPSACK_NILE_MNEMONIC")
+NILE_TOKEN = os.environ.get("SWAPSACK_NILE_TOKEN")
 
 
 @pytest.mark.network
 @pytest.mark.skipif(
     not (NILE_MNEMONIC and NILE_TOKEN),
-    reason="set CRYPTOSWAP_WALLET_NILE_MNEMONIC + _TOKEN (a funded Nile account "
+    reason="set SWAPSACK_NILE_MNEMONIC + _TOKEN (a funded Nile account "
     "holding the TRC-20) to run the full broadcast loop",
 )
 def test_tron_trc20_broadcast_and_confirm_nile():
@@ -455,16 +455,16 @@ def test_tron_trc20_broadcast_and_confirm_nile():
     self-transfer of 1 base unit, so it only spends TRX for energy/bandwidth.
 
     Gated on a funded Nile account provided via env (so CI runs it with the
-    CRYPTOSWAP_WALLET_NILE_* secrets, and it skips for everyone else):
-      CRYPTOSWAP_WALLET_NILE_MNEMONIC   seed of a Nile account holding the token + TRX
-      CRYPTOSWAP_WALLET_NILE_TOKEN      a TRC-20 contract (base58) the account holds
-      CRYPTOSWAP_WALLET_NILE_RECIPIENT  optional; defaults to a self-transfer
+    SWAPSACK_NILE_* secrets, and it skips for everyone else):
+      SWAPSACK_NILE_MNEMONIC   seed of a Nile account holding the token + TRX
+      SWAPSACK_NILE_TOKEN      a TRC-20 contract (base58) the account holds
+      SWAPSACK_NILE_RECIPIENT  optional; defaults to a self-transfer
     """
     with TronAdapter(api_url="https://nile.trongrid.io") as adapter:
         sender = adapter.derive_address(NILE_MNEMONIC)
         # `or sender`, not a .get() default: CI injects an *unset* optional secret
         # as an empty string, which would otherwise become an invalid recipient.
-        recipient = os.environ.get("CRYPTOSWAP_WALLET_NILE_RECIPIENT") or sender
+        recipient = os.environ.get("SWAPSACK_NILE_RECIPIENT") or sender
         memo = f"=:TRON.USDT:{recipient}"
         built = adapter.build_unsigned_trc20_transfer(
             mnemonic=NILE_MNEMONIC, token=NILE_TOKEN, to=recipient, amount=1, memo=memo
@@ -495,7 +495,7 @@ def test_tron_build_unsigned_transfer_live():
     """Build (no broadcast) a real memo-carrying TRX transfer against the keyless
     public node, using a FRESH random account (the well-known test-vector account
     has a reassigned owner permission on mainnet and would fail signing)."""
-    from cryptoswap_wallet.chains.btc import generate_mnemonic
+    from swapsack.chains.btc import generate_mnemonic
 
     fresh = generate_mnemonic()
     with TronAdapter() as adapter:

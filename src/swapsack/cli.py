@@ -1,4 +1,4 @@
-"""Command-line interface for cryptoswap_wallet.
+"""Command-line interface for swapsack.
 
 Commands: init / add-hd / add-raw / list / address / balance / quote / swap /
 send / status. Swaps and sends default to a dry run that builds + verifies +
@@ -21,10 +21,10 @@ from collections.abc import Callable
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
 
-from cryptoswap_wallet.addresses import validate_destination_address
-from cryptoswap_wallet.keystore import HdKey, Keystore
-from cryptoswap_wallet.net import HTTP_ERRORS
-from cryptoswap_wallet.swap import (
+from swapsack.addresses import validate_destination_address
+from swapsack.keystore import HdKey, Keystore
+from swapsack.net import HTTP_ERRORS
+from swapsack.swap import (
     DEFAULT_TOLERANCE_BPS,
     BroadcastError,
     SwapAborted,
@@ -32,18 +32,18 @@ from cryptoswap_wallet.swap import (
     execute_swap,
     prepare_swap,
 )
-from cryptoswap_wallet.thorchain import THORCHAIN_UNIT, asset_unit
+from swapsack.thorchain import THORCHAIN_UNIT, asset_unit
 
 # The finest base unit across all supported assets (CACAO's 1e10) — the
 # parse-time floor for --amount; the per-asset floor lives in _base_units.
 FINEST_UNIT = 10**10
 
 try:
-    from cryptoswap_wallet._version import __version__
+    from swapsack._version import __version__
 except ImportError:  # not built yet (e.g. running from a fresh checkout)
     __version__ = "0+unknown"
 
-DEFAULT_KEYSTORE = "~/.config/cryptoswap-wallet/keystore.json"
+DEFAULT_KEYSTORE = "~/.config/swapsack/keystore.json"
 BTC_ACCOUNT = "m/84'/0'/0'"
 BTC_RECEIVE_PATH = "m/84'/0'/0'/0/0"
 BTC_CHANGE_PATH = "m/84'/0'/0'/1/0"
@@ -71,14 +71,12 @@ ASSET = {
 
 def _keystore_path(args: argparse.Namespace) -> Path:
     return Path(
-        args.keystore
-        or os.environ.get("CRYPTOSWAP_WALLET_KEYSTORE")
-        or DEFAULT_KEYSTORE
+        args.keystore or os.environ.get("SWAPSACK_KEYSTORE") or DEFAULT_KEYSTORE
     ).expanduser()
 
 
 def _passphrase(*, confirm: bool = False) -> str:
-    pw = os.environ.get("CRYPTOSWAP_WALLET_PASSPHRASE")
+    pw = os.environ.get("SWAPSACK_PASSPHRASE")
     if pw:
         return pw
     pw = getpass.getpass("Keystore passphrase: ")
@@ -88,62 +86,62 @@ def _passphrase(*, confirm: bool = False) -> str:
 
 
 def _btc_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
-    from cryptoswap_wallet.chains.btc import DEFAULT_ESPLORA, BtcAdapter
+    from swapsack.chains.btc import DEFAULT_ESPLORA, BtcAdapter
 
-    url = args.esplora or os.environ.get("CRYPTOSWAP_WALLET_ESPLORA") or DEFAULT_ESPLORA
+    url = args.esplora or os.environ.get("SWAPSACK_ESPLORA") or DEFAULT_ESPLORA
     return BtcAdapter(url, bip39_passphrase=passphrase)
 
 
 def _eth_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
-    from cryptoswap_wallet.chains.eth import DEFAULT_RPC, EthAdapter
+    from swapsack.chains.eth import DEFAULT_RPC, EthAdapter
 
     url = (
         getattr(args, "eth_rpc", None)
-        or os.environ.get("CRYPTOSWAP_WALLET_ETH_RPC")
+        or os.environ.get("SWAPSACK_ETH_RPC")
         or DEFAULT_RPC
     )
     return EthAdapter(url, bip39_passphrase=passphrase)
 
 
 def _tron_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
-    from cryptoswap_wallet.chains.tron import DEFAULT_TRON_API, TronAdapter
+    from swapsack.chains.tron import DEFAULT_TRON_API, TronAdapter
 
     url = (
         getattr(args, "tron_api", None)
-        or os.environ.get("CRYPTOSWAP_WALLET_TRON_API")
+        or os.environ.get("SWAPSACK_TRON_API")
         or DEFAULT_TRON_API
     )
     return TronAdapter(url, bip39_passphrase=passphrase)
 
 
 def _bsc_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
-    from cryptoswap_wallet.chains.bsc import DEFAULT_BSC_RPC, BscAdapter
+    from swapsack.chains.bsc import DEFAULT_BSC_RPC, BscAdapter
 
     url = (
         getattr(args, "bsc_rpc", None)
-        or os.environ.get("CRYPTOSWAP_WALLET_BSC_RPC")
+        or os.environ.get("SWAPSACK_BSC_RPC")
         or DEFAULT_BSC_RPC
     )
     return BscAdapter(url, bip39_passphrase=passphrase)
 
 
 def _maya_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
-    from cryptoswap_wallet.chains.maya import DEFAULT_MAYANODE, MayaAdapter
+    from swapsack.chains.maya import DEFAULT_MAYANODE, MayaAdapter
 
     url = (
         getattr(args, "maya_api", None)
-        or os.environ.get("CRYPTOSWAP_WALLET_MAYA_API")
+        or os.environ.get("SWAPSACK_MAYA_API")
         or DEFAULT_MAYANODE
     )
     return MayaAdapter(url, bip39_passphrase=passphrase)
 
 
 def _thor_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
-    from cryptoswap_wallet.chains.thor import DEFAULT_THORNODE, ThorAdapter
+    from swapsack.chains.thor import DEFAULT_THORNODE, ThorAdapter
 
     url = (
         getattr(args, "thornode", None)
-        or os.environ.get("CRYPTOSWAP_WALLET_THORNODE")
+        or os.environ.get("SWAPSACK_THORNODE")
         or DEFAULT_THORNODE
     )
     return ThorAdapter(url, bip39_passphrase=passphrase)
@@ -200,7 +198,7 @@ def _load_mnemonic(args: argparse.Namespace) -> tuple[str, str]:
 
 def _liquidity_client(args: argparse.Namespace):  # noqa: ANN202 (ThorchainClient)
     """The backend client for an LP op (thorchain or its fork maya)."""
-    from cryptoswap_wallet.backends import get_backend
+    from swapsack.backends import get_backend
 
     return get_backend(getattr(args, "backend", "thorchain")).client
 
@@ -231,7 +229,7 @@ def cmd_add_hd(args: argparse.Namespace) -> int:
     pw = _passphrase()
     keystore = _load_keystore(path, pw)
     if args.generate:
-        from cryptoswap_wallet.chains.btc import generate_mnemonic
+        from swapsack.chains.btc import generate_mnemonic
 
         mnemonic = generate_mnemonic()
     else:
@@ -240,7 +238,7 @@ def cmd_add_hd(args: argparse.Namespace) -> int:
     keystore.save(path, pw)
     print(f"added HD key {args.label!r}")
     if args.generate:
-        from cryptoswap_wallet.chains.btc import BtcAdapter
+        from swapsack.chains.btc import BtcAdapter
 
         print(
             "BTC receive address:",
@@ -251,7 +249,7 @@ def cmd_add_hd(args: argparse.Namespace) -> int:
         print(
             "the new seed is stored ENCRYPTED in the keystore; back up the keystore "
             "file + passphrase.\nto reveal the words (do it privately): "
-            f"cryptoswap-wallet show-seed --key {args.label}"
+            f"swapsack show-seed --key {args.label}"
         )
     return 0
 
@@ -289,12 +287,12 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_address(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.chains.bsc import BscAdapter
-    from cryptoswap_wallet.chains.btc import BtcAdapter
-    from cryptoswap_wallet.chains.eth import EthAdapter
-    from cryptoswap_wallet.chains.maya import MayaAdapter
-    from cryptoswap_wallet.chains.thor import ThorAdapter
-    from cryptoswap_wallet.chains.tron import TronAdapter
+    from swapsack.chains.bsc import BscAdapter
+    from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.eth import EthAdapter
+    from swapsack.chains.maya import MayaAdapter
+    from swapsack.chains.thor import ThorAdapter
+    from swapsack.chains.tron import TronAdapter
 
     mnemonic, passphrase = _load_mnemonic(args)
     print(
@@ -323,7 +321,7 @@ def cmd_balance(args: argparse.Namespace) -> int:
         flush=True,
     )
     mnemonic, passphrase = _load_mnemonic(args)
-    from cryptoswap_wallet.backends import default_backends
+    from swapsack.backends import default_backends
 
     backends = default_backends()
     try:
@@ -432,7 +430,7 @@ def _derivable_chain(to_: str) -> str:
 
 
 def _derive_btc(mnemonic: str, passphrase: str) -> str:
-    from cryptoswap_wallet.chains.btc import BtcAdapter
+    from swapsack.chains.btc import BtcAdapter
 
     return BtcAdapter(bip39_passphrase=passphrase).derive_address(
         mnemonic, BTC_RECEIVE_PATH
@@ -440,25 +438,25 @@ def _derive_btc(mnemonic: str, passphrase: str) -> str:
 
 
 def _derive_eth(mnemonic: str, passphrase: str) -> str:
-    from cryptoswap_wallet.chains.eth import EthAdapter
+    from swapsack.chains.eth import EthAdapter
 
     return EthAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
 
 def _derive_tron(mnemonic: str, passphrase: str) -> str:
-    from cryptoswap_wallet.chains.tron import TronAdapter
+    from swapsack.chains.tron import TronAdapter
 
     return TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
 
 def _derive_maya(mnemonic: str, passphrase: str) -> str:
-    from cryptoswap_wallet.chains.maya import MayaAdapter
+    from swapsack.chains.maya import MayaAdapter
 
     return MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
 
 def _derive_thor(mnemonic: str, passphrase: str) -> str:
-    from cryptoswap_wallet.chains.thor import ThorAdapter
+    from swapsack.chains.thor import ThorAdapter
 
     return ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
@@ -503,7 +501,7 @@ def _resolve_destination(
 
 
 def _backends_for(args: argparse.Namespace):  # noqa: ANN202 (list[Backend], lazy import)
-    from cryptoswap_wallet.backends import default_backends, get_backend
+    from swapsack.backends import default_backends, get_backend
 
     if args.backend == "auto":
         return default_backends()
@@ -535,7 +533,7 @@ def _select_backend(  # noqa: ANN202 (Backend, lazy import)
     closed by the caller's ``with backend.client``); a single explicit backend
     is returned unquoted and closed by the caller.
     """
-    from cryptoswap_wallet.backends import best_quote, gather_quotes
+    from swapsack.backends import best_quote, gather_quotes
 
     backends = _backends_for(args)
     if len(backends) == 1:
@@ -573,7 +571,7 @@ def _market_comparison(
     per-asset comparison, and (when the feed has a EUR price for the destination)
     the estimated absolute loss in EUR. Never raises: a feed failure drops it.
     """
-    from cryptoswap_wallet.pricefeed import (
+    from swapsack.pricefeed import (
         COINGECKO_IDS,
         SOURCE,
         PriceFeed,
@@ -648,7 +646,7 @@ def cmd_quote(args: argparse.Namespace) -> int:
     if args.amount == "max":
         print("quote needs a numeric amount ('max' is only for swap)", file=sys.stderr)
         return 2
-    from cryptoswap_wallet.backends import best_quote, gather_quotes
+    from swapsack.backends import best_quote, gather_quotes
 
     # The quote API speaks the *source asset's* native unit (CACAO is 1e10).
     amount = _base_units(args.amount, asset_unit(ASSET[args.from_]))
@@ -662,7 +660,7 @@ def cmd_quote(args: argparse.Namespace) -> int:
     # only the home backend can serve it. Pin the quote to that backend (and
     # refuse an explicit foreign one) so the price shown matches the route the
     # swap command will actually execute — mirrors _swap_from_cosmos.
-    from cryptoswap_wallet.backends import NATIVE_HOME_BACKEND, get_backend
+    from swapsack.backends import NATIVE_HOME_BACKEND, get_backend
 
     from_chain = ASSET[args.from_].split(".", 1)[0]
     if from_chain in NATIVE_HOME_BACKEND:
@@ -767,8 +765,8 @@ def _send_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN
 
 
 def _send_eth(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.chains.coins import InsufficientFunds, token_sweep_amount
-    from cryptoswap_wallet.chains.eth import NATIVE_SEND_GAS, eth_sweep_amount
+    from swapsack.chains.coins import InsufficientFunds, token_sweep_amount
+    from swapsack.chains.eth import NATIVE_SEND_GAS, eth_sweep_amount
 
     asset = ASSET[args.asset]
     recipient = args.address
@@ -819,7 +817,7 @@ def _send_eth(args: argparse.Namespace) -> int:
 
 
 def _send_tron(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.chains.coins import InsufficientFunds, token_sweep_amount
+    from swapsack.chains.coins import InsufficientFunds, token_sweep_amount
 
     asset = ASSET[args.asset]
     recipient = args.address
@@ -865,8 +863,8 @@ def _send_tron(args: argparse.Namespace) -> int:
 
 
 def _send_btc(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.chains.coins import InsufficientFunds, sweep_amount
-    from cryptoswap_wallet.chains.scan import scan_account
+    from swapsack.chains.coins import InsufficientFunds, sweep_amount
+    from swapsack.chains.scan import scan_account
 
     mnemonic, passphrase = _load_mnemonic(args)
     recipient = args.address
@@ -940,13 +938,13 @@ def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  #
         print(f"BROADCAST FAILED: {exc}", file=sys.stderr)
         return 1
     print(f"\nBROADCAST txid: {result.txid}")
-    print(f"track: cryptoswap-wallet status {result.txid}")
+    print(f"track: swapsack status {result.txid}")
     return 0
 
 
 def _swap_from_btc(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.chains.coins import InsufficientFunds
-    from cryptoswap_wallet.chains.scan import scan_account
+    from swapsack.chains.coins import InsufficientFunds
+    from swapsack.chains.scan import scan_account
 
     mnemonic, passphrase = _load_mnemonic(args)
     dest = _resolve_destination(args, mnemonic, passphrase)
@@ -974,7 +972,7 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
         change_address = adapter.derive_address(mnemonic, BTC_CHANGE_PATH)
         fee_rate = adapter.fetch_fee_rate()
         if sweep:
-            from cryptoswap_wallet.chains.coins import sweep_amount
+            from swapsack.chains.coins import sweep_amount
 
             total = sum(u.value for u in utxos)
             try:
@@ -1043,11 +1041,11 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
 
 
 def _swap_from_eth(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.chains.coins import (
+    from swapsack.chains.coins import (
         InsufficientFunds,
         token_sweep_amount,
     )
-    from cryptoswap_wallet.chains.eth import eth_sweep_amount
+    from swapsack.chains.eth import eth_sweep_amount
 
     mnemonic, passphrase = _load_mnemonic(args)
     dest = _resolve_destination(args, mnemonic, passphrase)
@@ -1150,7 +1148,7 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
 
 
 def _swap_from_tron(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.chains.coins import InsufficientFunds, token_sweep_amount
+    from swapsack.chains.coins import InsufficientFunds, token_sweep_amount
 
     is_token = "-" in ASSET[args.from_]
     sweep = args.amount == "max"
@@ -1252,7 +1250,7 @@ def _swap_from_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa
         return 2
 
     with adapter_factory(args, passphrase) as adapter:
-        from cryptoswap_wallet.backends import NATIVE_HOME_BACKEND, get_backend
+        from swapsack.backends import NATIVE_HOME_BACKEND, get_backend
 
         # A native source deposits on its own network via MsgDeposit, so only
         # the home network's backend can serve it — no price routing here, and
@@ -1312,7 +1310,7 @@ def _swap_from_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa
 
 
 def cmd_add_liquidity(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.liquidity import add_liquidity_memo
+    from swapsack.liquidity import add_liquidity_memo
 
     pool = ASSET[args.asset]
     sweep = args.amount == "max"
@@ -1321,7 +1319,7 @@ def cmd_add_liquidity(args: argparse.Namespace) -> int:
 
 
 def cmd_withdraw_liquidity(args: argparse.Namespace) -> int:
-    from cryptoswap_wallet.liquidity import withdraw_liquidity_memo
+    from swapsack.liquidity import withdraw_liquidity_memo
 
     pool = ASSET[args.asset]
     return _liquidity(args, memo=withdraw_liquidity_memo(pool, args.bps), amount=None)
@@ -1357,9 +1355,9 @@ def _liquidity(
 def _liquidity_btc(
     args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
 ) -> int:
-    from cryptoswap_wallet.chains.coins import InsufficientFunds
-    from cryptoswap_wallet.chains.scan import scan_account
-    from cryptoswap_wallet.swap import prepare_liquidity
+    from swapsack.chains.coins import InsufficientFunds
+    from swapsack.chains.scan import scan_account
+    from swapsack.swap import prepare_liquidity
 
     mnemonic, passphrase = _load_mnemonic(args)
     with _btc_adapter(args, passphrase) as adapter, _liquidity_client(args) as thor:
@@ -1384,7 +1382,7 @@ def _liquidity_btc(
         change_address = adapter.derive_address(mnemonic, BTC_CHANGE_PATH)
         fee_rate = adapter.fetch_fee_rate()
         if sweep:
-            from cryptoswap_wallet.chains.coins import sweep_amount
+            from swapsack.chains.coins import sweep_amount
 
             total = sum(u.value for u in utxos)
             try:
@@ -1424,9 +1422,9 @@ def _liquidity_btc(
 def _liquidity_eth(
     args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
 ) -> int:
-    from cryptoswap_wallet.chains.coins import InsufficientFunds, token_sweep_amount
-    from cryptoswap_wallet.chains.eth import eth_sweep_amount
-    from cryptoswap_wallet.swap import prepare_liquidity
+    from swapsack.chains.coins import InsufficientFunds, token_sweep_amount
+    from swapsack.chains.eth import eth_sweep_amount
+    from swapsack.swap import prepare_liquidity
 
     asset = ASSET[args.asset]
     # A token *add* (approve + router deposit) is the only token op that needs the
@@ -1506,7 +1504,7 @@ def _liquidity_eth(
 def _liquidity_tron(
     args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
 ) -> int:
-    from cryptoswap_wallet.swap import prepare_liquidity
+    from swapsack.swap import prepare_liquidity
 
     if sweep:
         print("--amount max is not supported for TRON liquidity yet", file=sys.stderr)
@@ -1539,7 +1537,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     # thornode). With --backend auto we query every backend and report the one
     # that actually observed it; an unknown hash just yields a "not observed"
     # body on each, so falling through to the last is harmless.
-    from cryptoswap_wallet.net import HTTP_ERRORS
+    from swapsack.net import HTTP_ERRORS
 
     backends = _backends_for(args)
     status: dict[str, object] = {}
@@ -1693,9 +1691,7 @@ def _add_broadcast_args(sub: argparse.ArgumentParser) -> None:
         "--yes", action="store_true", help="skip the interactive confirm (automation)"
     )
     sub.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
-    sub.add_argument(
-        "--eth-rpc", help="Ethereum JSON-RPC URL ($CRYPTOSWAP_WALLET_ETH_RPC)"
-    )
+    sub.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     sub.add_argument("--eth-gas", type=int, default=60000, help="ETH gas limit")
 
 
@@ -1712,18 +1708,14 @@ def _add_liquidity_backend_arg(sub: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="cryptoswap-wallet",
+        prog="swapsack",
         description="CLI multi-currency wallet with THORChain swaps",
     )
     parser.add_argument(
         "--version", "-V", action="version", version=f"%(prog)s {__version__}"
     )
-    parser.add_argument(
-        "--keystore", help="keystore path ($CRYPTOSWAP_WALLET_KEYSTORE)"
-    )
-    parser.add_argument(
-        "--esplora", help="Esplora API base URL ($CRYPTOSWAP_WALLET_ESPLORA)"
-    )
+    parser.add_argument("--keystore", help="keystore path ($SWAPSACK_KEYSTORE)")
+    parser.add_argument("--esplora", help="Esplora API base URL ($SWAPSACK_ESPLORA)")
     sub = parser.add_subparsers(dest="command")
 
     s = sub.add_parser("init", help="create an empty encrypted keystore")
@@ -1759,17 +1751,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("balance", help="show balances across supported chains")
     s.add_argument("--key")
-    s.add_argument(
-        "--eth-rpc", help="Ethereum JSON-RPC URL ($CRYPTOSWAP_WALLET_ETH_RPC)"
-    )
-    s.add_argument("--tron-api", help="TRON API base URL ($CRYPTOSWAP_WALLET_TRON_API)")
-    s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($CRYPTOSWAP_WALLET_BSC_RPC)")
-    s.add_argument(
-        "--maya-api", help="MayaChain REST URL ($CRYPTOSWAP_WALLET_MAYA_API)"
-    )
-    s.add_argument(
-        "--thornode", help="THORChain REST URL ($CRYPTOSWAP_WALLET_THORNODE)"
-    )
+    s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
+    s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
+    s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($SWAPSACK_BSC_RPC)")
+    s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
+    s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
     s.set_defaults(func=cmd_balance)
 
     s = sub.add_parser("quote", help="show a THORChain swap quote")
@@ -1785,9 +1771,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="skip the interactive confirm (automation)"
     )
     s.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
-    s.add_argument(
-        "--eth-rpc", help="Ethereum JSON-RPC URL ($CRYPTOSWAP_WALLET_ETH_RPC)"
-    )
+    s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument(
         "--eth-gas", type=int, default=60000, help="gas limit for ETH deposit"
     )
@@ -1849,16 +1833,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="skip the interactive confirm (automation)"
     )
     s.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
-    s.add_argument(
-        "--eth-rpc", help="Ethereum JSON-RPC URL ($CRYPTOSWAP_WALLET_ETH_RPC)"
-    )
-    s.add_argument("--tron-api", help="TRON API base URL ($CRYPTOSWAP_WALLET_TRON_API)")
-    s.add_argument(
-        "--maya-api", help="MayaChain REST URL ($CRYPTOSWAP_WALLET_MAYA_API)"
-    )
-    s.add_argument(
-        "--thornode", help="THORChain REST URL ($CRYPTOSWAP_WALLET_THORNODE)"
-    )
+    s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
+    s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
+    s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
+    s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
     s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("status", help="track a swap by inbound txid")
@@ -1879,7 +1857,7 @@ def main(argv: list[str] | None = None) -> int:
     # Shell tab-completion. argcomplete sets _ARGCOMPLETE only when the completion
     # machinery invokes us, so gate the import on it: normal runs pay nothing, and
     # there's no optional-vs-required ambiguity (it's a declared dependency).
-    # Enable with: eval "$(register-python-argcomplete cryptoswap-wallet)"
+    # Enable with: eval "$(register-python-argcomplete swapsack)"
     if "_ARGCOMPLETE" in os.environ:
         import argcomplete
 

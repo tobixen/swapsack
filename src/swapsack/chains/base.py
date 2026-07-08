@@ -3,7 +3,7 @@
 The uniform surface across chains is intentionally small: address derivation,
 a wallet balance (so `balance` scales without per-chain code), and broadcast.
 Building the swap transaction is chain-specific (UTXO vs account models differ),
-but every adapter funnels its result through the shared :mod:`cryptoswap_wallet.verify`
+but every adapter funnels its result through the shared :mod:`swapsack.verify`
 gate before signing.
 """
 

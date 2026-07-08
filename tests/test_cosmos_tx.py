@@ -10,7 +10,7 @@ hash).
 
 import hashlib
 
-from cryptoswap_wallet.chains.cosmos_tx import (
+from swapsack.chains.cosmos_tx import (
     MSGSEND_TYPE_URL,
     auth_info,
     msg_send,
@@ -92,7 +92,7 @@ def test_sign_direct_is_a_recoverable_signature_over_the_doc():
 
 
 def test_uint64_and_string_defaults_are_omitted():
-    from cryptoswap_wallet.chains.cosmos_tx import _string, _uint64
+    from swapsack.chains.cosmos_tx import _string, _uint64
 
     assert _uint64(3, 0) == b""
     assert _uint64(3, 7) != b""
@@ -101,7 +101,7 @@ def test_uint64_and_string_defaults_are_omitted():
 
 
 def test_decode_msg_send_body_roundtrips_the_builder():
-    from cryptoswap_wallet.chains.cosmos_tx import decode_msg_send_body
+    from swapsack.chains.cosmos_tx import decode_msg_send_body
 
     body = tx_body([(MSGSEND_TYPE_URL, msg_send(FROM, TO, "cacao", "12345"))], "note")
     decoded = decode_msg_send_body(body)
@@ -116,8 +116,8 @@ def test_decode_msg_send_body_roundtrips_the_builder():
 
 
 def test_verify_cosmos_send_flags_a_tampered_recipient():
-    from cryptoswap_wallet.chains.cosmos_tx import decode_msg_send_body
-    from cryptoswap_wallet.verify import CosmosSendPlan, verify_cosmos_send
+    from swapsack.chains.cosmos_tx import decode_msg_send_body
+    from swapsack.verify import CosmosSendPlan, verify_cosmos_send
 
     body = tx_body([(MSGSEND_TYPE_URL, msg_send(FROM, TO, "cacao", "500"))], "")
     good = CosmosSendPlan(from_addr=FROM, recipient=TO, denom="cacao", amount="500")
@@ -132,7 +132,7 @@ def test_decode_msg_deposit_against_a_real_onchain_tx():
     # The MsgDeposit *value* (inside the Any) of a real MayaChain tx at height
     # 17312886 — a ZEC deposit swapping to BTC. Validates the wire format
     # (coin{asset,amount}, memo, signer) our builder/decoder rely on.
-    from cryptoswap_wallet.chains.cosmos_tx import (
+    from swapsack.chains.cosmos_tx import (
         MSGDEPOSIT_TYPE_URL,
         decode_msg_deposit_body,
     )
@@ -154,7 +154,7 @@ def test_decode_msg_deposit_against_a_real_onchain_tx():
 
 
 def test_msg_deposit_cacao_build_roundtrips():
-    from cryptoswap_wallet.chains.cosmos_tx import (
+    from swapsack.chains.cosmos_tx import (
         MSGDEPOSIT_TYPE_URL,
         decode_msg_deposit_body,
         msg_deposit,
@@ -170,8 +170,8 @@ def test_msg_deposit_cacao_build_roundtrips():
 
 
 def test_verify_cosmos_send_rejects_a_memo_on_a_plain_send():
-    from cryptoswap_wallet.chains.cosmos_tx import decode_msg_send_body
-    from cryptoswap_wallet.verify import CosmosSendPlan, verify_cosmos_send
+    from swapsack.chains.cosmos_tx import decode_msg_send_body
+    from swapsack.verify import CosmosSendPlan, verify_cosmos_send
 
     body = tx_body([(MSGSEND_TYPE_URL, msg_send(FROM, TO, "cacao", "500"))], "leak")
     plan = CosmosSendPlan(from_addr=FROM, recipient=TO, denom="cacao", amount="500")

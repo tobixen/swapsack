@@ -83,7 +83,7 @@ The derived XMR address must match an external wallet to be restorable.
     `verify_monero_send` gate (recipient + amount) before any broadcast.
 - Dependencies: pure-Python keccak + ed25519 (or vet `monero-python`, which
   also wraps `monero-wallet-rpc`); a config seam for the wallet-rpc endpoint
-  (env `CRYPTOSWAP_WALLET_MONERO_RPC`, mirroring the ETH/TRON RPC flags).
+  (env `SWAPSACK_MONERO_RPC`, mirroring the ETH/TRON RPC flags).
 - Wire into `cmd_address`, `_wallet_adapters` (balance), and `cmd_send`.
 - Tests: address-derivation vectors (pin the chosen convention against a known
   seed→address pair); a mocked wallet-rpc for balance/send; a `verify_monero_send`

@@ -12,12 +12,12 @@ import pytest
 
 pytest.importorskip("bitcoinlib")
 
-from cryptoswap_wallet.chains.cosmos import (  # noqa: E402
+from swapsack.chains.cosmos import (  # noqa: E402
     bech32_decode,
     bech32_encode,
     parse_balances,
 )
-from cryptoswap_wallet.chains.maya import MayaAdapter  # noqa: E402
+from swapsack.chains.maya import MayaAdapter  # noqa: E402
 
 # Standard BIP39 test mnemonic -> its maya1 address at m/44'/931'/0'/0/0.
 TEST_MNEMONIC = (
@@ -93,7 +93,7 @@ def test_build_and_verify_send_passes_gate_and_signs_validly(monkeypatch):
 
     from eth_keys import keys
 
-    from cryptoswap_wallet.chains import cosmos_tx
+    from swapsack.chains import cosmos_tx
 
     adapter = MayaAdapter()
     # Avoid the network: pin account + chain id.
@@ -126,7 +126,7 @@ def test_build_and_verify_swap_deposit_passes_gate(monkeypatch):
     import time
     from types import SimpleNamespace
 
-    from cryptoswap_wallet.chains import cosmos_tx
+    from swapsack.chains import cosmos_tx
 
     adapter = MayaAdapter()
     monkeypatch.setattr(adapter, "fetch_account", lambda address: (4, 0))
@@ -155,8 +155,8 @@ def test_build_and_verify_swap_deposit_passes_gate(monkeypatch):
 def test_build_and_verify_native_deposit_for_symmetric_lp(monkeypatch):
     import time
 
-    from cryptoswap_wallet.chains import cosmos_tx
-    from cryptoswap_wallet.liquidity import symmetric_add_memo
+    from swapsack.chains import cosmos_tx
+    from swapsack.liquidity import symmetric_add_memo
 
     adapter = MayaAdapter()
     monkeypatch.setattr(adapter, "fetch_account", lambda address: (4, 2))
@@ -180,7 +180,7 @@ def test_build_and_verify_native_deposit_for_symmetric_lp(monkeypatch):
 def test_build_and_verify_swap_deposit_catches_tampered_memo():
     import time
 
-    from cryptoswap_wallet.verify import CosmosDepositPlan, verify_cosmos_deposit
+    from swapsack.verify import CosmosDepositPlan, verify_cosmos_deposit
 
     # A memo that does not pay the intended destination must be flagged.
     plan = CosmosDepositPlan(
@@ -209,8 +209,8 @@ def test_cacao_unit_agrees_with_thorchain_asset_units():
     # thorchain.py must stay free of the heavy adapter imports, so this test
     # is the coupling — if one changes without the other, quoted outputs and
     # fee breakdowns go 100x wrong relative to the tx actually built.
-    from cryptoswap_wallet.chains.maya import CACAO_DECIMALS, MayaAdapter
-    from cryptoswap_wallet.thorchain import asset_unit
+    from swapsack.chains.maya import CACAO_DECIMALS, MayaAdapter
+    from swapsack.thorchain import asset_unit
 
     assert MayaAdapter.decimals == CACAO_DECIMALS
     assert 10**MayaAdapter.decimals == asset_unit("MAYA.CACAO")

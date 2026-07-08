@@ -6,7 +6,7 @@ are all ``100_000_000`` here).
 
 The pure parsing helpers (:func:`parse_quote`, :func:`parse_inbound_addresses`)
 are kept free of any I/O so they can be tested against recorded responses; the
-HTTP plumbing comes from :class:`cryptoswap_wallet.net.HttpClient`.
+HTTP plumbing comes from :class:`swapsack.net.HttpClient`.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any
 
-from cryptoswap_wallet.net import HttpClient
+from swapsack.net import HttpClient
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

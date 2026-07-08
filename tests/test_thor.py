@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("bitcoinlib")
 
-from cryptoswap_wallet.chains.thor import ThorAdapter  # noqa: E402
+from swapsack.chains.thor import ThorAdapter  # noqa: E402
 
 TEST_MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon abandon "
@@ -45,7 +45,7 @@ def test_build_and_verify_send_signs_validly_for_rune(monkeypatch):
 
     from eth_keys import keys
 
-    from cryptoswap_wallet.chains import cosmos_tx
+    from swapsack.chains import cosmos_tx
 
     adapter = ThorAdapter()
     monkeypatch.setattr(adapter, "fetch_account", lambda address: (7, 3))
@@ -75,8 +75,8 @@ def test_build_and_verify_send_signs_validly_for_rune(monkeypatch):
 
 def test_rune_unit_agrees_with_thorchain_asset_units():
     # Mirror of test_maya's cross-check: RUNE uses the shared 1e8 default.
-    from cryptoswap_wallet.chains.thor import RUNE_DECIMALS, ThorAdapter
-    from cryptoswap_wallet.thorchain import asset_unit
+    from swapsack.chains.thor import RUNE_DECIMALS, ThorAdapter
+    from swapsack.thorchain import asset_unit
 
     assert ThorAdapter.decimals == RUNE_DECIMALS
     assert 10**ThorAdapter.decimals == asset_unit("THOR.RUNE")

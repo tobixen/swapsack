@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/cryptoswap-wallet
+      url: https://pypi.org/p/swapsack
     permissions:
       id-token: write  # PyPI trusted publishing
     steps:

@@ -3,7 +3,7 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cryptoswap-wallet"
+name = "swapsack"
 dynamic = ["version"]
 description = "CLI multi-currency hot wallet with non-custodial cross-chain swaps via THORChain"
 readme = "README.md"
@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cryptoswap-wallet = "cryptoswap_wallet.cli:main"
+swapsack = "swapsack.cli:main"
 
 [project.urls]
 Repository = "https://github.com/tobixen/cryptoswap-wallet"
@@ -43,10 +43,10 @@ dev = ["pytest>=8", "ruff>=0.15", "pre-commit>=4"]
 source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
-version-file = "src/cryptoswap_wallet/_version.py"
+version-file = "src/swapsack/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cryptoswap_wallet"]
+packages = ["src/swapsack"]
 
 [tool.ruff]
 src = ["src", "tests"]

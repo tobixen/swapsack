@@ -17,7 +17,7 @@ Ethereum namesakes — hence a BSC-specific tracked-token table.
 
 from __future__ import annotations
 
-from cryptoswap_wallet.chains.eth import EthAdapter
+from swapsack.chains.eth import EthAdapter
 
 # Keyless public BSC JSON-RPC node (same provider family as the ETH/TRON defaults).
 DEFAULT_BSC_RPC = "https://bsc-rpc.publicnode.com"

@@ -94,4 +94,4 @@ Consequently the CLI treats `--stream-interval` as overriding `--tolerance-bps`
 
 - `README.md` — "Other features" (streaming bullet) and usage example.
 - `CHANGELOG.md` — Unreleased → streaming swaps.
-- `src/cryptoswap_wallet/backends.py`, `swap.py` — the tolerance-drop logic.
+- `src/swapsack/backends.py`, `swap.py` — the tolerance-drop logic.

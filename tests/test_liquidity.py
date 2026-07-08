@@ -2,7 +2,7 @@
 
 import pytest
 
-from cryptoswap_wallet.liquidity import (
+from swapsack.liquidity import (
     add_liquidity_memo,
     pair_amount,
     symmetric_add_memo,

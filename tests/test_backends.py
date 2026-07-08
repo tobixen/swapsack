@@ -1,7 +1,7 @@
 """Tests for swap-backend gathering and lowest-price selection."""
 
-from cryptoswap_wallet.backends import Backend, best_quote, gather_quotes
-from cryptoswap_wallet.thorchain import Quote, SwapFees, ThorchainError
+from swapsack.backends import Backend, best_quote, gather_quotes
+from swapsack.thorchain import Quote, SwapFees, ThorchainError
 
 
 def make_quote(out, *, min_in=1000, memo="=:e:0xdest"):

@@ -10,31 +10,14 @@ Non-custodial cross-chain swaps are supported via [THORChain](https://thorchain.
 
 The rest of this document is partially AI-generated.
 
-## Related projects
-
-The CLI / library niche for *non-custodial cross-chain swaps* appears
-unoccupied — GUI swap-wallets for phones, web and desktop are plentiful, but the
-closest Python packages on PyPI do something else entirely:
-
-- **[`pywallet`](https://github.com/ranaroussi/pywallet)** — a BIP32/HD
-  key-and-address *generator* (BTC, ETH, LTC, DASH, DOGE, …). No balances, no
-  broadcasting, no network I/O and no swaps; last released 2018. It's a
-  key-derivation helper, not a spendable wallet.
-- **[`multiwallet`](https://github.com/mflaxman/multiwallet)** — a PyQt5
-  **desktop GUI** for *stateless multisig Bitcoin* (airgapped seedpicker +
-  PSBT). Bitcoin-only, cold-storage focused, no swaps; last released 2020.
-
-Neither is multi-chain *and* swap-capable from a terminal or as a library, which
-is the gap this project fills.
-
 ## Installation
 
 ```
 make install
 ```
 
-This auto-detects `uv`, `pipx`, or `pip` and installs the `cryptoswap-wallet`
-binary on your PATH. Then run `cryptoswap-wallet --help`.
+This auto-detects `uv`, `pipx`, or `pip` and installs the `swapsack`
+binary on your PATH. Then run `swapsack --help`.
 
 ## Features
 
@@ -119,21 +102,21 @@ capability grid above for the per-feature detail.
 ## Usage
 
 ```sh
-cryptoswap-wallet --help                              # subcmd --help also works
-cryptoswap-wallet init                                # create encrypted keystore
-cryptoswap-wallet add-hd --label main                 # import seed (prompted), or:
-cryptoswap-wallet add-hd --label test --generate      # generate a fresh seed
-cryptoswap-wallet address                             # BTC / ETH / TRON addresses
-cryptoswap-wallet balance                             # balances across chains
-cryptoswap-wallet quote --from ETH --to USDT-TRON --amount 0.02
-cryptoswap-wallet swap  --from ETH --to BTC --amount max          # DRY RUN (sweep)
-cryptoswap-wallet swap  --from BTC --to USDT-TRON --amount 0.001 --confirm
-cryptoswap-wallet swap  --from BTC --to DASH --dest X... --stream-interval 1  # streamed, low slip
-cryptoswap-wallet send  bc1q...recipient --amount 0.001                 # DRY RUN
-cryptoswap-wallet send  bc1q...recipient --amount max --confirm         # sweep + send
-cryptoswap-wallet send  0x...recipient --asset ETH --amount 0.01        # native ETH
-cryptoswap-wallet send  0x...recipient --asset USDT-ETH --amount max    # sweep tokens
-cryptoswap-wallet send  T...recipient --asset USDT-TRON --amount 25     # TRC-20
+swapsack --help                              # subcmd --help also works
+swapsack init                                # create encrypted keystore
+swapsack add-hd --label main                 # import seed (prompted), or:
+swapsack add-hd --label test --generate      # generate a fresh seed
+swapsack address                             # BTC / ETH / TRON addresses
+swapsack balance                             # balances across chains
+swapsack quote --from ETH --to USDT-TRON --amount 0.02
+swapsack swap  --from ETH --to BTC --amount max          # DRY RUN (sweep)
+swapsack swap  --from BTC --to USDT-TRON --amount 0.001 --confirm
+swapsack swap  --from BTC --to DASH --dest X... --stream-interval 1  # streamed, low slip
+swapsack send  bc1q...recipient --amount 0.001                 # DRY RUN
+swapsack send  bc1q...recipient --amount max --confirm         # sweep + send
+swapsack send  0x...recipient --asset ETH --amount 0.01        # native ETH
+swapsack send  0x...recipient --asset USDT-ETH --amount max    # sweep tokens
+swapsack send  T...recipient --asset USDT-TRON --amount 25     # TRC-20
 ```
 
 Defaults are `--from BTC --to ETH`. `--confirm` prints the freshly-quoted swap
@@ -145,19 +128,38 @@ confirmation prompt. Destination addresses auto-derive from the seed;
 pass `--dest` to override.
 
 
-Config via flags or env: keystore `$CRYPTOSWAP_WALLET_KEYSTORE`
-(`~/.config/cryptoswap-wallet/keystore.json`), passphrase
-`$CRYPTOSWAP_WALLET_PASSPHRASE`, Esplora `$CRYPTOSWAP_WALLET_ESPLORA`, Ethereum
-RPC `$CRYPTOSWAP_WALLET_ETH_RPC`, TRON API `$CRYPTOSWAP_WALLET_TRON_API`, BSC RPC
-`$CRYPTOSWAP_WALLET_BSC_RPC`.
+Config via flags or env: keystore `$SWAPSACK_KEYSTORE`
+(`~/.config/swapsack/keystore.json`), passphrase
+`$SWAPSACK_PASSPHRASE`, Esplora `$SWAPSACK_ESPLORA`, Ethereum
+RPC `$SWAPSACK_ETH_RPC`, TRON API `$SWAPSACK_TRON_API`, BSC RPC
+`$SWAPSACK_BSC_RPC`.
 
 **Shell tab-completion** (via argcomplete) — enable for the current shell, e.g. bash:
 
 ```sh
-eval "$(register-python-argcomplete cryptoswap-wallet)"   # add to ~/.bashrc to persist
+eval "$(register-python-argcomplete swapsack)"   # add to ~/.bashrc to persist
 ```
 
 zsh and fish work too; see the [argcomplete docs](https://github.com/kislyuk/argcomplete#activating-global-completion).
+
+## Related projects
+
+This project started out from a personal needs.  When asking Claude Opus to search for existing products, it found nothing.  Later, when searching for the (temporary) name of this package as well as doing research on possible permanent names, different software appeared on the radar.  Here is a comparision:
+
+The CLI / library niche for *non-custodial cross-chain swaps* appears
+unoccupied — GUI swap-wallets for phones, web and desktop are plentiful, but the
+closest Python packages on PyPI do something else entirely:
+
+- **[`pywallet`](https://github.com/ranaroussi/pywallet)** — a BIP32/HD
+  key-and-address *generator* (BTC, ETH, LTC, DASH, DOGE, …). No balances, no
+  broadcasting, no network I/O and no swaps; last released 2018. It's a
+  key-derivation helper, not a spendable wallet.
+- **[`multiwallet`](https://github.com/mflaxman/multiwallet)** — a PyQt5
+  **desktop GUI** for *stateless multisig Bitcoin* (airgapped seedpicker +
+  PSBT). Bitcoin-only, cold-storage focused, no swaps; last released 2020.
+
+Neither is multi-chain *and* swap-capable from a terminal or as a library, which
+is the gap this project fills.
 
 ## Development
 
@@ -179,9 +181,9 @@ exercise the USDT-TRON deposit mechanics end to end. It is skipped unless a
 funded Nile account is provided via env / CI secrets:
 
 ```sh
-CRYPTOSWAP_WALLET_NILE_MNEMONIC=...  # Nile account holding the token + some TRX
-CRYPTOSWAP_WALLET_NILE_TOKEN=T...    # a TRC-20 contract (base58) the account holds
-CRYPTOSWAP_WALLET_NILE_RECIPIENT=T...  # optional; defaults to a self-transfer
+SWAPSACK_NILE_MNEMONIC=...  # Nile account holding the token + some TRX
+SWAPSACK_NILE_TOKEN=T...    # a TRC-20 contract (base58) the account holds
+SWAPSACK_NILE_RECIPIENT=T...  # optional; defaults to a self-transfer
 ```
 
 Two more opt-in tests (`tests/test_integration_testnet.py`) prove the **`send`
@@ -193,15 +195,15 @@ the seeds live only in CI secrets:
 
 ```sh
 # BTC signet (sweeps the wallet's signet UTXOs to itself; testnet3 is deprecated)
-CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC=...    # a funded account
-CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK=...     # optional; "signet" (default) / "testnet"
-CRYPTOSWAP_WALLET_BTC_TESTNET_ESPLORA=...     # optional; defaults to blockstream <network>
-CRYPTOSWAP_WALLET_BTC_TESTNET_RECIPIENT=tb1.. # optional; defaults to a self-send
+SWAPSACK_BTC_TESTNET_MNEMONIC=...    # a funded account
+SWAPSACK_BTC_TESTNET_NETWORK=...     # optional; "signet" (default) / "testnet"
+SWAPSACK_BTC_TESTNET_ESPLORA=...     # optional; defaults to blockstream <network>
+SWAPSACK_BTC_TESTNET_RECIPIENT=tb1.. # optional; defaults to a self-send
 
 # ETH Sepolia (self-sends 0.001 ETH, chain id 11155111)
-CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC=...    # a funded Sepolia account
-CRYPTOSWAP_WALLET_ETH_SEPOLIA_RPC=...         # optional; defaults to a public Sepolia RPC
-CRYPTOSWAP_WALLET_ETH_SEPOLIA_RECIPIENT=0x..  # optional; defaults to a self-send
+SWAPSACK_ETH_SEPOLIA_MNEMONIC=...    # a funded Sepolia account
+SWAPSACK_ETH_SEPOLIA_RPC=...         # optional; defaults to a public Sepolia RPC
+SWAPSACK_ETH_SEPOLIA_RECIPIENT=0x..  # optional; defaults to a self-send
 ```
 
 ## Releasing

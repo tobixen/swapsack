@@ -2,8 +2,8 @@
 
 import pytest
 
-from cryptoswap_wallet.chains.bsc import BSC_TRACKED_TOKENS, BscAdapter
-from cryptoswap_wallet.chains.eth import EthAdapter
+from swapsack.chains.bsc import BSC_TRACKED_TOKENS, BscAdapter
+from swapsack.chains.eth import EthAdapter
 
 MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon "

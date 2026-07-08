@@ -8,15 +8,15 @@ account our wallet DERIVES. The funding addresses are documented in
 ``docs/testnet.md`` (and each test prints its address on the send line):
 
   BTC signet (default; override the network via env for testnet3/4):
-    CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC   seed of a funded account
-    CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK    optional; "signet" (default)/"testnet"
-    CRYPTOSWAP_WALLET_BTC_TESTNET_ESPLORA    optional Esplora base URL
-    CRYPTOSWAP_WALLET_BTC_TESTNET_RECIPIENT   optional; defaults to a self-send
+    SWAPSACK_BTC_TESTNET_MNEMONIC   seed of a funded account
+    SWAPSACK_BTC_TESTNET_NETWORK    optional; "signet" (default)/"testnet"
+    SWAPSACK_BTC_TESTNET_ESPLORA    optional Esplora base URL
+    SWAPSACK_BTC_TESTNET_RECIPIENT   optional; defaults to a self-send
 
   ETH Sepolia:
-    CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC   seed of a funded Sepolia account
-    CRYPTOSWAP_WALLET_ETH_SEPOLIA_RPC        optional JSON-RPC URL
-    CRYPTOSWAP_WALLET_ETH_SEPOLIA_RECIPIENT   optional; defaults to a self-send
+    SWAPSACK_ETH_SEPOLIA_MNEMONIC   seed of a funded Sepolia account
+    SWAPSACK_ETH_SEPOLIA_RPC        optional JSON-RPC URL
+    SWAPSACK_ETH_SEPOLIA_RECIPIENT   optional; defaults to a self-send
 
 Run with ``pytest -m network``.
 """
@@ -35,33 +35,31 @@ import pytest
 # into a spurious in-test failure. Mirrors the other bitcoinlib-backed tests.
 pytest.importorskip("bitcoinlib")
 
-from cryptoswap_wallet.chains.btc import ACCOUNT, BtcAdapter  # noqa: E402
-from cryptoswap_wallet.chains.coins import (  # noqa: E402
+from swapsack.chains.btc import ACCOUNT, BtcAdapter  # noqa: E402
+from swapsack.chains.coins import (  # noqa: E402
     InsufficientFunds,
     sweep_amount,
 )
-from cryptoswap_wallet.chains.eth import EthAdapter  # noqa: E402
-from cryptoswap_wallet.chains.scan import scan_account  # noqa: E402
+from swapsack.chains.eth import EthAdapter  # noqa: E402
+from swapsack.chains.scan import scan_account  # noqa: E402
 
 pytestmark = pytest.mark.network
 
-BTC_TESTNET_MNEMONIC = os.environ.get("CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC")
+BTC_TESTNET_MNEMONIC = os.environ.get("SWAPSACK_BTC_TESTNET_MNEMONIC")
 # Default to signet (stable, reliable faucet); testnet3 is being deprecated and
 # its faucets are chronically drained. Override with the NETWORK env (e.g.
 # "testnet"/"testnet4") — the Esplora default follows it (blockstream hosts each
 # under the same path). Signet and testnet3 share the tb1 address format, so the
 # funded address is the same either way.
-BTC_TESTNET_NETWORK = (
-    os.environ.get("CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK") or "signet"
-)
+BTC_TESTNET_NETWORK = os.environ.get("SWAPSACK_BTC_TESTNET_NETWORK") or "signet"
 BTC_TESTNET_ESPLORA = (
-    os.environ.get("CRYPTOSWAP_WALLET_BTC_TESTNET_ESPLORA")
+    os.environ.get("SWAPSACK_BTC_TESTNET_ESPLORA")
     or f"https://blockstream.info/{BTC_TESTNET_NETWORK}/api"
 )
 
-ETH_SEPOLIA_MNEMONIC = os.environ.get("CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC")
+ETH_SEPOLIA_MNEMONIC = os.environ.get("SWAPSACK_ETH_SEPOLIA_MNEMONIC")
 ETH_SEPOLIA_RPC = (
-    os.environ.get("CRYPTOSWAP_WALLET_ETH_SEPOLIA_RPC")
+    os.environ.get("SWAPSACK_ETH_SEPOLIA_RPC")
     or "https://ethereum-sepolia-rpc.publicnode.com"
 )
 SEPOLIA_CHAIN_ID = 11155111
@@ -69,7 +67,7 @@ SEPOLIA_CHAIN_ID = 11155111
 
 @pytest.mark.skipif(
     not BTC_TESTNET_MNEMONIC,
-    reason="set CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC (a funded testnet account) "
+    reason="set SWAPSACK_BTC_TESTNET_MNEMONIC (a funded testnet account) "
     "to run the BTC testnet broadcast loop",
 )
 def test_btc_testnet_send_broadcast():
@@ -81,7 +79,7 @@ def test_btc_testnet_send_broadcast():
         esplora_url=BTC_TESTNET_ESPLORA, network=BTC_TESTNET_NETWORK
     ) as adapter:
         recipient = os.environ.get(
-            "CRYPTOSWAP_WALLET_BTC_TESTNET_RECIPIENT"
+            "SWAPSACK_BTC_TESTNET_RECIPIENT"
         ) or adapter.derive_address(BTC_TESTNET_MNEMONIC, receive_path)
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(BTC_TESTNET_MNEMONIC, p),
@@ -139,7 +137,7 @@ def test_btc_testnet_send_broadcast():
 
 @pytest.mark.skipif(
     not ETH_SEPOLIA_MNEMONIC,
-    reason="set CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC (a funded Sepolia account) "
+    reason="set SWAPSACK_ETH_SEPOLIA_MNEMONIC (a funded Sepolia account) "
     "to run the ETH Sepolia broadcast loop",
 )
 def test_eth_sepolia_send_broadcast_and_confirm():
@@ -151,7 +149,7 @@ def test_eth_sepolia_send_broadcast_and_confirm():
         # 0.001 ETH is sent + gas; require a little headroom.
         if adapter.fetch_balance(sender) < 2 * 10**15:
             pytest.skip(f"Sepolia account unfunded — fund {sender}")
-        recipient = os.environ.get("CRYPTOSWAP_WALLET_ETH_SEPOLIA_RECIPIENT") or sender
+        recipient = os.environ.get("SWAPSACK_ETH_SEPOLIA_RECIPIENT") or sender
         nonce = adapter.get_nonce(sender)
         max_fee_per_gas, max_priority_fee_per_gas = adapter.fetch_fees()
         prepared = adapter.build_and_verify_send(

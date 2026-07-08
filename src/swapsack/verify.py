@@ -537,7 +537,7 @@ class CosmosSendPlan:
 def verify_cosmos_send(*, decoded: dict, plan: CosmosSendPlan) -> list[str]:
     """Return reasons a decoded MsgSend body does not match ``plan``; empty is safe.
 
-    ``decoded`` is :func:`cryptoswap_wallet.chains.cosmos_tx.decode_msg_send_body`
+    ``decoded`` is :func:`swapsack.chains.cosmos_tx.decode_msg_send_body`
     output — i.e. what was *actually serialized*, so a build bug that bound the
     wrong recipient/amount is caught before signing.
     """

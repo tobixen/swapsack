@@ -6,7 +6,7 @@ Owner's requested order; two-sided liquidity comes *after* these.
 
 1. ~~**`send` to an external address.**~~ **DONE for BTC, ETH, USDT-ETH, TRX,
    USDT-TRON** (USDC-ETH shares the ERC-20 path). Plain on-chain transfer (no
-   swap, no memo) via `cryptoswap-wallet send <addr> --asset <A> --amount
+   swap, no memo) via `swapsack send <addr> --asset <A> --amount
    <n|max>`, each with a dedicated memo-less verify gate (`verify_{btc,eth,
    eth_token,tron,tron_token}_send`) that binds recipient + amount and rejects
    any memo/router/extra calldata. ERC-20/TRC-20 sends are a routerless,
@@ -174,7 +174,7 @@ lowest-price routing across backends.
   shared EVM code path) rather than copy it per chain.
 - **BSC (BNB Smart Chain)** — Hold + Balance **DONE** (`chains/bsc.py`, a thin
   EVM subclass of `EthAdapter`: native BNB + BEP-20 USDC/USDT at 18 decimals,
-  wired into `cmd_address`/`balance` with `--bsc-rpc`/`$CRYPTOSWAP_WALLET_BSC_RPC`).
+  wired into `cmd_address`/`balance` with `--bsc-rpc`/`$SWAPSACK_BSC_RPC`).
   Swaps are still **blocked, do not implement yet**: THORChain has BSC
   `chain_trading_paused`/`halted` (a live `BTC->BSC.BNB` quote returns "trading is
   halted, can't process swap") and Maya has no BSC pools, so To/From/Sweep/Liq are

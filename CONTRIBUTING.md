@@ -1,4 +1,4 @@
-# Contributing to cryptoswap-wallet
+# Contributing to swapsack
 
 Contributions are mostly welcome (but do say if you've used AI or other tools).
 If the length of this text scares you, skip it and just open a pull request on

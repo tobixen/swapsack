@@ -8,7 +8,7 @@ See docs/cacao.md for the design notes (the same shape applies here).
 
 from __future__ import annotations
 
-from cryptoswap_wallet.chains.cosmos import CosmosAdapter
+from swapsack.chains.cosmos import CosmosAdapter
 
 DEFAULT_THORNODE = "https://thornode.thorchain.network"
 RUNE_DECIMALS = 8

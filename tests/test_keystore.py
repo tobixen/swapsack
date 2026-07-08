@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from cryptoswap_wallet.keystore import HdKey, Keystore, KeystoreError, RawKey, Secret
+from swapsack.keystore import HdKey, Keystore, KeystoreError, RawKey, Secret
 
 MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon "
@@ -106,7 +106,7 @@ def test_load_honours_stored_key_length(tmp_path):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-    from cryptoswap_wallet import keystore as ks_mod
+    from swapsack import keystore as ks_mod
 
     path = tmp_path / "ks.json"
     make().save(path, PW, n=LOW_N)

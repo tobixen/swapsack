@@ -10,7 +10,7 @@ import pytest
 # spurious in-test failure. Mirrors the other bitcoinlib-backed tests.
 pytest.importorskip("bitcoinlib")
 
-from cryptoswap_wallet.cli import ASSET, build_parser  # noqa: E402
+from swapsack.cli import ASSET, build_parser  # noqa: E402
 
 
 def test_swap_defaults():
@@ -69,7 +69,7 @@ def test_streaming_quantity_zero_still_allowed():
 
 
 def test_streaming_kwargs_helper_reads_args():
-    from cryptoswap_wallet.cli import _streaming_kwargs
+    from swapsack.cli import _streaming_kwargs
 
     args = build_parser().parse_args(
         ["quote", "--amount", "0.1", "--stream-interval", "3"]
@@ -81,14 +81,14 @@ def test_streaming_kwargs_helper_reads_args():
 
 
 def test_market_comparison_skips_unmapped_asset_without_network():
-    from cryptoswap_wallet.cli import _market_comparison
+    from swapsack.cli import _market_comparison
 
     # TCY has no CoinGecko id in the map -> returns None before any HTTP call.
     assert _market_comparison("TCY", "BTC", 100_000_000, 1) is None
 
 
 def _patch_feed(monkeypatch, prices):
-    import cryptoswap_wallet.pricefeed as pf
+    import swapsack.pricefeed as pf
 
     def fake_spot(self, coin_ids, *, vs=("usd",)):
         return prices
@@ -97,7 +97,7 @@ def _patch_feed(monkeypatch, prices):
 
 
 def test_market_comparison_is_three_lines_with_eur_loss(monkeypatch):
-    from cryptoswap_wallet.cli import _market_comparison
+    from swapsack.cli import _market_comparison
 
     _patch_feed(
         monkeypatch,
@@ -116,7 +116,7 @@ def test_market_comparison_is_three_lines_with_eur_loss(monkeypatch):
 
 
 def test_market_comparison_drops_eur_line_when_no_eur_price(monkeypatch):
-    from cryptoswap_wallet.cli import _market_comparison
+    from swapsack.cli import _market_comparison
 
     _patch_feed(monkeypatch, {"bitcoin": {"usd": 60000.0}, "dash": {"usd": 30.0}})
     lines = _market_comparison("BTC", "DASH", 100_000_000, 190_000_000_000)
@@ -124,7 +124,7 @@ def test_market_comparison_drops_eur_line_when_no_eur_price(monkeypatch):
 
 
 def test_market_comparison_shows_gain_when_pool_favours_you(monkeypatch):
-    from cryptoswap_wallet.cli import _market_comparison
+    from swapsack.cli import _market_comparison
 
     _patch_feed(
         monkeypatch,
@@ -139,7 +139,7 @@ def test_market_comparison_shows_gain_when_pool_favours_you(monkeypatch):
 
 
 def test_market_comparison_scales_cacao_output_by_1e10(monkeypatch):
-    from cryptoswap_wallet.cli import _market_comparison
+    from swapsack.cli import _market_comparison
 
     _patch_feed(
         monkeypatch,
@@ -182,7 +182,7 @@ def test_add_liquidity_rejects_zero_amount():
 
 
 def test_add_liquidity_usdt_eth_routes_to_eth_handler(monkeypatch):
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     called = {}
 
@@ -200,7 +200,7 @@ def test_add_liquidity_usdt_eth_routes_to_eth_handler(monkeypatch):
 
 
 def test_token_pool_assets_uppercases_contract():
-    from cryptoswap_wallet.cli import _token_pool_assets
+    from swapsack.cli import _token_pool_assets
 
     class FakeEth:
         chain = "ETH"
@@ -216,7 +216,7 @@ def test_token_pool_assets_uppercases_contract():
 
 
 def test_token_pool_assets_empty_without_tracked_tokens():
-    from cryptoswap_wallet.cli import _token_pool_assets
+    from swapsack.cli import _token_pool_assets
 
     class FakeBtc:
         chain = "BTC"
@@ -225,7 +225,7 @@ def test_token_pool_assets_empty_without_tracked_tokens():
 
 
 def test_add_liquidity_usdt_tron_rejected(capsys):
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     args = build_parser().parse_args(
         ["add-liquidity", "--asset", "USDT-TRON", "--amount", "10"]
@@ -266,8 +266,8 @@ def test_swap_from_eth_parses():
 def test_swap_from_eth_token_sweep_uses_full_token_balance(monkeypatch):
     """`--amount max` for an ERC-20 source sweeps the whole balanceOf (gas is
     paid in ETH, so the token amount is exact) — it must no longer be rejected."""
-    import cryptoswap_wallet.cli as cli
-    from cryptoswap_wallet.swap import SwapAborted
+    import swapsack.cli as cli
+    from swapsack.swap import SwapAborted
 
     class FakeAdapter:
         def __enter__(self):
@@ -328,8 +328,8 @@ def test_swap_tolerance_bps_flag_parses():
 def test_swap_from_tron_token_sweep_uses_full_balance(monkeypatch):
     """`--amount max` for USDT-TRON sweeps the whole token balance (energy is
     paid in TRX, so the amount is exact) — it must build the swap, not reject."""
-    import cryptoswap_wallet.cli as cli
-    from cryptoswap_wallet.swap import SwapAborted
+    import swapsack.cli as cli
+    from swapsack.swap import SwapAborted
 
     class FakeAdapter:
         def __enter__(self):
@@ -383,7 +383,7 @@ def test_swap_from_native_refuses_foreign_backend(
     --backend naming the *other* network must abort before any network call —
     the deposit would land on the home chain carrying a foreign-priced memo
     (refunded minus the native fee at best)."""
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
     monkeypatch.setattr(cli, "_resolve_destination", lambda args, m, p="": "bc1qdest")
@@ -420,9 +420,9 @@ def test_swap_from_native_auto_pins_home_backend(
 ):
     """--backend auto must not price-route a native source: only the home
     network's backend can serve a MsgDeposit swap."""
-    import cryptoswap_wallet.backends as backends_mod
-    import cryptoswap_wallet.cli as cli
-    from cryptoswap_wallet.swap import SwapAborted
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
+    from swapsack.swap import SwapAborted
 
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
     monkeypatch.setattr(cli, "_resolve_destination", lambda args, m, p="": "bc1qdest")
@@ -447,7 +447,7 @@ def test_send_validates_recipient_before_dispatch(monkeypatch, capsys):
     # The recipient sanity check lives once in cmd_send, before any handler,
     # keystore or network work — the per-chain handlers each carried (or, for
     # BTC, forgot) their own copy.
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     called = []
     monkeypatch.setattr(cli, "_send_btc", lambda args: called.append(1) or 0)
@@ -472,7 +472,7 @@ def test_send_tron_sub_precision_amount_aborts_cleanly(monkeypatch, capsys):
     """TronAdapter.to_sun/to_token_native raise ValueError for amounts finer
     than the chain's precision; _send_tron must print the standard ABORTED
     message (like _swap_from_tron does), not leak a traceback."""
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     class FakeAdapter:
         def __enter__(self):
@@ -509,7 +509,7 @@ def test_send_tron_sub_precision_amount_aborts_cleanly(monkeypatch, capsys):
 
 def test_swap_from_tron_native_max_still_rejected():
     """Native TRX sweep stays unsupported (it needs a TRX fee reserve)."""
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     args = build_parser().parse_args(
         ["swap", "--from", "TRX", "--to", "BTC", "--amount", "max"]
@@ -539,7 +539,7 @@ def test_balance_bsc_rpc_flag_parses():
 def test_wallet_adapters_include_bsc_maya_and_thor():
     from types import SimpleNamespace
 
-    from cryptoswap_wallet.cli import _wallet_adapters
+    from swapsack.cli import _wallet_adapters
 
     args = SimpleNamespace(
         esplora=None,
@@ -632,7 +632,7 @@ def test_status_backend_maya_parses():
 
 
 def test_send_parses_recipient_and_amount():
-    from cryptoswap_wallet.cli import cmd_send
+    from swapsack.cli import cmd_send
 
     args = build_parser().parse_args(
         ["send", "bc1qrecipient", "--amount", "0.001", "--confirm"]
@@ -706,7 +706,7 @@ class _FakeEthSend:
     def build_and_verify_send(self, **kw):
         from types import SimpleNamespace
 
-        from cryptoswap_wallet.swap import Prepared
+        from swapsack.swap import Prepared
 
         self._captured.update(kw)
         return Prepared(
@@ -715,7 +715,7 @@ class _FakeEthSend:
 
 
 def test_send_eth_native_dry_run(monkeypatch):
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     captured = {}
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
@@ -732,7 +732,7 @@ def test_send_eth_native_dry_run(monkeypatch):
 
 
 def test_send_eth_token_sweep_uses_full_balance(monkeypatch):
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     captured = {}
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
@@ -748,7 +748,7 @@ def test_send_eth_token_sweep_uses_full_balance(monkeypatch):
 
 
 def test_send_eth_rejects_bad_recipient():
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     args = build_parser().parse_args(
         ["send", "0xnothex", "--asset", "ETH", "--amount", "1"]
@@ -757,7 +757,7 @@ def test_send_eth_rejects_bad_recipient():
 
 
 def test_send_tron_native_max_refused():
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     args = build_parser().parse_args(
         [
@@ -776,7 +776,7 @@ def test_main_version_exits_cleanly(monkeypatch):
     # Exercises main()'s completion gate: with _ARGCOMPLETE unset, argcomplete is
     # never imported and argparse's --version action exits 0.
     monkeypatch.delenv("_ARGCOMPLETE", raising=False)
-    from cryptoswap_wallet.cli import main
+    from swapsack.cli import main
 
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
@@ -807,8 +807,8 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
     # BSC has no pools on either network and the settlement assets (CACAO/RUNE)
     # have no pool of themselves — probing them is guaranteed-404 HTTP round
     # trips (up to the full timeout each) for zero information.
-    import cryptoswap_wallet.backends as backends_mod
-    import cryptoswap_wallet.cli as cli
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
 
     class FakeReport:
         addresses = ("addr1",)
@@ -848,10 +848,10 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
 
 
 def test_poolless_adapters_are_flagged():
-    from cryptoswap_wallet.chains.bsc import BscAdapter
-    from cryptoswap_wallet.chains.btc import BtcAdapter
-    from cryptoswap_wallet.chains.maya import MayaAdapter
-    from cryptoswap_wallet.chains.thor import ThorAdapter
+    from swapsack.chains.bsc import BscAdapter
+    from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.maya import MayaAdapter
+    from swapsack.chains.thor import ThorAdapter
 
     assert BscAdapter.lp_pools is False  # no BSC pools anywhere (documented)
     # CACAO is Maya's settlement asset — no MAYA.CACAO pool on Maya, and
@@ -869,9 +869,9 @@ def test_balance_probes_rune_pool_on_maya(monkeypatch):
     # RUNE LP positions (funds appeared to vanish from the accounting). The
     # fake mirrors the real ThorAdapter's lp_pools flag so the class attribute
     # drives the probe decision.
-    import cryptoswap_wallet.backends as backends_mod
-    import cryptoswap_wallet.cli as cli
-    from cryptoswap_wallet.chains.thor import ThorAdapter
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
+    from swapsack.chains.thor import ThorAdapter
 
     class FakeReport:
         addresses = ("thor1abc",)
@@ -911,7 +911,7 @@ def test_derivable_chains_all_actually_derive():
     # the tuple advertises must actually produce an address (no drift where the
     # tuple lists a chain that _derive_destination_address returns None for, or
     # vice versa).
-    from cryptoswap_wallet.cli import DERIVABLE_CHAINS, _derive_destination_address
+    from swapsack.cli import DERIVABLE_CHAINS, _derive_destination_address
 
     for chain in DERIVABLE_CHAINS:
         addr = _derive_destination_address(chain, MNEMONIC)
@@ -923,7 +923,7 @@ def test_derivable_chains_all_actually_derive():
 def test_resolve_destination_derives_maya_and_thor():
     # The MAYA/THOR adapters expose derive_address, so `swap --to CACAO/RUNE`
     # must not demand a --dest the wallet itself prints in `address`.
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     args = build_parser().parse_args(["swap", "--to", "CACAO", "--amount", "1"])
     assert (
@@ -940,8 +940,8 @@ def test_resolve_destination_derives_maya_and_thor():
 def test_quote_derives_cacao_destination(monkeypatch):
     # cmd_quote's derivable-chain set must be the same one _resolve_destination
     # uses (they were two hardcoded copies that drifted independently).
-    import cryptoswap_wallet.backends as backends_mod
-    import cryptoswap_wallet.cli as cli
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
 
     captured = {}
 
@@ -966,8 +966,8 @@ def test_quote_pins_native_source_to_home_backend(monkeypatch):
     # command refuses (or silently ignores).
     from types import SimpleNamespace
 
-    import cryptoswap_wallet.backends as backends_mod
-    import cryptoswap_wallet.cli as cli
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
 
     captured = {}
 
@@ -1001,7 +1001,7 @@ def test_quote_pins_native_source_to_home_backend(monkeypatch):
 def test_quote_refuses_foreign_backend_for_native_source():
     # Consistent with swap: an explicit foreign --backend for a native source
     # is refused, not silently re-pointed.
-    import cryptoswap_wallet.cli as cli
+    import swapsack.cli as cli
 
     args = build_parser().parse_args(
         [
@@ -1027,7 +1027,7 @@ class _ClosableClient:
 
 
 def test_resolve_destination_rejects_bad_dest():
-    from cryptoswap_wallet.cli import _resolve_destination
+    from swapsack.cli import _resolve_destination
 
     args = build_parser().parse_args(
         ["swap", "--to", "LTC", "--amount", "0.01", "--dest", "not-a-real-address!!"]
@@ -1037,7 +1037,7 @@ def test_resolve_destination_rejects_bad_dest():
 
 
 def test_resolve_destination_accepts_good_ltc_dest():
-    from cryptoswap_wallet.cli import _resolve_destination
+    from swapsack.cli import _resolve_destination
 
     dest = "ltc1qg9stkxrszkdqsuj92lm4c7akvk36zvhqw7p6ck"
     args = build_parser().parse_args(
@@ -1050,7 +1050,7 @@ def test_resolve_destination_for_usdt_targets():
     pytest.importorskip("eth_account")
     from types import SimpleNamespace
 
-    from cryptoswap_wallet.cli import _resolve_destination
+    from swapsack.cli import _resolve_destination
 
     mnemonic = (
         "abandon abandon abandon abandon abandon abandon "
@@ -1091,13 +1091,13 @@ MNEMONIC = (
 def test_base_units_scales_without_float_error():
     # 93393106.59778857 BTC through binary float rounds to ...858 base units;
     # the Decimal path must yield the exact ...857.
-    from cryptoswap_wallet.cli import _amount, _base_units
+    from swapsack.cli import _amount, _base_units
 
     assert _base_units(_amount("93393106.59778857")) == 9339310659778857
 
 
 def test_base_units_round_trip_simple():
-    from cryptoswap_wallet.cli import _amount, _base_units
+    from swapsack.cli import _amount, _base_units
 
     assert _base_units(_amount("0.5")) == 50_000_000
 
@@ -1119,7 +1119,7 @@ def test_amount_accepts_cacao_scale_amounts():
     # 5e-9 is 50 CACAO base units (1e-10) — a perfectly sendable amount that
     # the old 1e-8 parse floor wrongly refused. The asset is unknown at parse
     # time, so per-asset enforcement lives in _base_units.
-    from cryptoswap_wallet.cli import _amount
+    from swapsack.cli import _amount
 
     assert _amount("0.000000005") == Decimal("0.000000005")
 
@@ -1128,8 +1128,8 @@ def test_base_units_rejects_amount_below_one_base_unit():
     # 1e-9 scales to 0.1 of a 1e8 base unit -> would round to 0 and burn a fee
     # on a no-op send. The guard moved here from _amount, where the per-asset
     # unit wasn't known; with CACAO's 1e10 unit the same amount is fine.
-    from cryptoswap_wallet.cli import _base_units
-    from cryptoswap_wallet.swap import SwapAborted
+    from swapsack.cli import _base_units
+    from swapsack.swap import SwapAborted
 
     with pytest.raises(SwapAborted, match="base unit"):
         _base_units(Decimal("0.000000001"))
@@ -1141,8 +1141,8 @@ def test_base_units_rejects_sub_unit_amount_that_would_round_up():
     # rejected, NOT silently rounded UP to 1 and sent — that ships ~1.67x what
     # the user typed. The floor is one *whole* base unit, checked on the
     # unrounded product, not on the ROUND_HALF_EVEN result.
-    from cryptoswap_wallet.cli import _base_units
-    from cryptoswap_wallet.swap import SwapAborted
+    from swapsack.cli import _base_units
+    from swapsack.swap import SwapAborted
 
     with pytest.raises(SwapAborted, match="base unit"):
         _base_units(Decimal("0.000000006"))  # 0.6 sat at 1e8
@@ -1155,8 +1155,8 @@ def test_main_prints_aborted_for_escaped_swap_aborted(monkeypatch, capsys):
     # _base_units can raise SwapAborted from handlers with no local handler
     # (e.g. cmd_quote); main() must turn it into the standard ABORTED message,
     # not a traceback.
-    import cryptoswap_wallet.cli as cli
-    from cryptoswap_wallet.swap import SwapAborted
+    import swapsack.cli as cli
+    from swapsack.swap import SwapAborted
 
     def boom(args):
         raise SwapAborted("test escape")
@@ -1175,8 +1175,8 @@ def test_quote_scales_amount_per_source_asset(monkeypatch, from_asset, expected)
     # The quote API speaks the source asset's native unit (CACAO is 1e10, not
     # the shared 1e8): a fixed-1e8 scaling quoted 1/100th of the typed CACAO
     # amount — a wildly misleading price preview.
-    import cryptoswap_wallet.backends as backends_mod
-    import cryptoswap_wallet.cli as cli
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
 
     captured = {}
 
@@ -1208,15 +1208,15 @@ def test_quote_scales_amount_per_source_asset(monkeypatch, from_asset, expected)
 
 
 def test_load_mnemonic_returns_bip39_passphrase(tmp_path, monkeypatch):
-    import cryptoswap_wallet.cli as cli
-    from cryptoswap_wallet.keystore import Keystore
+    import swapsack.cli as cli
+    from swapsack.keystore import Keystore
 
     path = tmp_path / "ks.json"
     ks = Keystore()
     ks.add_hd("w", MNEMONIC, passphrase="extra-word")
     ks.save(path, "pw", n=1024)
-    monkeypatch.setenv("CRYPTOSWAP_WALLET_KEYSTORE", str(path))
-    monkeypatch.setenv("CRYPTOSWAP_WALLET_PASSPHRASE", "pw")
+    monkeypatch.setenv("SWAPSACK_KEYSTORE", str(path))
+    monkeypatch.setenv("SWAPSACK_PASSPHRASE", "pw")
 
     args = build_parser().parse_args(["address"])
     mnemonic, passphrase = cli._load_mnemonic(args)
@@ -1230,8 +1230,8 @@ def test_cli_renders_v1_passphrase_strip_warning(tmp_path, monkeypatch, capsys):
     # keystore through the CLI must print it, naming the key.
     import json as _json
 
-    import cryptoswap_wallet.cli as cli
-    from cryptoswap_wallet.keystore import Keystore
+    import swapsack.cli as cli
+    from swapsack.keystore import Keystore
 
     path = tmp_path / "ks.json"
     ks = Keystore()
@@ -1240,8 +1240,8 @@ def test_cli_renders_v1_passphrase_strip_warning(tmp_path, monkeypatch, capsys):
     env = _json.loads(path.read_text())
     env["version"] = 1
     path.write_text(_json.dumps(env))
-    monkeypatch.setenv("CRYPTOSWAP_WALLET_KEYSTORE", str(path))
-    monkeypatch.setenv("CRYPTOSWAP_WALLET_PASSPHRASE", "pw")
+    monkeypatch.setenv("SWAPSACK_KEYSTORE", str(path))
+    monkeypatch.setenv("SWAPSACK_PASSPHRASE", "pw")
 
     args = build_parser().parse_args(["address"])
     cli._load_mnemonic(args)
@@ -1254,8 +1254,8 @@ def test_cli_renders_v1_passphrase_strip_warning(tmp_path, monkeypatch, capsys):
 
 
 def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
-    import cryptoswap_wallet.cli as cli
-    from cryptoswap_wallet.chains.coins import InsufficientFunds, Utxo
+    import swapsack.cli as cli
+    from swapsack.chains.coins import InsufficientFunds, Utxo
 
     class FakeBtc:
         chain = "BTC"
@@ -1301,7 +1301,7 @@ def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
     monkeypatch.setattr(cli, "_resolve_destination", lambda args, m, p="": "bc1qdest")
     monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": FakeBtc())
     monkeypatch.setattr(cli, "_select_backend", lambda *a, **k: FakeBackend())
-    monkeypatch.setattr("cryptoswap_wallet.chains.scan.scan_account", fake_scan)
+    monkeypatch.setattr("swapsack.chains.scan.scan_account", fake_scan)
     monkeypatch.setattr(cli, "prepare_swap", boom)
 
     args = build_parser().parse_args(
@@ -1316,9 +1316,9 @@ def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
 def test_select_backend_closes_unused_clients(monkeypatch):
     from types import SimpleNamespace
 
-    import cryptoswap_wallet.backends as backends_mod
-    import cryptoswap_wallet.cli as cli
-    from cryptoswap_wallet.backends import Backend
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
+    from swapsack.backends import Backend
 
     class RecordingClient:
         def __init__(self):

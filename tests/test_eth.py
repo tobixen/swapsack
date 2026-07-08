@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("bitcoinlib")
 
-from cryptoswap_wallet.chains.eth import EthAdapter, to_checksum_address  # noqa: E402
+from swapsack.chains.eth import EthAdapter, to_checksum_address  # noqa: E402
 
 MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon "
@@ -58,7 +58,7 @@ def test_eth_sign_produces_typed_raw():
 
 
 def test_eth_sweep_amount_leaves_gas_reserve():
-    from cryptoswap_wallet.chains.eth import eth_sweep_amount
+    from swapsack.chains.eth import eth_sweep_amount
 
     amount = eth_sweep_amount(10**18, gas=60000, max_fee_per_gas=20_000_000_000)
     expected = (10**18 - 60000 * 20_000_000_000) // 10**10
@@ -68,8 +68,8 @@ def test_eth_sweep_amount_leaves_gas_reserve():
 def test_eth_sweep_amount_insufficient():
     import pytest
 
-    from cryptoswap_wallet.chains.coins import InsufficientFunds
-    from cryptoswap_wallet.chains.eth import eth_sweep_amount
+    from swapsack.chains.coins import InsufficientFunds
+    from swapsack.chains.eth import eth_sweep_amount
 
     with pytest.raises(InsufficientFunds):
         eth_sweep_amount(1000, gas=60000, max_fee_per_gas=20_000_000_000)
@@ -108,8 +108,8 @@ def test_eth_token_balances_report_tracked_tokens(monkeypatch):
 
 
 def test_eth_build_and_verify_clean():
-    from cryptoswap_wallet.swap import SwapRequest
-    from cryptoswap_wallet.thorchain import Quote, SwapFees
+    from swapsack.swap import SwapRequest
+    from swapsack.thorchain import Quote, SwapFees
 
     a = EthAdapter()
     dest = "bc1qexampledest"
@@ -147,7 +147,7 @@ def test_eth_build_and_verify_clean():
 
 
 def _eth_token_quote(memo, *, expiry=9_999_999_999):
-    from cryptoswap_wallet.thorchain import Quote, SwapFees
+    from swapsack.thorchain import Quote, SwapFees
 
     return Quote(
         inbound_address="0xe3536ba9559966c357f551ceccccf38b533aa171",
@@ -171,7 +171,7 @@ USDT_ASSET = "ETH.USDT-0xdAC17F958D2ee523a2206206994597C13D831ec7"
 
 
 def _build_usdt(dest="bc1qexampledest", amount=500_000_000):
-    from cryptoswap_wallet.swap import SwapRequest
+    from swapsack.swap import SwapRequest
 
     request = SwapRequest(
         from_asset=USDT_ASSET, to_asset="BTC.BTC", amount=amount, destination=dest
@@ -230,7 +230,7 @@ def test_eth_native_send_clean():
 
 
 def test_eth_token_send_transfers_to_recipient():
-    from cryptoswap_wallet.chains.eth import TRANSFER_SELECTOR, _decode_call
+    from swapsack.chains.eth import TRANSFER_SELECTOR, _decode_call
 
     prepared = EthAdapter().build_and_verify_send(
         **_send_kwargs(asset=USDT_ASSET, amount=250_000_000)  # 2.5 USDT
@@ -264,7 +264,7 @@ def test_eth_chain_id_is_configurable_for_testnet():
 
 
 def test_eth_token_verify_clean():
-    from cryptoswap_wallet.chains.eth import verify_eth_token_swap
+    from swapsack.chains.eth import verify_eth_token_swap
 
     built = _build_usdt()
     problems = verify_eth_token_swap(
@@ -277,8 +277,8 @@ def test_eth_token_deposit_honours_configured_chain_id():
     # A Sepolia adapter must sign token txs for its own chain id too — a
     # hardcoded mainnet 1 would emit a validly-signed *mainnet* transaction —
     # and the gate must accept the adapter's chain id, not a constant.
-    from cryptoswap_wallet.chains.eth import verify_eth_token_swap
-    from cryptoswap_wallet.swap import SwapRequest
+    from swapsack.chains.eth import verify_eth_token_swap
+    from swapsack.swap import SwapRequest
 
     request = SwapRequest(
         from_asset=USDT_ASSET,
@@ -304,7 +304,7 @@ def test_eth_token_deposit_honours_configured_chain_id():
 
 
 def test_eth_token_verify_rejects_tampered_chain_id():
-    from cryptoswap_wallet.chains.eth import verify_eth_token_swap
+    from swapsack.chains.eth import verify_eth_token_swap
 
     built = _build_usdt()
     built.deposit_tx["chainId"] = 56
@@ -315,7 +315,7 @@ def test_eth_token_verify_rejects_tampered_chain_id():
 
 
 def test_eth_token_verify_rejects_wrong_destination():
-    from cryptoswap_wallet.chains.eth import verify_eth_token_swap
+    from swapsack.chains.eth import verify_eth_token_swap
 
     built = _build_usdt()
     problems = verify_eth_token_swap(
@@ -332,7 +332,7 @@ def test_eth_token_sign_produces_two_raws():
 
 def test_eth_token_build_from_uppercase_0x_asset():
     # ASSET uses THORChain's uppercase "0X..." contract form — must not crash (T0).
-    from cryptoswap_wallet.swap import SwapRequest
+    from swapsack.swap import SwapRequest
 
     asset = "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7"
     req = SwapRequest(
@@ -351,7 +351,7 @@ def test_eth_token_build_from_uppercase_0x_asset():
 
 
 def test_eth_token_verify_rejects_wrong_amount():
-    from cryptoswap_wallet.chains.eth import encode_deposit, verify_eth_token_swap
+    from swapsack.chains.eth import encode_deposit, verify_eth_token_swap
 
     built = _build_usdt()
     built.deposit_tx["data"] = encode_deposit(
@@ -364,7 +364,7 @@ def test_eth_token_verify_rejects_wrong_amount():
 
 
 def test_eth_token_verify_rejects_swapped_vault_token():
-    from cryptoswap_wallet.chains.eth import encode_deposit, verify_eth_token_swap
+    from swapsack.chains.eth import encode_deposit, verify_eth_token_swap
 
     built = _build_usdt()
     # vault and token slots swapped — substring checks would have missed this.
@@ -406,7 +406,7 @@ def _lp_deposit_kwargs(**over):
 
 
 def test_eth_token_lp_add_builds_and_verifies():
-    from cryptoswap_wallet.chains.eth import DEPOSIT_SELECTOR, _decode_call
+    from swapsack.chains.eth import DEPOSIT_SELECTOR, _decode_call
 
     prepared = EthAdapter().build_and_verify_deposit(**_lp_deposit_kwargs())
     assert prepared.problems == []
@@ -428,7 +428,7 @@ def test_eth_token_lp_add_builds_and_verifies():
 
 
 def test_eth_token_lp_add_requires_router():
-    from cryptoswap_wallet.swap import SwapAborted
+    from swapsack.swap import SwapAborted
 
     with pytest.raises(SwapAborted, match="router"):
         EthAdapter().build_and_verify_deposit(**_lp_deposit_kwargs(router=None))
@@ -453,8 +453,8 @@ def test_eth_token_lp_add_symmetric_memo_keeps_contract_and_memo_intact():
     # (+:ETH.USDT-0X…:maya1…). The token contract comes from the caller, NOT
     # from parsing the memo — memo-splitting would swallow the suffix into the
     # contract and crash token_decimals / to_checksum_address.
-    from cryptoswap_wallet.chains.eth import DEPOSIT_SELECTOR, _decode_call
-    from cryptoswap_wallet.liquidity import symmetric_add_memo
+    from swapsack.chains.eth import DEPOSIT_SELECTOR, _decode_call
+    from swapsack.liquidity import symmetric_add_memo
 
     memo = symmetric_add_memo(USDT_ASSET.upper(), "maya1qqlz5hu2rtr8y")
     prepared = EthAdapter().build_and_verify_deposit(**_lp_deposit_kwargs(memo=memo))
@@ -474,7 +474,7 @@ def test_eth_token_pool_add_without_token_aborts():
     # Defensive: a token-pool add without an explicit token contract would
     # deposit native ETH against a token pool — mispaired at the vault. Refuse
     # rather than guess the contract out of the memo.
-    from cryptoswap_wallet.swap import SwapAborted
+    from swapsack.swap import SwapAborted
 
     with pytest.raises(SwapAborted, match="token"):
         EthAdapter().build_and_verify_deposit(**_lp_deposit_kwargs(token=None))
@@ -507,7 +507,7 @@ def test_eth_broadcast_wraps_rpc_error(monkeypatch):
     # A JSON-RPC rejection comes back HTTP 200 with an `error` body, which _rpc
     # raises as a bare RuntimeError. broadcast() must wrap it in BroadcastError
     # so the CLI's _confirm_and_execute handler catches it (no raw traceback).
-    from cryptoswap_wallet.swap import BroadcastError
+    from swapsack.swap import BroadcastError
 
     adapter = EthAdapter()
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from cryptoswap_wallet.addresses import validate_destination_address
+from swapsack.addresses import validate_destination_address
 
 # Real-format mainnet example addresses per chain.
 VALID = {

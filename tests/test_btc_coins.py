@@ -4,7 +4,7 @@ deterministic coin selection used to build swap transactions.
 
 import pytest
 
-from cryptoswap_wallet.chains.coins import (
+from swapsack.chains.coins import (
     InsufficientFunds,
     Utxo,
     decode_op_return,
@@ -84,7 +84,7 @@ def test_select_insufficient_funds():
 
 
 def test_sweep_amount_conserves_value():
-    from cryptoswap_wallet.chains.coins import sweep_amount
+    from swapsack.chains.coins import sweep_amount
 
     send, fee = sweep_amount(total=200000, n_inputs=1, fee_rate=2, memo_len=50)
     assert send + fee == 200000
@@ -92,7 +92,7 @@ def test_sweep_amount_conserves_value():
 
 
 def test_sweep_amount_raises_when_balance_below_fee():
-    from cryptoswap_wallet.chains.coins import sweep_amount
+    from swapsack.chains.coins import sweep_amount
 
     with pytest.raises(InsufficientFunds):
         sweep_amount(total=100, n_inputs=1, fee_rate=2, memo_len=50)

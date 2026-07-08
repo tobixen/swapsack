@@ -23,11 +23,11 @@ from bitcoinlib.encoding import hash160
 from bitcoinlib.keys import HDKey
 from bitcoinlib.mnemonic import Mnemonic
 
-from cryptoswap_wallet.chains import cosmos_tx
-from cryptoswap_wallet.chains.base import BalanceReport
-from cryptoswap_wallet.net import HTTP_ERRORS, HttpClient
-from cryptoswap_wallet.swap import BroadcastError, Prepared
-from cryptoswap_wallet.verify import (
+from swapsack.chains import cosmos_tx
+from swapsack.chains.base import BalanceReport
+from swapsack.net import HTTP_ERRORS, HttpClient
+from swapsack.swap import BroadcastError, Prepared
+from swapsack.verify import (
     CosmosDepositPlan,
     CosmosSendPlan,
     verify_cosmos_deposit,

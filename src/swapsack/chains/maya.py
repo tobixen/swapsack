@@ -8,7 +8,7 @@ for the full design notes.
 
 from __future__ import annotations
 
-from cryptoswap_wallet.chains.cosmos import CosmosAdapter
+from swapsack.chains.cosmos import CosmosAdapter
 
 DEFAULT_MAYANODE = "https://mayanode.mayachain.info"
 # Must agree with thorchain._ASSET_UNITS["MAYA.CACAO"] (display scaling); the

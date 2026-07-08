@@ -21,7 +21,7 @@ findings that turned on real network behaviour.
 ## Regressions the previous round's fixes introduced
 
 ### 1. `lp_pools = False` on the shared CosmosAdapter hid RUNE LP positions on Maya
-`src/cryptoswap_wallet/chains/cosmos.py` (findings 0/1)
+`src/swapsack/chains/cosmos.py` (findings 0/1)
 
 The 2026-07-07 fix for "balance probes pools that can't exist" set
 `lp_pools = False` on the shared `CosmosAdapter`, which `ThorAdapter` inherited.
@@ -35,7 +35,7 @@ pool-less — no `MAYA.CACAO` pool anywhere). `ThorAdapter` keeps the default
 `True`, so `THOR.RUNE` is probed again.
 
 ### 2. The `dust_threshold <= 0` guard blocked every EVM LP withdraw
-`src/cryptoswap_wallet/swap.py` (finding 4)
+`src/swapsack/swap.py` (finding 4)
 
 The 2026-07-07 fix for original finding #5 aborted a liquidity op when
 `deposit_amount <= 0`, on the theory that a 0-value deposit is money lost. But
@@ -52,7 +52,7 @@ rejected by the network at broadcast, not silently lost.
 **Fix:** reverted the guard. A withdraw trigger of 0 is correct on EVM chains.
 
 ### 3. Relaxing the amount floor let sub-base-unit amounts round up and send
-`src/cryptoswap_wallet/cli.py` (finding 3)
+`src/swapsack/cli.py` (finding 3)
 
 The 2026-07-07 per-asset base-units fix dropped the parse floor to 1e-10 and
 guarded only against amounts that round to **zero**. An amount in the
@@ -68,7 +68,7 @@ the *unrounded* product (per-asset restore of the old behaviour).
 ## Issues in the new code (not pre-existing)
 
 ### 4. The native-source guard did blocking I/O and had an uncaught-HTTP crash mode
-`src/cryptoswap_wallet/swap.py` (findings 2, 6)
+`src/swapsack/swap.py` (findings 2, 6)
 
 The new wrong-network guard called `thorchain.inbound_addresses()` on every
 native RUNE/CACAO swap — a MsgDeposit that needs no vault data — adding a round
@@ -81,7 +81,7 @@ direct library caller.
 `home_path_prefix` vs the client's `path_prefix`, no network call.
 
 ### 5. `quote` price-routed native sources; `swap` pinned them — inconsistent guidance
-`src/cryptoswap_wallet/cli.py` (finding 5)
+`src/swapsack/cli.py` (finding 5)
 
 `cmd_quote` still quoted a native `--from RUNE/CACAO` across both backends
 (Maya quotes `THOR.RUNE` via its pool), while `_swap_from_cosmos` hard-pins the

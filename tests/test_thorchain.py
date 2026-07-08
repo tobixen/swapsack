@@ -5,7 +5,7 @@ Fixtures are trimmed real responses captured from the live API; see README.
 
 import pytest
 
-from cryptoswap_wallet.thorchain import (
+from swapsack.thorchain import (
     ThorchainClient,
     ThorchainError,
     normalize_txid,
@@ -123,7 +123,7 @@ def test_swapfees_breakdown_itemises_slip_outbound_total():
 
 
 def test_swapfees_breakdown_shows_affiliate_when_nonzero():
-    from cryptoswap_wallet.thorchain import SwapFees
+    from swapsack.thorchain import SwapFees
 
     fees = SwapFees(
         asset="ETH.ETH",
@@ -138,7 +138,7 @@ def test_swapfees_breakdown_shows_affiliate_when_nonzero():
 
 
 def test_asset_unit_defaults_to_1e8_but_cacao_is_1e10():
-    from cryptoswap_wallet.thorchain import THORCHAIN_UNIT, asset_unit
+    from swapsack.thorchain import THORCHAIN_UNIT, asset_unit
 
     assert asset_unit("BTC.BTC") == THORCHAIN_UNIT == 10**8
     assert asset_unit("ZEC.ZEC") == 10**8
@@ -147,7 +147,7 @@ def test_asset_unit_defaults_to_1e8_but_cacao_is_1e10():
 
 
 def test_swapfees_breakdown_scales_cacao_by_1e10():
-    from cryptoswap_wallet.thorchain import SwapFees
+    from swapsack.thorchain import SwapFees
 
     # 4578.75867893 CACAO liquidity fee == 45787586789300 in 1e10 base units.
     fees = SwapFees(
@@ -207,7 +207,7 @@ def test_quote_swap_default_tolerance_matches_protocol():
     # re-quotes against.
     import inspect
 
-    from cryptoswap_wallet.swap import DEFAULT_TOLERANCE_BPS
+    from swapsack.swap import DEFAULT_TOLERANCE_BPS
 
     default = (
         inspect.signature(ThorchainClient.quote_swap)

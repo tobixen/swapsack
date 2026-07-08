@@ -10,7 +10,7 @@ exclude = [
   # Reserved `.example` TLD and bare `example` host (e.g. https://x.example).
   '^https?://([^/]+\.)?example(/|$|[:?#])',
   # PyPI project page 404s until the first release (both /p/ and /project/ forms).
-  '^https?://pypi\.org/(p|project)/cryptoswap-wallet',
+  '^https?://pypi\.org/(p|project)/swapsack',
 ]
 
 # Hosts that rate-limit or block automated requests still count as reachable.

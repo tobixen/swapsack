@@ -2,7 +2,7 @@
 
 import dataclasses
 
-from cryptoswap_wallet.chains.scan import scan_account
+from swapsack.chains.scan import scan_account
 
 ACCOUNT = "m/84'/0'/0'"
 

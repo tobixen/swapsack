@@ -1,11 +1,11 @@
 .PHONY: help install dev lint format test test-network clean
-SCRIPT := cryptoswap-wallet
+SCRIPT := swapsack
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-install:  ## Install the cryptoswap-wallet binary (auto-detects root/uv/pipx/pip)
+install:  ## Install the swapsack binary (auto-detects root/uv/pipx/pip)
 	@if [ "$$(id -u)" = "0" ]; then \
 		echo "Running as root, installing system-wide..."; \
 		pip install .; \

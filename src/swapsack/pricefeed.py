@@ -14,7 +14,7 @@ they can be unit-tested against a recorded response.
 
 from __future__ import annotations
 
-from cryptoswap_wallet.net import HttpClient
+from swapsack.net import HttpClient
 
 DEFAULT_COINGECKO = "https://api.coingecko.com/api/v3"
 # Human-readable name of the price source, shown in the swap/quote output header.

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cryptoswap_wallet.swap import (
+from swapsack.swap import (
     Prepared,
     SwapAborted,
     SwapRequest,
@@ -17,7 +17,7 @@ from cryptoswap_wallet.swap import (
     prepare_liquidity,
     prepare_swap,
 )
-from cryptoswap_wallet.thorchain import ChainStatus, Quote, SwapFees
+from swapsack.thorchain import ChainStatus, Quote, SwapFees
 
 VAULT = "bc1qvault"
 
@@ -228,7 +228,7 @@ class _RaisingThor(FakeThor):
         self._message = message
 
     def quote_swap(self, *args, **kwargs):
-        from cryptoswap_wallet.thorchain import ThorchainError
+        from swapsack.thorchain import ThorchainError
 
         raise ThorchainError(self._message)
 

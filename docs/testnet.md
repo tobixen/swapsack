@@ -14,12 +14,12 @@ does). The same mnemonic is set as both secrets below.
 
 | Chain | Network | Derivation | Address | Secret / env |
 |---|---|---|---|---|
-| BTC | **signet** | `m/84'/0'/0'/0/0` (P2WPKH) | `tb1qaxgpvty4myyaf7qwz43f9meq5qsuz2dfzhhrdr` | `CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC` |
-| ETH | Sepolia | `m/44'/60'/0'/0/0` | `0xd3074A2Bf86F5Db92C2F096302359CeEFEBC7176` | `CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC` |
+| BTC | **signet** | `m/84'/0'/0'/0/0` (P2WPKH) | `tb1qaxgpvty4myyaf7qwz43f9meq5qsuz2dfzhhrdr` | `SWAPSACK_BTC_TESTNET_MNEMONIC` |
+| ETH | Sepolia | `m/44'/60'/0'/0/0` | `0xd3074A2Bf86F5Db92C2F096302359CeEFEBC7176` | `SWAPSACK_ETH_SEPOLIA_MNEMONIC` |
 
 The BTC test defaults to **signet** (`blockstream.info/signet/api`). Signet and
 testnet3 share the same `tb1…` address format, so the address above is the same
-on either; set `CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK=testnet` (+ a matching
+on either; set `SWAPSACK_BTC_TESTNET_NETWORK=testnet` (+ a matching
 Esplora) to fall back to testnet3.
 
 The BTC test *sweeps the wallet's UTXOs to itself* and the ETH test *self-sends*
@@ -40,8 +40,8 @@ small, so a dry faucet never turns CI red.
 
 ```sh
 # one seed, both secrets (GitHub Actions):
-gh secret set CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC     # paste the 12 words
-gh secret set CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC     # paste the same 12 words
+gh secret set SWAPSACK_BTC_TESTNET_MNEMONIC     # paste the 12 words
+gh secret set SWAPSACK_ETH_SEPOLIA_MNEMONIC     # paste the same 12 words
 ```
 
 Keep a copy of the words in a password manager too — the secret can't be read
@@ -52,20 +52,20 @@ back, and this doc deliberately does **not** contain the seed.
 If you have the mnemonic and want to confirm the address:
 
 ```sh
-CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC="word1 … word12" python -c "import os; \
-from cryptoswap_wallet.chains.btc import BtcAdapter; \
-print(BtcAdapter(network='testnet').derive_address(os.environ['CRYPTOSWAP_WALLET_BTC_TESTNET_MNEMONIC'], \"m/84'/0'/0'/0/0\"))"
+SWAPSACK_BTC_TESTNET_MNEMONIC="word1 … word12" python -c "import os; \
+from swapsack.chains.btc import BtcAdapter; \
+print(BtcAdapter(network='testnet').derive_address(os.environ['SWAPSACK_BTC_TESTNET_MNEMONIC'], \"m/84'/0'/0'/0/0\"))"
 
-CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC="word1 … word12" python -c "import os; \
-from cryptoswap_wallet.chains.eth import EthAdapter; \
-print(EthAdapter().derive_address(os.environ['CRYPTOSWAP_WALLET_ETH_SEPOLIA_MNEMONIC']))"
+SWAPSACK_ETH_SEPOLIA_MNEMONIC="word1 … word12" python -c "import os; \
+from swapsack.chains.eth import EthAdapter; \
+print(EthAdapter().derive_address(os.environ['SWAPSACK_ETH_SEPOLIA_MNEMONIC']))"
 ```
 
 ## Network choice
 
 The BTC test defaults to **signet** because testnet3 is being deprecated and its
 faucets are chronically drained; signet is stable with a reliable faucet. The
-network is env-driven (`CRYPTOSWAP_WALLET_BTC_TESTNET_NETWORK`, default
+network is env-driven (`SWAPSACK_BTC_TESTNET_NETWORK`, default
 `signet`), and the Esplora default follows it
 (`https://blockstream.info/<network>/api`), so testnet3/testnet4 remain a
 one-env-var switch. bitcoinlib supports `signet`, `testnet` (testnet3) and
