@@ -25,3 +25,4 @@ class ThorAdapter(CosmosAdapter):
     decimals = RUNE_DECIMALS
     default_chain_id = "thorchain-1"
     default_node = DEFAULT_THORNODE
+    home_path_prefix = "thorchain"  # matches the thorchain backend's ThorchainClient

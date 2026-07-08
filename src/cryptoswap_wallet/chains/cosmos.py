@@ -134,9 +134,13 @@ class BuiltCosmosTx:
 class CosmosAdapter(HttpClient):
     """ChainAdapter base for a THORChain-family native asset.
 
-    Concrete adapters set the class attributes below. CACAO is deposited to the
-    chain itself (``MsgDeposit``), not to an external inbound vault, so
-    ``native_source`` makes ``prepare_swap`` skip the inbound-address check.
+    Concrete adapters set the class attributes below. The asset is deposited to
+    the chain itself (``MsgDeposit``), not to an external inbound vault, so
+    ``native_source`` makes ``prepare_swap`` skip the vault lookup and instead
+    verify (locally, no I/O) that the quoting client is this asset's home
+    network — a MsgDeposit executes on the adapter's own chain regardless of
+    which backend priced it. ``home_path_prefix`` names that network and must
+    match the home ``ThorchainClient.path_prefix``.
     """
 
     chain: str  # e.g. "MAYA" / "THOR"
@@ -147,6 +151,7 @@ class CosmosAdapter(HttpClient):
     decimals: int  # 10 for CACAO, 8 for RUNE
     default_chain_id: str
     default_node: str
+    home_path_prefix: str  # home backend's ThorchainClient.path_prefix
     native_source = True
 
     def __init__(

@@ -168,19 +168,24 @@ def prepare_swap(
     of ``None``/``0`` lets the network pick the sub-swap count that minimises slip.
     """
     # A native source (RUNE/CACAO) is deposited to the chain itself via
-    # MsgDeposit — there is no external inbound vault, and the quote below fails
-    # anyway if trading is paused. But the deposit executes on the adapter's own
-    # network no matter which network produced the quote, so make sure we are
-    # talking to the home network: a network that lists the adapter's chain
-    # among its *inbound* (external) chains is the other one (e.g. Maya quoting
-    # THOR.RUNE), and the MsgDeposit would carry a foreign-priced memo — a
-    # refund minus the native fee at best, a swap at unconfirmed terms at worst.
+    # MsgDeposit — there is no external inbound vault to look up. But the deposit
+    # executes on the adapter's own network no matter which network produced the
+    # quote, so the quoting client must be the home one: quoting THOR.RUNE on the
+    # maya backend would return a Maya-priced memo (a refund minus the native fee
+    # at best, a swap at unconfirmed terms at worst). This is a LOCAL identity
+    # check — comparing the adapter's home path_prefix against the client's — so
+    # a native swap that needs no vault data makes no inbound_addresses() call
+    # (which would add a round trip and an uncaught-HTTP crash mode). The CLI
+    # already pins native sources to their home backend; this guards a direct
+    # library caller that pairs a native adapter with the wrong client.
     if getattr(adapter, "native_source", False):
-        if adapter.chain in thorchain.inbound_addresses():
+        home = getattr(adapter, "home_path_prefix", None)
+        actual = getattr(thorchain, "path_prefix", None)
+        if home is not None and actual is not None and home != actual:
             raise SwapAborted(
-                f"this backend treats {adapter.chain} as an external chain, but a "
-                f"native {request.from_asset} swap deposits on {adapter.chain} "
-                f"itself — use the {adapter.chain}-native backend"
+                f"this backend ({actual}) is not {adapter.chain}'s home network, "
+                f"but a native {request.from_asset} swap deposits on "
+                f"{adapter.chain} itself — use the {adapter.chain}-native backend"
             )
     else:
         status = thorchain.inbound_addresses().get(adapter.chain)

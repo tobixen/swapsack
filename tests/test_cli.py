@@ -945,6 +945,73 @@ def test_quote_derives_cacao_destination(monkeypatch):
     assert captured["dest"] == "maya1gm00vwsfcp48enm4uv9e5dhm37jtd0ye2fs0sl"
 
 
+def test_quote_pins_native_source_to_home_backend(monkeypatch):
+    # A native RUNE/CACAO source deposits on its own network, so quote must
+    # price it only on the home backend — matching what swap will execute.
+    # Otherwise quote could advertise a maya route for THOR.RUNE that the swap
+    # command refuses (or silently ignores).
+    from types import SimpleNamespace
+
+    import cryptoswap_wallet.backends as backends_mod
+    import cryptoswap_wallet.cli as cli
+
+    captured = {}
+
+    def fake_gather(backends, from_a, to_a, amount, dest, **kw):
+        captured["backends"] = [b.name for b in backends]
+        return []
+
+    monkeypatch.setattr(backends_mod, "gather_quotes", fake_gather)
+    monkeypatch.setattr(
+        backends_mod,
+        "get_backend",
+        lambda name: SimpleNamespace(name=name, client=_ClosableClient()),
+    )
+    args = build_parser().parse_args(
+        [
+            "quote",
+            "--from",
+            "RUNE",
+            "--to",
+            "BTC",
+            "--amount",
+            "1",
+            "--dest",
+            "bc1qexampledest",
+        ]
+    )
+    assert cli.cmd_quote(args) == 1  # our stub returns no quotes
+    assert captured["backends"] == ["thorchain"]
+
+
+def test_quote_refuses_foreign_backend_for_native_source():
+    # Consistent with swap: an explicit foreign --backend for a native source
+    # is refused, not silently re-pointed.
+    import cryptoswap_wallet.cli as cli
+
+    args = build_parser().parse_args(
+        [
+            "quote",
+            "--from",
+            "RUNE",
+            "--to",
+            "BTC",
+            "--amount",
+            "1",
+            "--dest",
+            "bc1qexampledest",
+            "--backend",
+            "maya",
+        ]
+    )
+    assert cli.cmd_quote(args) == 2
+
+
+class _ClosableClient:
+    def close(self):
+        return None
+
+
 def test_resolve_destination_rejects_bad_dest():
     from cryptoswap_wallet.cli import _resolve_destination
 

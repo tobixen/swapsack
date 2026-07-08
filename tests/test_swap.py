@@ -62,13 +62,20 @@ def make_status(chain="BTC", tradable=True, dust_threshold=1000):
 
 class FakeThor:
     def __init__(
-        self, quote=None, tradable=True, chain="BTC", mimir=None, dust_threshold=1000
+        self,
+        quote=None,
+        tradable=True,
+        chain="BTC",
+        mimir=None,
+        dust_threshold=1000,
+        path_prefix="thorchain",
     ):
         self._quote = quote or make_quote()
         self._tradable = tradable
         self._chain = chain
         self._mimir = mimir or {}
         self._dust = dust_threshold
+        self.path_prefix = path_prefix
 
     def inbound_addresses(self):
         return {self._chain: make_status(self._chain, self._tradable, self._dust)}
@@ -164,20 +171,22 @@ def test_prepare_works_for_eth_chain_too():
     assert p.safe
 
 
-def _native_adapter(chain="THOR"):
+def _native_adapter(chain="THOR", home_path_prefix="thorchain"):
     adapter = FakeAdapter(chain=chain)
     adapter.native_source = True
+    adapter.home_path_prefix = home_path_prefix
     return adapter
 
 
 def test_prepare_native_source_aborts_on_foreign_network():
-    # Maya quoting THOR.RUNE: the backend lists THOR among its *inbound*
-    # (external) chains, but a native MsgDeposit executes on THORChain itself —
-    # the deposit would carry a memo priced for the other network's pools.
-    with pytest.raises(SwapAborted, match="external"):
+    # A native MsgDeposit executes on the adapter's own chain regardless of the
+    # quoting network, so a THOR.RUNE source quoted on the maya backend
+    # (path_prefix "mayachain") would carry a Maya-priced memo. The guard is a
+    # LOCAL identity comparison (no inbound_addresses() I/O).
+    with pytest.raises(SwapAborted, match="home network"):
         prepare_swap(
-            thorchain=FakeThor(chain="THOR"),
-            adapter=_native_adapter("THOR"),
+            thorchain=FakeThor(path_prefix="mayachain"),
+            adapter=_native_adapter("THOR", home_path_prefix="thorchain"),
             request=make_request(from_asset="THOR.RUNE"),
             now=0,
             mnemonic="m",
@@ -185,10 +194,27 @@ def test_prepare_native_source_aborts_on_foreign_network():
 
 
 def test_prepare_native_source_passes_on_home_network():
-    # The home network never lists its own native chain in inbound_addresses.
     p = prepare_swap(
-        thorchain=FakeThor(chain="BTC"),
-        adapter=_native_adapter("THOR"),
+        thorchain=FakeThor(path_prefix="thorchain"),
+        adapter=_native_adapter("THOR", home_path_prefix="thorchain"),
+        request=make_request(from_asset="THOR.RUNE"),
+        now=0,
+        mnemonic="m",
+    )
+    assert p.safe
+
+
+def test_prepare_native_source_makes_no_inbound_addresses_call():
+    # The native guard must not hit the network (an inbound_addresses() call
+    # added a per-swap round trip and an uncaught-HTTP crash mode for a deposit
+    # that needs no vault data at all).
+    class ExplodingInbound(FakeThor):
+        def inbound_addresses(self):
+            raise AssertionError("native path must not call inbound_addresses()")
+
+    p = prepare_swap(
+        thorchain=ExplodingInbound(path_prefix="thorchain"),
+        adapter=_native_adapter("THOR", home_path_prefix="thorchain"),
         request=make_request(from_asset="THOR.RUNE"),
         now=0,
         mnemonic="m",

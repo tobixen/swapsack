@@ -33,3 +33,4 @@ class MayaAdapter(CosmosAdapter):
     decimals = CACAO_DECIMALS
     default_chain_id = "mayachain-mainnet-v1"
     default_node = DEFAULT_MAYANODE
+    home_path_prefix = "mayachain"  # matches the maya backend's ThorchainClient

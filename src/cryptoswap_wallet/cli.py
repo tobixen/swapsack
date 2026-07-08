@@ -615,7 +615,25 @@ def cmd_quote(args: argparse.Namespace) -> int:
     else:
         mnemonic, passphrase = None, ""
     dest = _resolve_destination(args, mnemonic, passphrase)
-    backends = _backends_for(args)
+    # A native RUNE/CACAO source deposits on its own network via MsgDeposit, so
+    # only the home backend can serve it. Pin the quote to that backend (and
+    # refuse an explicit foreign one) so the price shown matches the route the
+    # swap command will actually execute — mirrors _swap_from_cosmos.
+    from cryptoswap_wallet.backends import NATIVE_HOME_BACKEND, get_backend
+
+    from_chain = ASSET[args.from_].split(".", 1)[0]
+    if from_chain in NATIVE_HOME_BACKEND:
+        home = NATIVE_HOME_BACKEND[from_chain]
+        if args.backend not in ("auto", home):
+            print(
+                f"native {args.from_} deposits on {from_chain} itself; it can only "
+                f"be quoted on the {home} backend (got --backend {args.backend})",
+                file=sys.stderr,
+            )
+            return 2
+        backends = [get_backend(home)]
+    else:
+        backends = _backends_for(args)
     try:
         results = gather_quotes(
             backends,
