@@ -21,10 +21,15 @@ def p2pkh_address(pubkey: bytes, prefix: bytes) -> str:
     return pubkeyhash_to_addr_base58(hash160(pubkey), prefix=prefix)
 
 
+def derive_p2pkh_key(mnemonic: str, path: str, bip39_passphrase: str = "") -> HDKey:
+    """Derive the HD key at ``path`` (network-independent BIP32 math)."""
+    seed = Mnemonic().to_seed(mnemonic, bip39_passphrase)
+    return HDKey.from_seed(seed).key_for_path(path)
+
+
 def derive_p2pkh_address(
     mnemonic: str, path: str, prefix: bytes, bip39_passphrase: str = ""
 ) -> str:
     """Derive ``path`` from the seed and return its P2PKH address."""
-    seed = Mnemonic().to_seed(mnemonic, bip39_passphrase)
-    key = HDKey.from_seed(seed).key_for_path(path)
+    key = derive_p2pkh_key(mnemonic, path, bip39_passphrase)
     return p2pkh_address(key.public_byte, prefix)

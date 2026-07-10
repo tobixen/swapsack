@@ -1,36 +1,62 @@
-"""Zcash chain adapter — Phase 1: t-addr derivation + balance (receive-only).
+"""Zcash chain adapter — Phase 1 (hold/balance) + Phase 2 (send/sweep).
 
 Zcash's transparent addresses are legacy P2PKH with a two-byte base58 prefix;
-derivation shares :mod:`swapsack.chains.p2pkh` with Dash. Balances come from a
-**lightwalletd** gRPC endpoint (the canonical Zcash light-client infra, several
-reputable public operators; configurable — see docs/zcash.md). Swaps route
-through Maya only (no ZEC pool on THORChain), and Maya's pool is
-transparent-only, so shielded (``zs1…``/``u1…``) funds are out of scope.
+derivation shares :mod:`swapsack.chains.p2pkh` with Dash. Everything network
+(balance / UTXOs / branch id / broadcast) speaks to a **lightwalletd** gRPC
+endpoint (the canonical Zcash light-client infra, several reputable public
+operators; configurable — see docs/zcash.md). Swaps route through Maya only
+(no ZEC pool on THORChain), and Maya's pool is transparent-only, so shielded
+(``zs1…``/``u1…``) funds are out of scope.
 
 The gRPC messages here are tiny, so the wire format is hand-rolled from the
 ``service.proto`` definitions (reusing the cosmos_tx protobuf primitives)
 rather than pulling in protobuf codegen; grpcio handles the transport with
 identity (de)serializers.
 
-The spend side (send/sweep/swap-from) is deliberately NOT implemented — Zcash's
-tx format (ZIP-243/225 sighash) cannot be signed by bitcoinlib, see
-docs/zcash.md Phase 2 — so ``broadcast`` refuses loudly rather than ever
-pretending to work. Funds received here are spendable by importing the seed
-into another Zcash wallet (standard BIP44, ``m/44'/133'/0'/0/x``).
+Spending does NOT go through bitcoinlib (it cannot sign Zcash's tx format):
+the bespoke v4/ZIP-243 builder+signer lives in
+:mod:`swapsack.chains.zcash_tx`, anchored to a real mainnet transaction in the
+tests. Fees follow ZIP-317 (action-based, see ``coins.zip317_fee``), and the
+consensus branch id is fetched live per spend — never hardcoded — because a
+stale id after a network upgrade would invalidate every signature. The
+swap-*from* side (vault deposit + memo) is Phase 3 and not wired yet.
 """
 
 from __future__ import annotations
 
+import dataclasses
+
 import grpc
 
 from swapsack.chains.base import AddressInfo, BalanceReport
+from swapsack.chains.coins import (
+    InsufficientFunds,
+    Utxo,
+    select_coins_zip317,
+    sweep_amount_zip317,
+)
 from swapsack.chains.cosmos_tx import (
     _delimited,
     _read_fields,
     _string,
     _uint64,
 )
-from swapsack.chains.p2pkh import derive_p2pkh_address
+from swapsack.chains.p2pkh import derive_p2pkh_address, derive_p2pkh_key
+from swapsack.chains.zcash_tx import (
+    TxIn,
+    TxOut,
+    TxV4,
+    address_to_script,
+    parse_v4,
+    script_to_address,
+    serialize_v4,
+    sign_transparent,
+)
+from swapsack.chains.zcash_tx import (
+    txid as compute_txid,
+)
+from swapsack.swap import Prepared
+from swapsack.verify import SendPlan, TxOutput, verify_btc_send
 
 DEFAULT_ZEC_LWD = "zec.rocks:443"
 DEFAULT_DERIVATION = "m/44'/133'/0'/0/0"
@@ -68,8 +94,67 @@ def encode_block_filter(address: str, *, start: int, end: int) -> bytes:
     return _string(1, address) + _delimited(2, block_range)
 
 
+def encode_utxos_arg(address: str, *, start: int = 1) -> bytes:
+    """``GetAddressUtxosArg { repeated string addresses = 1; uint64 startHeight = 2;
+    uint32 maxEntries = 3; }`` (maxEntries 0 = no limit, omitted per proto3)."""
+    return _string(1, address) + _uint64(2, start)
+
+
+def decode_utxos_reply(data: bytes, address: str) -> list[Utxo]:
+    """Parse a ``GetAddressUtxosReplyList`` into confirmed :class:`Utxo` rows.
+
+    Reply fields: ``txid=1`` (bytes, tx-serialization order), ``index=2``,
+    ``script=3``, ``valueZat=4``, ``height=5``, ``address=6``. The txid is
+    byte-reversed into the display order the rest of the wallet uses. The
+    address index only holds mined outputs, so everything here is confirmed.
+    """
+    utxos = []
+    for entry in _read_fields(data).get(1, []):
+        fields = _read_fields(entry)
+        utxos.append(
+            Utxo(
+                txid=fields[1][0][::-1].hex(),
+                vout=fields.get(2, [0])[0],
+                value=fields[4][0],
+                address=address,
+            )
+        )
+    return utxos
+
+
+def decode_branch_id(data: bytes) -> int:
+    """The consensus branch id from a ``LightdInfo`` (field 6, a hex string)."""
+    return int(_read_fields(data)[6][0].decode(), 16)
+
+
+def decode_send_response(data: bytes) -> tuple[int, str]:
+    """``SendResponse { int32 errorCode = 1; string errorMessage = 2; }``"""
+    fields = _read_fields(data)
+    code = fields.get(1, [0])[0]
+    message = fields.get(2, [b""])[0].decode(errors="replace")
+    return code, message
+
+
+# A broadcast tx expires (and its funds unlock) if unmined for this many
+# blocks (~75s each): long enough for congestion, short enough not to linger.
+EXPIRY_DELTA = 40
+
+
+@dataclasses.dataclass
+class ZecBuilt:
+    """A built (unsigned) transparent spend, ready for the verify gate + signer."""
+
+    tx: TxV4
+    spent: list[tuple[bytes, int]]  # per input: (scriptPubKey, value)
+    privkeys: list[bytes]
+    outputs: list[TxOutput]  # re-extracted from the serialized bytes (neutral)
+    fee: int
+    change_address: str
+    branch_id: int
+
+
 class ZecAdapter:
-    """ChainAdapter for Zcash (transparent P2PKH), Phase 1: address + balance."""
+    """ChainAdapter for Zcash (transparent P2PKH): hold, balance, send, sweep."""
 
     chain = "ZEC"
     asset = "ZEC.ZEC"
@@ -176,8 +261,103 @@ class ZecAdapter:
             addresses=tuple(address for _, address, _ in records),
         )
 
-    def broadcast(self, raws: list[str]) -> str:
-        raise NotImplementedError(
-            "the ZEC spend path is not implemented (receive/balance only; "
-            "bitcoinlib cannot sign Zcash's tx format) — see docs/zcash.md Phase 2"
+    # --- Phase 2: send / sweep (bespoke v4/ZIP-243 signer, ZIP-317 fees) -------
+
+    def fetch_utxos(self, address: str) -> list[Utxo]:
+        resp = self._unary("GetAddressUtxos", encode_utxos_arg(address))
+        return decode_utxos_reply(resp, address)
+
+    def branch_id(self) -> int:
+        """The ACTIVE consensus branch id, fetched live (never hardcoded)."""
+        return decode_branch_id(self._unary("GetLightdInfo", b""))
+
+    def fetch_fee_rate(self, target_blocks: int = 6) -> float:  # noqa: ARG002
+        """Zcash fees are ZIP-317 action-based, not rate-based; 0 = no rate."""
+        return 0.0
+
+    def sweep_send_amount(
+        self,
+        total: int,
+        n_inputs: int,
+        fee_rate: float,  # noqa: ARG002 (ZIP-317 ignores it)
+    ) -> tuple[int, int]:
+        return sweep_amount_zip317(total, n_inputs)
+
+    def build_and_verify_send(
+        self,
+        *,
+        recipient: str,
+        amount: int,
+        now: int,  # noqa: ARG002 (uniform build_and_verify_* signature)
+        mnemonic: str,
+        scanned_utxos: list[Utxo],
+        fee_rate: float,  # noqa: ARG002 (ZIP-317 ignores it)
+        change_address: str,
+        max_fee: int,
+        sweep: bool = False,
+    ) -> Prepared:
+        """Build + gate a plain transparent send (no memo) to ``recipient``."""
+        if sweep:
+            chosen = list(scanned_utxos)
+            fee = sum(u.value for u in chosen) - amount
+            change = 0
+            if fee < 0:
+                raise InsufficientFunds(f"amount {amount} exceeds balance")
+        else:
+            sel = select_coins_zip317(scanned_utxos, amount)
+            chosen, fee, change = sel.utxos, sel.fee, sel.change
+
+        outputs = [TxOut(amount, address_to_script(recipient))]
+        if change > 0:
+            outputs.append(TxOut(change, address_to_script(change_address)))
+        tx = TxV4(
+            inputs=tuple(TxIn(bytes.fromhex(u.txid)[::-1], u.vout) for u in chosen),
+            outputs=tuple(outputs),
+            expiry_height=self.latest_height() + EXPIRY_DELTA,
         )
+        built = ZecBuilt(
+            tx=tx,
+            spent=[(address_to_script(u.address), u.value) for u in chosen],
+            privkeys=[
+                derive_p2pkh_key(
+                    mnemonic, u.path or DEFAULT_DERIVATION, self.bip39_passphrase
+                ).private_byte
+                for u in chosen
+            ],
+            # Neutral extraction: decode what was actually serialized, so a
+            # build bug cannot hide from the gate behind its own inputs.
+            outputs=[
+                TxOutput(address=script_to_address(o.script), value=o.value)
+                for o in parse_v4(serialize_v4(tx)).outputs
+            ],
+            fee=fee,
+            change_address=change_address,
+            branch_id=self.branch_id(),
+        )
+        owned = {change_address} | {u.address for u in chosen}
+        plan = SendPlan(recipient=recipient, amount=amount)
+        problems = verify_btc_send(
+            built.outputs,
+            fee=built.fee,
+            plan=plan,
+            owned_addresses=owned,
+            max_fee=max_fee,
+        )
+        return Prepared(quote=None, built=built, plan=plan, problems=problems)
+
+    def sign(self, built: ZecBuilt) -> list[str]:
+        signed = sign_transparent(
+            built.tx, built.spent, built.privkeys, built.branch_id
+        )
+        return [serialize_v4(signed).hex()]
+
+    def broadcast(self, raws: list[str]) -> str:
+        tx_id = ""
+        for raw in raws:
+            data = bytes.fromhex(raw)
+            resp = self._unary("SendTransaction", _delimited(1, data))
+            code, message = decode_send_response(resp)
+            if code != 0:
+                raise RuntimeError(f"lightwalletd rejected the tx: {code} {message}")
+            tx_id = compute_txid(data)
+        return tx_id

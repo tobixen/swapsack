@@ -49,6 +49,8 @@ BTC_RECEIVE_PATH = "m/84'/0'/0'/0/0"
 BTC_CHANGE_PATH = "m/84'/0'/0'/1/0"
 DASH_ACCOUNT = "m/44'/5'/0'"
 DASH_CHANGE_PATH = "m/44'/5'/0'/1/0"
+ZEC_ACCOUNT = "m/44'/133'/0'"
+ZEC_CHANGE_PATH = "m/44'/133'/0'/1/0"
 ETH_MAX_FEE_WEI = 10**16  # 0.01 ETH sanity ceiling on inbound gas
 ASSET = {
     "BTC": "BTC.BTC",
@@ -339,11 +341,7 @@ def cmd_address(args: argparse.Namespace) -> int:
     )
     print("TRON:", TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("DASH:", DashAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
-    print(
-        "ZEC: ",
-        ZecAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
-        "(receive-only: the spend path is not implemented yet, see docs/zcash.md)",
-    )
+    print("ZEC: ", ZecAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("MAYA:", MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("THOR:", ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     return 0
@@ -534,7 +532,9 @@ DERIVABLE_CHAINS = tuple(_DESTINATION_DERIVERS)
 # Chains we can receive on but not spend from (Phase 1 in their design notes,
 # mapped here) — auto-deriving a swap destination there parks the funds, so
 # warn loudly. (DASH graduated: send/sweep landed with Phase 2.)
-RECEIVE_ONLY_CHAINS = {"ZEC": "docs/zcash.md"}
+# Currently empty (DASH and ZEC both graduated with their send paths); the
+# mechanism stays for the next Phase-1 chain.
+RECEIVE_ONLY_CHAINS: dict[str, str] = {}
 
 
 def _derive_destination_address(
@@ -803,6 +803,8 @@ def cmd_send(args: argparse.Namespace) -> int:
         return _send_utxo(args, _btc_adapter, BTC_ACCOUNT, BTC_CHANGE_PATH)
     if chain == "DASH":
         return _send_utxo(args, _dash_adapter, DASH_ACCOUNT, DASH_CHANGE_PATH)
+    if chain == "ZEC":  # bespoke v4/ZIP-243 signer, ZIP-317 fees (no fee rate)
+        return _send_utxo(args, _zec_adapter, ZEC_ACCOUNT, ZEC_CHANGE_PATH)
     if chain == "ETH":  # native ETH and ERC-20 tokens (USDT-ETH / USDC-ETH)
         return _send_eth(args)
     if chain == "TRON":  # native TRX and TRC-20 tokens (USDT-TRON)
@@ -942,8 +944,8 @@ def _send_utxo(
     account: str,
     change_path: str,
 ) -> int:
-    """Plain send for a UTXO chain (BTC/DASH): scan, select, gate, broadcast."""
-    from swapsack.chains.coins import InsufficientFunds, sweep_amount
+    """Plain send for a UTXO chain (BTC/DASH/ZEC): scan, select, gate, broadcast."""
+    from swapsack.chains.coins import InsufficientFunds
     from swapsack.chains.scan import scan_account
 
     mnemonic, passphrase = _load_mnemonic(args)
@@ -970,9 +972,7 @@ def _send_utxo(
         try:
             if sweep:
                 total = sum(u.value for u in utxos)
-                amount, _ = sweep_amount(
-                    total, len(utxos), fee_rate, memo_len=0, script=adapter.script
-                )
+                amount, _ = adapter.sweep_send_amount(total, len(utxos), fee_rate)
             else:
                 amount = _base_units(args.amount)
             prepared = adapter.build_and_verify_send(
@@ -992,7 +992,8 @@ def _send_utxo(
 
         label = adapter.chain.lower()
         print(f"send:    {amount} base units (1e-8 {adapter.chain}) to {recipient}")
-        print(f"{label} fee: {prepared.built.fee} @ {fee_rate}/vB")
+        rate = f"@ {fee_rate}/vB" if fee_rate else "(ZIP-317 conventional fee)"
+        print(f"{label} fee: {prepared.built.fee} {rate}")
         return _confirm_and_execute(prepared, adapter, args)
 
 

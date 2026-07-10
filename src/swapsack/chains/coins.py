@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from collections.abc import Callable
 
 OP_RETURN_MAX_BYTES = 80
 OP_PUSHDATA1 = 0x4C
@@ -138,6 +139,40 @@ def token_sweep_amount(balance: int, decimals: int) -> int:
     return amount
 
 
+def _select(
+    utxos: list[Utxo],
+    send_amount: int,
+    dust: int,
+    fee_fn: Callable[[int, int], int],
+) -> Selection:
+    """The greedy largest-first selection core, fee-model agnostic.
+
+    ``fee_fn(n_inputs, n_outputs)`` prices a candidate transaction shape: one
+    recipient/vault output (plus any memo the model accounts for internally)
+    and an optional change output. Change below ``dust`` is dropped and folded
+    into the fee.
+    """
+    chosen: list[Utxo] = []
+    total = 0
+    for utxo in sorted(utxos, key=lambda x: x.value, reverse=True):
+        chosen.append(utxo)
+        total += utxo.value
+
+        # With a change output.
+        fee_with_change = fee_fn(len(chosen), 2)
+        change = total - send_amount - fee_with_change
+        if change >= dust:
+            return Selection(utxos=chosen, fee=fee_with_change, change=change)
+
+        # Without a change output: any remainder above the minimal fee is fee.
+        if total >= send_amount + fee_fn(len(chosen), 1):
+            return Selection(utxos=chosen, fee=total - send_amount, change=0)
+
+    raise InsufficientFunds(
+        f"have {total} base units, need {send_amount} + fee for the spend"
+    )
+
+
 def select_coins(
     utxos: list[Utxo],
     send_amount: int,
@@ -153,27 +188,49 @@ def select_coins(
     would fall below the script's dust threshold it is dropped and folded into
     the fee.
     """
-    chosen: list[Utxo] = []
-    total = 0
-    for utxo in sorted(utxos, key=lambda x: x.value, reverse=True):
-        chosen.append(utxo)
-        total += utxo.value
-
-        # With a change output.
-        fee_with_change = math.ceil(
-            estimate_vsize(len(chosen), 2, memo_len, script=script) * fee_rate
-        )
-        change = total - send_amount - fee_with_change
-        if change >= script.dust:
-            return Selection(utxos=chosen, fee=fee_with_change, change=change)
-
-        # Without a change output: any remainder above the minimal fee is fee.
-        fee_no_change = math.ceil(
-            estimate_vsize(len(chosen), 1, memo_len, script=script) * fee_rate
-        )
-        if total >= send_amount + fee_no_change:
-            return Selection(utxos=chosen, fee=total - send_amount, change=0)
-
-    raise InsufficientFunds(
-        f"have {total} base units, need {send_amount} + fee for the spend"
+    return _select(
+        utxos,
+        send_amount,
+        script.dust,
+        lambda n_in, n_out: math.ceil(
+            estimate_vsize(n_in, n_out, memo_len, script=script) * fee_rate
+        ),
     )
+
+
+# --- ZIP-317 (Zcash): the fee scales with "logical actions", not vbytes ------
+#
+# conventional_fee = 5000 * max(2, logical_actions); for a transparent-only tx
+# the logical actions are max(ceil(in_bytes/150), ceil(out_bytes/34)), which
+# for P2PKH inputs (~148 B) and standard outputs (34 B) is max(n_in, n_out).
+# A tx paying less than the conventional fee is deprioritized/rejected by
+# ZIP-317-following nodes, so this is both the floor and what we pay.
+
+ZIP317_MARGINAL_FEE = 5000
+ZIP317_GRACE_ACTIONS = 2
+# Conservative dust floor for a transparent output (mirrors the legacy P2PKH
+# threshold; Zcash's own relay dust is lower, so this only errs safe).
+DUST_ZEC = 546
+
+
+def zip317_fee(n_inputs: int, n_outputs: int) -> int:
+    """The ZIP-317 conventional fee for a transparent-only transaction."""
+    return ZIP317_MARGINAL_FEE * max(ZIP317_GRACE_ACTIONS, n_inputs, n_outputs)
+
+
+def select_coins_zip317(
+    utxos: list[Utxo], send_amount: int, *, dust: int = DUST_ZEC
+) -> Selection:
+    """Greedy selection under the ZIP-317 fee model (Zcash transparent sends)."""
+    return _select(utxos, send_amount, dust, zip317_fee)
+
+
+def sweep_amount_zip317(
+    total: int, n_inputs: int, *, dust: int = DUST_ZEC
+) -> tuple[int, int]:
+    """Return ``(send_amount, fee)`` sweeping ``total`` into one output (ZIP-317)."""
+    fee = zip317_fee(n_inputs, 1)
+    send = total - fee
+    if send < dust:
+        raise InsufficientFunds(f"balance {total} too small to sweep after fee {fee}")
+    return send, fee

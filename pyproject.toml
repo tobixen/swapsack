@@ -28,6 +28,8 @@ dependencies = [
   "tronpy>=0.5",
   "argcomplete>=3",  # shell tab-completion (register-python-argcomplete)
   "grpcio>=1.60",
+  "base58>=2",
+  "coincurve>=19",
 ]
 
 [project.scripts]

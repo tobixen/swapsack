@@ -27,15 +27,21 @@ a tiny amount, so both just need a small balance at the address above (enough to
 cover fees). Each test **skips** (not fails) when its account is unfunded or too
 small, so a dry faucet never turns CI red.
 
-## DASH: a MAINNET loop (no testnet path)
+## DASH and ZEC: MAINNET loops (no testnet path)
 
-Dash has no faucet-plus-explorer testnet path (see `docs/dash.md`), so its
-broadcast loop (`test_dash_mainnet_send_broadcast`) runs on **mainnet**, gated
-on `SWAPSACK_DASH_MNEMONIC` (optional: `SWAPSACK_DASH_RECIPIENT`,
-`SWAPSACK_DASH_API`). It self-sweeps like the BTC test: the coins moved are
-real but stay in the wallet, and a sweep costs ~450 duffs (≈ €0.0002). Fund
-the `m/44'/5'/0'/0/0` address the seed derives (`swapsack address` prints it,
-or mirror the re-derivation snippet below with `DashAdapter`). Prefer a
+Dash and Zcash have no faucet-plus-explorer testnet path (see `docs/dash.md` /
+`docs/zcash.md`), so their broadcast loops run on **mainnet**:
+
+- `test_dash_mainnet_send_broadcast`, gated on `SWAPSACK_DASH_MNEMONIC`
+  (optional: `SWAPSACK_DASH_RECIPIENT`, `SWAPSACK_DASH_API`). A sweep costs
+  ~450 duffs (≈ €0.0002). Fund the `m/44'/5'/0'/0/0` address.
+- `test_zec_mainnet_send_broadcast`, gated on `SWAPSACK_ZEC_MNEMONIC`
+  (optional: `SWAPSACK_ZEC_RECIPIENT`, `SWAPSACK_ZEC_LWD`). The ZIP-317 sweep
+  fee is 10,000 zat (≈ €0.004). Fund the `m/44'/133'/0'/0/0` (`t1…`) address.
+  This is the one place the bespoke v4/ZIP-243 signer meets a real validator.
+
+Both self-sweep like the BTC test: the coins moved are real but stay in the
+wallet. `swapsack address` prints the addresses a seed derives. Prefer a
 dedicated small-value seed over reusing a real wallet's.
 
 ## Faucets

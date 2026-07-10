@@ -1447,7 +1447,9 @@ name = "swapsack"
 source = { editable = "." }
 dependencies = [
     { name = "argcomplete" },
+    { name = "base58" },
     { name = "bitcoinlib" },
+    { name = "coincurve" },
     { name = "cryptography" },
     { name = "eth-abi" },
     { name = "eth-account" },
@@ -1466,7 +1468,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "argcomplete", specifier = ">=3" },
+    { name = "base58", specifier = ">=2" },
     { name = "bitcoinlib", specifier = ">=0.7" },
+    { name = "coincurve", specifier = ">=19" },
     { name = "cryptography", specifier = ">=43" },
     { name = "eth-abi", specifier = ">=5" },
     { name = "eth-account", specifier = ">=0.13" },

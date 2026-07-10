@@ -165,3 +165,56 @@ def test_sweep_amount_p2pkh_respects_legacy_dust():
     # send = total - fee(341) = 545 < dust 546 -> refuse
     with pytest.raises(InsufficientFunds):
         sweep_amount(886, 2, 1.0, memo_len=0, script=P2PKH)
+
+
+# --- ZIP-317 (Zcash) fee model: action-based, not vbyte-based ----------------
+
+
+def test_zip317_fee_grace_and_scaling():
+    from swapsack.chains.coins import zip317_fee
+
+    assert zip317_fee(1, 1) == 10_000  # grace: max(2, ...) actions * 5000
+    assert zip317_fee(1, 2) == 10_000
+    assert zip317_fee(2, 2) == 10_000
+    assert zip317_fee(3, 2) == 15_000  # 3 logical actions
+    assert zip317_fee(2, 5) == 25_000  # outputs dominate
+
+
+def test_select_coins_zip317_with_change():
+    from swapsack.chains.coins import select_coins_zip317
+
+    sel = select_coins_zip317([u(200_000)], 100_000)
+    assert sel.fee == 10_000  # 1-in 2-out -> grace fee
+    assert sel.change == 90_000
+    assert sel.change + sel.fee + 100_000 == 200_000
+
+
+def test_select_coins_zip317_folds_subdust_change():
+    from swapsack.chains.coins import select_coins_zip317
+
+    # change would be 400 (< dust): folded into the fee, no change output
+    sel = select_coins_zip317([u(110_400)], 100_000)
+    assert sel.change == 0
+    assert sel.fee == 10_400
+
+
+def test_select_coins_zip317_insufficient():
+    from swapsack.chains.coins import select_coins_zip317
+
+    with pytest.raises(InsufficientFunds):
+        select_coins_zip317([u(100_000)], 100_000)
+
+
+def test_sweep_amount_zip317_conserves_value():
+    from swapsack.chains.coins import sweep_amount_zip317
+
+    send, fee = sweep_amount_zip317(1_000_000, 3)
+    assert send + fee == 1_000_000
+    assert fee == 15_000  # 3 inputs, 1 output -> 3 actions
+
+
+def test_sweep_amount_zip317_refuses_dust_sweep():
+    from swapsack.chains.coins import sweep_amount_zip317
+
+    with pytest.raises(InsufficientFunds):
+        sweep_amount_zip317(10_500, 1)  # 10_000 fee leaves 500 < dust

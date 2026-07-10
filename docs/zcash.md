@@ -1,14 +1,15 @@
 # Zcash (ZEC) support — design notes
 
-Status: **Phase 0 (destination) and Phase 1 (Hold + Balance, receive-only) are
-DONE** (2026-07-10): `swap --to ZEC` auto-derives the `t1…` destination, and
-`address`/`balance` cover ZEC via **lightwalletd** (gRPC, default `zec.rocks`,
-override `--zec-lwd` / `$SWAPSACK_ZEC_LWD`). The **spend side (Send/Sweep/
-From/Liq) is not started, and is harder than Dash** — Zcash is not merely a
-legacy-UTXO chain, its transaction format is incompatible with the bitcoinlib
-signer, so `broadcast` refuses loudly. This note records the scoping so the
-risky parts are decided deliberately, not mid-way through a money path. It
-mirrors `docs/dash.md`; read that first for the shared legacy-UTXO issues.
+Status: **Phases 0–2 are DONE** (2026-07-10): destination, Hold + Balance, and
+**send/sweep via a bespoke v4/ZIP-243 signer** (`chains/zcash_tx.py` — see
+below; bitcoinlib cannot sign Zcash). Everything network rides **lightwalletd**
+(gRPC, default `zec.rocks`, override `--zec-lwd` / `$SWAPSACK_ZEC_LWD`). The
+spend path ships **unproven on mainnet** (no Zcash testnet path; an opt-in
+mainnet self-sweep test exists — see `docs/testnet.md`) — test with a tiny
+amount first. Phase 3 (swap-**from** / liquidity) is not started. This note
+records the scoping so the risky parts are decided deliberately, not mid-way
+through a money path. It mirrors `docs/dash.md`; read that first for the
+shared legacy-UTXO issues.
 
 ## TL;DR
 
@@ -90,10 +91,31 @@ sighash wrong yields a tx that is either rejected or — worse — malleable.
   destination auto-derivation (with a loud receive-only warning). The standard
   test mnemonic's 0/0 address has real 2018-era on-chain history, giving the
   scan an opt-in live guard (`pytest -m network`).
-- **Phase 2 — Send / Sweep. Hard.** Needs the bespoke transparent-tx signer
-  above (ZIP-243/225 sighash, consensus branch ID), generalized legacy (P2PKH)
-  fee maths in `coins.py`, and a `verify_zcash_send` gate mirroring
-  `verify_btc_send`. Add an opt-in mainnet broadcast test.
+- **Phase 2 — Send / Sweep. DONE.** The bespoke signer landed as
+  `chains/zcash_tx.py`: **v4 (Sapling-format) transparent-only** transactions
+  with the **ZIP-243** sighash (BLAKE2b-256, personalization bound to the
+  consensus branch id) and coincurve ECDSA. Design points:
+  - **v4, not v5**: simpler (no ZIP-244 txid tree) and still consensus-valid —
+    recent mainnet blocks carry v4 transparent txs, which is where the test
+    anchor comes from. Revisit only if v4 is ever deprecated.
+  - **The branch id is fetched live** from lightwalletd (`GetLightdInfo`),
+    never hardcoded — a stale id after a network upgrade would silently
+    invalidate every signature (it is baked into the sighash
+    personalization). A test pins that a wrong branch id fails verification.
+  - **Correctness is anchored to a real mainnet tx** (txid `0af3caa3…2d6c78`):
+    it round-trips byte-identically through the parser/serializer, and its
+    embedded ECDSA signature verifies against *our* ZIP-243 digest — proving
+    the implementation matches what real Zcash wallets sign, not merely our
+    reading of the spec.
+  - **Fees are ZIP-317** (`coins.zip317_fee`: 5000 zat × max(2, inputs,
+    outputs) logical actions), with coin selection sharing the same greedy
+    core as the BTC/DASH vbyte model. Transactions set `nExpiryHeight` =
+    tip + 40, so an unmined spend expires instead of lingering.
+  - The verify gate is the chain-agnostic `verify_btc_send` over outputs
+    re-extracted from the serialized bytes; UTXOs come from
+    `GetAddressUtxos`, broadcast via `SendTransaction` (a zero errorCode is
+    the node's mempool acceptance). Opt-in mainnet self-sweep test:
+    `SWAPSACK_ZEC_MNEMONIC`, see `docs/testnet.md`.
 - **Phase 3 — From (swap source) + Liq.** Reuse the Phase-2 deposit path with a
   Maya vault + memo, against the Maya client; single-sided LP pairs with CACAO.
 

@@ -253,3 +253,70 @@ def test_dash_mainnet_send_broadcast():
                 break
             time.sleep(3)
         assert seen, f"tx {txid} not seen by Insight"
+
+
+ZEC_MNEMONIC = os.environ.get("SWAPSACK_ZEC_MNEMONIC")
+
+
+@pytest.mark.skipif(
+    not ZEC_MNEMONIC,
+    reason="set SWAPSACK_ZEC_MNEMONIC (a funded MAINNET account) to run the "
+    "ZEC broadcast loop",
+)
+def test_zec_mainnet_send_broadcast():
+    """Sweep the wallet's transparent ZEC UTXOs to itself: build -> verify ->
+    sign (bespoke v4/ZIP-243) -> broadcast via lightwalletd.
+
+    Like DASH there is no funded-testnet path (see docs/zcash.md), so this runs
+    on MAINNET — a self-send whose ZIP-317 fee is 10,000 zat (≈ half a cent).
+    This is the one place the bespoke Zcash signer meets a real validator
+    before users do.
+    """
+    from swapsack.chains.zcash import ACCOUNT as ZEC_ACCOUNT
+    from swapsack.chains.zcash import ZecAdapter
+
+    receive_path = "m/44'/133'/0'/0/0"
+    change_path = "m/44'/133'/0'/1/0"
+    lwd = os.environ.get("SWAPSACK_ZEC_LWD")
+    with ZecAdapter(lwd) if lwd else ZecAdapter() as adapter:
+        recipient = os.environ.get("SWAPSACK_ZEC_RECIPIENT") or adapter.derive_address(
+            ZEC_MNEMONIC, receive_path
+        )
+        records = scan_account(
+            derive_address=lambda p: adapter.derive_address(ZEC_MNEMONIC, p),
+            probe=adapter.address_info,
+            account=ZEC_ACCOUNT,
+        )
+        utxos = [
+            dataclasses.replace(u, path=path)
+            for path, address, info in records
+            if info.confirmed > 0
+            for u in adapter.fetch_utxos(address)
+        ]
+        if not utxos:
+            pytest.skip(
+                "no confirmed transparent ZEC UTXOs — fund "
+                + adapter.derive_address(ZEC_MNEMONIC, receive_path)
+            )
+
+        total = sum(u.value for u in utxos)
+        try:
+            amount, _ = adapter.sweep_send_amount(total, len(utxos), 0.0)
+        except InsufficientFunds as exc:
+            pytest.skip(f"ZEC account too small to sweep after fee: {exc}")
+        prepared = adapter.build_and_verify_send(
+            recipient=recipient,
+            amount=amount,
+            now=int(time.time()),
+            mnemonic=ZEC_MNEMONIC,
+            scanned_utxos=utxos,
+            fee_rate=0.0,
+            change_address=adapter.derive_address(ZEC_MNEMONIC, change_path),
+            max_fee=100_000,
+            sweep=True,
+        )
+        assert prepared.safe, prepared.problems
+        txid = adapter.broadcast(adapter.sign(prepared.built))
+        assert len(txid) == 64
+        # lightwalletd's SendTransaction only returns after the node accepted
+        # the tx into its mempool, so a zero errorCode IS the acceptance check.

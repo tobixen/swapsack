@@ -8,6 +8,19 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **ZEC send + sweep (Phase 2):** `send --asset ZEC` (and `--amount max`)
+  spends transparent funds through a **bespoke v4/ZIP-243 signer**
+  (`chains/zcash_tx.py`) — bitcoinlib cannot sign Zcash's post-Overwinter
+  transaction format. The ZIP-243 sighash implementation is anchored to a
+  real mainnet transaction (its embedded signature verifies against our
+  digest), the consensus branch id is fetched live from lightwalletd (never
+  hardcoded — it would go stale at the next network upgrade), fees follow
+  ZIP-317 (action-based), and transactions carry an expiry height (tip + 40)
+  so unmined spends release instead of lingering. Ships **unproven on
+  mainnet** (no Zcash testnet path) — an opt-in mainnet self-sweep test is
+  gated on `SWAPSACK_ZEC_MNEMONIC`; test with a tiny amount first.
+  Swap-*from* remains Phase 3. Adds `base58` + `coincurve` as direct
+  dependencies (both were already transitive).
 - **DASH send + sweep (Phase 2):** `send --asset DASH` (and `--amount max`)
   builds, gates and signs legacy P2PKH transactions through the same
   build/verify/sign path as BTC, broadcasting via the configured Insight API.
