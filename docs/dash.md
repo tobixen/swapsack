@@ -1,12 +1,12 @@
 # Dash (DASH) support — design notes
 
-Status: **Phases 0–2 are DONE** (2026-07-10): destination, Hold + Balance, and
-**send/sweep**. The spend path ships **unproven on mainnet** (no Dash testnet;
-an opt-in mainnet self-sweep test exists — see `docs/testnet.md`) — test with a
-tiny amount first. Phase 3 (swap-**from** / liquidity) is not started. This
-note records the findings from scoping "full support for Dash" so the work is
-recoverable and the risky parts are decided deliberately rather than in the
-middle of a money path.
+Status: **all phases (0–3) are DONE** (2026-07-10): destination, Hold +
+Balance, send/sweep, swap-**from** and single-sided LP (Maya, pairs with
+CACAO). Every spend path ships **unproven on mainnet** (no Dash testnet; an
+opt-in mainnet self-sweep test exists — see `docs/testnet.md`) — test with a
+tiny amount first. This note records the findings from scoping "full support
+for Dash" so the work is recoverable and the risky parts are decided
+deliberately rather than in the middle of a money path.
 
 ## TL;DR
 
@@ -132,10 +132,17 @@ gated on a funded account/secret, mirroring the Nile TRC-20 loop.
   rate is a conservative flat 2 duffs/vB (Insight exposes no usable
   `estimatefee`). Opt-in mainnet self-sweep test: `SWAPSACK_DASH_MNEMONIC`,
   see `docs/testnet.md`.
-- **Phase 3 — From (swap source) + Liq.** Reuse the Phase-2 deposit path with a
-  Maya vault + `=:`-memo OP_RETURN (mind Dash relay policy on OP_RETURN size);
-  `build_and_verify` / `build_and_verify_deposit` against the **Maya** client;
-  single-sided LP pairs with CACAO (no `auto` for LP — it's a pairing choice).
+- **Phase 3 — From (swap source) + Liq. DONE.** Pure CLI wiring: the shared
+  `UtxoTxBuilder` already carried `build_and_verify` (swap) and
+  `build_and_verify_deposit` (LP), so `_swap_from_btc`/`_liquidity_btc`
+  generalized to `_swap_from_utxo`/`_liquidity_utxo` (BTC and DASH share
+  them). `swap --from DASH` auto-routes to Maya via the normal backend
+  selection; `add-liquidity --asset DASH` refuses any backend not in the
+  adapter's `lp_backends` (Maya-only — LP has no `auto`, it's a pairing
+  choice). On OP_RETURN relay policy: Dash Core's default `datacarriersize`
+  is 83 bytes (80 payload), same as Bitcoin, and the builder's existing
+  80-byte OP_RETURN cap already enforces it — an over-long memo aborts before
+  signing.
 
 ## See also
 

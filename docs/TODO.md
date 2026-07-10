@@ -166,8 +166,8 @@ lowest-price routing across backends.
   a configurable Insight API, ZEC via lightwalletd gRPC). **DASH send/sweep
   (Phase 2) is DONE too** (shared `chains/utxo.py` builder + `ScriptParams`
   legacy fee maths; ships mainnet-unproven — the opt-in broadcast test needs a
-  funded `SWAPSACK_DASH_MNEMONIC`). Remaining: DASH Phase 3 (swap-from via a
-  Maya vault + OP_RETURN memo — the building blocks all exist) and the ZEC
+  funded `SWAPSACK_DASH_MNEMONIC`), **and so is DASH Phase 3** (swap-from +
+  Maya-only single-sided LP, same mainnet-unproven caveat). Remaining: the ZEC
   spend side. **ZEC is harder**: its Overwinter/Sapling/NU5 tx format
   (ZIP-143/243/225 sighash, consensus branch ID) can't be signed by bitcoinlib
   even for transparent spends — a bespoke signer is needed. See `docs/zcash.md`.

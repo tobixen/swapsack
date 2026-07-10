@@ -1319,6 +1319,7 @@ def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
 
     class FakeBtc:
         chain = "BTC"
+        asset = "BTC.BTC"
 
         def __enter__(self):
             return self
@@ -1367,7 +1368,49 @@ def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
     args = build_parser().parse_args(
         ["swap", "--from", "BTC", "--to", "ETH", "--amount", "0.5"]
     )
-    assert cli._swap_from_btc(args) == 1  # clean ABORTED, not a traceback
+    rc = cli._swap_from_utxo(
+        args, cli._btc_adapter, cli.BTC_ACCOUNT, cli.BTC_CHANGE_PATH
+    )
+    assert rc == 1  # clean ABORTED, not a traceback
+
+
+def test_swap_routes_dash_to_the_utxo_handler(monkeypatch):
+    import swapsack.cli as cli
+
+    routed = {}
+
+    def fake_swap_from_utxo(args, adapter_factory, account, change_path):
+        routed.update(factory=adapter_factory, account=account)
+        return 0
+
+    monkeypatch.setattr(cli, "_swap_from_utxo", fake_swap_from_utxo)
+    args = build_parser().parse_args(
+        ["swap", "--from", "DASH", "--to", "BTC", "--amount", "0.5"]
+    )
+    assert cli.cmd_swap(args) == 0
+    assert routed["factory"] is cli._dash_adapter
+    assert routed["account"] == cli.DASH_ACCOUNT
+
+
+def test_add_liquidity_dash_requires_maya_backend(monkeypatch, capsys):
+    # DASH.DASH pools exist only on Maya (adapter.lp_backends); an LP request
+    # against THORChain must refuse up front, before any keystore/network work.
+    import swapsack.cli as cli
+
+    called = []
+    monkeypatch.setattr(cli, "_liquidity_utxo", lambda *a, **kw: called.append(1) or 0)
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "DASH", "--amount", "1"]
+    )  # --backend defaults to thorchain
+    assert cli.cmd_add_liquidity(args) == 2
+    assert not called
+    assert "maya" in capsys.readouterr().err.lower()
+
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "DASH", "--amount", "1", "--backend", "maya"]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    assert called
 
 
 # --- backend sessions are closed after selection (finding #12) ---

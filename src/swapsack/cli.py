@@ -776,7 +776,9 @@ def cmd_quote(args: argparse.Namespace) -> int:
 def cmd_swap(args: argparse.Namespace) -> int:
     chain = ASSET[args.from_].split(".", 1)[0]
     if chain == "BTC":
-        return _swap_from_btc(args)
+        return _swap_from_utxo(args, _btc_adapter, BTC_ACCOUNT, BTC_CHANGE_PATH)
+    if chain == "DASH":  # Maya-only pool; _select_backend routes accordingly
+        return _swap_from_utxo(args, _dash_adapter, DASH_ACCOUNT, DASH_CHANGE_PATH)
     if chain == "ETH":  # native ETH and ERC-20 tokens (e.g. USDT-ETH)
         return _swap_from_eth(args)
     if chain == "TRON":  # native TRX (TRC-20 tokens not yet a source)
@@ -1023,7 +1025,13 @@ def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  #
     return 0
 
 
-def _swap_from_btc(args: argparse.Namespace) -> int:
+def _swap_from_utxo(
+    args: argparse.Namespace,
+    adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter])
+    account: str,
+    change_path: str,
+) -> int:
+    """Swap from a UTXO chain (BTC/DASH): scan, quote, build, gate, broadcast."""
     from swapsack.chains.coins import InsufficientFunds
     from swapsack.chains.scan import scan_account
 
@@ -1034,11 +1042,11 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
         return 2
 
     sweep = args.amount == "max"
-    with _btc_adapter(args, passphrase) as adapter:
+    with adapter_factory(args, passphrase) as adapter:
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(mnemonic, p),
             probe=adapter.address_info,
-            account=BTC_ACCOUNT,
+            account=account,
         )
         utxos = [
             dataclasses.replace(u, path=path)
@@ -1050,14 +1058,16 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
             print("no confirmed UTXOs found for this wallet", file=sys.stderr)
             return 1
 
-        change_address = adapter.derive_address(mnemonic, BTC_CHANGE_PATH)
+        change_address = adapter.derive_address(mnemonic, change_path)
         fee_rate = adapter.fetch_fee_rate()
         if sweep:
             from swapsack.chains.coins import sweep_amount
 
             total = sum(u.value for u in utxos)
             try:
-                amount, _ = sweep_amount(total, len(utxos), fee_rate)
+                amount, _ = sweep_amount(
+                    total, len(utxos), fee_rate, script=adapter.script
+                )
             except InsufficientFunds as exc:
                 print(f"ABORTED: {exc}", file=sys.stderr)
                 return 1
@@ -1065,7 +1075,7 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
             amount = _base_units(args.amount)
 
         request = SwapRequest(
-            from_asset="BTC.BTC",
+            from_asset=adapter.asset,
             to_asset=ASSET[args.to_],
             amount=amount,
             destination=dest,
@@ -1107,7 +1117,10 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
 
             out = prepared.quote.expected_amount_out / asset_unit(ASSET[args.to_])
             print(f"via:     {backend.name}")
-            print(f"send:    {amount} sats to {prepared.quote.inbound_address}")
+            print(
+                f"send:    {amount} base units (1e-8 {adapter.chain}) to "
+                f"{prepared.quote.inbound_address}"
+            )
             print(f"expect:  {out:.8f} {args.to_} -> {dest}")
             print(f"memo:    {prepared.quote.memo}")
             _print_swap_costs(
@@ -1117,7 +1130,7 @@ def _swap_from_btc(args: argparse.Namespace) -> int:
                 amount,
                 price_check=args.price_check,
             )
-            print(f"inbound: {prepared.built.fee} sats on BTC @ {fee_rate} sat/vB")
+            print(f"inbound: {prepared.built.fee} on {adapter.chain} @ {fee_rate}/vB")
             return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1424,7 +1437,36 @@ def _liquidity(
         print(f"token liquidity is only supported for ETH tokens, not {args.asset}")
         return 2
     if chain == "BTC":
-        return _liquidity_btc(args, memo=memo, amount=amount, sweep=sweep)
+        return _liquidity_utxo(
+            args,
+            _btc_adapter,
+            BTC_ACCOUNT,
+            BTC_CHANGE_PATH,
+            memo=memo,
+            amount=amount,
+            sweep=sweep,
+        )
+    if chain == "DASH":
+        from swapsack.chains.dash import DashAdapter
+
+        # DASH.DASH pools exist only on Maya; refuse a THORChain LP request up
+        # front, before any keystore/network work (LP has no 'auto' routing —
+        # it's a choice of network/pairing, so the user must say maya).
+        if args.backend not in DashAdapter.lp_backends:
+            print(
+                "DASH liquidity exists only on Maya — re-run with --backend maya",
+                file=sys.stderr,
+            )
+            return 2
+        return _liquidity_utxo(
+            args,
+            _dash_adapter,
+            DASH_ACCOUNT,
+            DASH_CHANGE_PATH,
+            memo=memo,
+            amount=amount,
+            sweep=sweep,
+        )
     if chain == "ETH":
         return _liquidity_eth(args, memo=memo, amount=amount, sweep=sweep)
     if chain == "TRON":
@@ -1433,19 +1475,26 @@ def _liquidity(
     return 2
 
 
-def _liquidity_btc(
-    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
+def _liquidity_utxo(
+    args: argparse.Namespace,
+    adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter])
+    account: str,
+    change_path: str,
+    *,
+    memo: str,
+    amount: int | None,
+    sweep: bool = False,
 ) -> int:
     from swapsack.chains.coins import InsufficientFunds
     from swapsack.chains.scan import scan_account
     from swapsack.swap import prepare_liquidity
 
     mnemonic, passphrase = _load_mnemonic(args)
-    with _btc_adapter(args, passphrase) as adapter, _liquidity_client(args) as thor:
+    with adapter_factory(args, passphrase) as adapter, _liquidity_client(args) as thor:
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(mnemonic, p),
             probe=adapter.address_info,
-            account=BTC_ACCOUNT,
+            account=account,
         )
         utxos = [
             dataclasses.replace(u, path=path)
@@ -1455,12 +1504,12 @@ def _liquidity_btc(
         ]
         if not utxos:
             print(
-                "no confirmed BTC (add needs funds; withdraw needs a little BTC "
-                "in-wallet for the trigger tx)",
+                f"no confirmed {adapter.chain} (add needs funds; withdraw needs "
+                f"a little {adapter.chain} in-wallet for the trigger tx)",
                 file=sys.stderr,
             )
             return 1
-        change_address = adapter.derive_address(mnemonic, BTC_CHANGE_PATH)
+        change_address = adapter.derive_address(mnemonic, change_path)
         fee_rate = adapter.fetch_fee_rate()
         if sweep:
             from swapsack.chains.coins import sweep_amount
@@ -1468,7 +1517,11 @@ def _liquidity_btc(
             total = sum(u.value for u in utxos)
             try:
                 amount, _ = sweep_amount(
-                    total, len(utxos), fee_rate, memo_len=len(memo.encode())
+                    total,
+                    len(utxos),
+                    fee_rate,
+                    memo_len=len(memo.encode()),
+                    script=adapter.script,
                 )
             except InsufficientFunds as exc:
                 print(f"ABORTED: {exc}", file=sys.stderr)
@@ -1494,9 +1547,13 @@ def _liquidity_btc(
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
         vault = prepared.plan.inbound_address
-        print(f"send:    {prepared.plan.amount} sats to {vault}")
+        print(
+            f"send:    {prepared.plan.amount} base units (1e-8 {adapter.chain}) "
+            f"to {vault}"
+        )
         print(f"memo:    {memo}")
-        print(f"btc fee: {prepared.built.fee} sats @ {fee_rate} sat/vB")
+        label = adapter.chain.lower()
+        print(f"{label} fee: {prepared.built.fee} @ {fee_rate}/vB")
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1783,7 +1840,8 @@ def _add_liquidity_backend_arg(sub: argparse.ArgumentParser) -> None:
         "--backend",
         choices=["thorchain", "maya"],
         default="thorchain",
-        help="network to LP on (maya pairs with CACAO; has no TRON pool)",
+        help="network to LP on (maya pairs with CACAO and is the only one "
+        "with a DASH pool; maya has no TRON pool)",
     )
 
 

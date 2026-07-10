@@ -269,6 +269,38 @@ def test_verify_gate_blocks_foreign_change():
     assert any("non-owned" in p for p in problems)
 
 
+def test_built_deposit_carries_memo_and_signs():
+    # The Phase-3 swap-from/LP shape: vault output + OP_RETURN memo + change,
+    # all legacy. Exercises the OP_RETURN path of the shared builder on a
+    # legacy (non-segwit) transaction, gated by verify_btc_swap.
+    from swapsack.chains.coins import Utxo
+
+    a = DashAdapter()
+    path0 = "m/44'/5'/0'/0/0"
+    addr0 = a.derive_address(TEST_MNEMONIC, path0)
+    utxos = [Utxo(txid="cc" * 32, vout=1, value=500000, address=addr0, path=path0)]
+    memo = "=:BTC.BTC:bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+    vault = "XdAUmwtig27HBG6WfYyHAzP8n6XC9jESEw"
+    prepared = a.build_and_verify_deposit(
+        vault=vault,
+        memo=memo,
+        amount=200000,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=1.0,
+        change_address=addr0,
+        max_fee=10_000,
+    )
+    assert prepared.problems == []
+    op_returns = [o for o in prepared.built.outputs if o.op_return_data is not None]
+    assert [o.op_return_data for o in op_returns] == [memo.encode()]
+    raws = a.sign(prepared.built)
+    assert len(raws) == 1
+    # The raw legacy tx carries the memo bytes verbatim.
+    assert memo.encode().hex() in raws[0]
+
+
 def test_broadcast_posts_to_insight(monkeypatch):
     sent = {}
 
