@@ -40,7 +40,7 @@ class BscAdapter(EthAdapter):
     native_symbol = "BNB"
     # No BSC pools on either network (see module docstring): `balance` must not
     # probe LP positions that cannot exist.
-    lp_pools = False
+    lp_backends = ()
     token_suffix = "BSC"
     tracked_tokens = BSC_TRACKED_TOKENS
     known_token_decimals = {  # noqa: RUF012 (mirrors EthAdapter's class attribute)

@@ -817,10 +817,10 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
             return "X: 1.0"
 
     class FakeAdapter:
-        def __init__(self, chain, lp_pools=True):
+        def __init__(self, chain, lp_backends=None):
             self.chain = chain
             self.asset = f"{chain}.{chain}"
-            self.lp_pools = lp_pools
+            self.lp_backends = lp_backends
 
         def __enter__(self):
             return self
@@ -839,7 +839,7 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
     monkeypatch.setattr(
         cli,
         "_wallet_adapters",
-        lambda args, p="": [FakeAdapter("BTC"), FakeAdapter("BSC", lp_pools=False)],
+        lambda args, p="": [FakeAdapter("BTC"), FakeAdapter("BSC", lp_backends=())],
     )
     monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
     args = build_parser().parse_args(["balance"])
@@ -847,28 +847,88 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
     assert probed == ["BTC.BTC"]
 
 
+def test_balance_probes_maya_only_chains_on_maya_only(monkeypatch):
+    # DASH.DASH pools exist only on Maya, and THORChain answers a probe for a
+    # pool it doesn't run with a 500 (not a clean "no position" 404) — so
+    # `balance` must not probe THORChain for a Maya-only chain at all.
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
+    from swapsack.chains.dash import DashAdapter
+
+    class FakeReport:
+        addresses = ("XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5",)
+
+        def format(self):
+            return "DASH: 1.0"
+
+    class FakeClient:
+        def close(self):
+            pass
+
+    class FakeBackend:
+        def __init__(self, name):
+            self.name = name
+            self.client = FakeClient()
+
+    class FakeDashAdapter:
+        chain = "DASH"
+        asset = "DASH.DASH"
+        # Mirror the real adapter's flag so the class attribute drives the test.
+        lp_backends = DashAdapter.lp_backends
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wallet_balance(self, mnemonic):
+            return FakeReport()
+
+    probed = []
+    monkeypatch.setattr(
+        cli,
+        "_report_liquidity",
+        lambda backends, asset, addrs: probed.append(
+            (asset, tuple(b.name for b in backends))
+        ),
+    )
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("m", ""))
+    monkeypatch.setattr(cli, "_wallet_adapters", lambda args, p="": [FakeDashAdapter()])
+    monkeypatch.setattr(
+        backends_mod,
+        "default_backends",
+        lambda: [FakeBackend("thorchain"), FakeBackend("maya")],
+    )
+    args = build_parser().parse_args(["balance"])
+    assert cli.cmd_balance(args) == 0
+    assert probed == [("DASH.DASH", ("maya",))]
+
+
 def test_poolless_adapters_are_flagged():
     from swapsack.chains.bsc import BscAdapter
     from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.dash import DashAdapter
     from swapsack.chains.maya import MayaAdapter
     from swapsack.chains.thor import ThorAdapter
 
-    assert BscAdapter.lp_pools is False  # no BSC pools anywhere (documented)
+    assert BscAdapter.lp_backends == ()  # no BSC pools anywhere (documented)
     # CACAO is Maya's settlement asset — no MAYA.CACAO pool on Maya, and
     # THORChain doesn't trade Maya assets — so it is genuinely pool-less.
-    assert MayaAdapter.lp_pools is False
+    assert MayaAdapter.lp_backends == ()
     # RUNE is THORChain's settlement asset (no pool on THORChain) but Maya runs
     # a live THOR.RUNE pool, so RUNE LP positions DO exist and must be probed.
-    assert getattr(ThorAdapter, "lp_pools", True) is True
-    assert getattr(BtcAdapter, "lp_pools", True) is True
+    assert getattr(ThorAdapter, "lp_backends", None) is None
+    assert getattr(BtcAdapter, "lp_backends", None) is None
+    assert DashAdapter.lp_backends == ("maya",)  # Maya-only pool
 
 
 def test_balance_probes_rune_pool_on_maya(monkeypatch):
     # Regression: RUNE has a live THOR.RUNE pool on Maya, so `balance` must
-    # still probe THOR.RUNE — a blanket cosmos lp_pools=False silently hid
+    # still probe THOR.RUNE — a blanket cosmos "no LP pools" flag silently hid
     # RUNE LP positions (funds appeared to vanish from the accounting). The
-    # fake mirrors the real ThorAdapter's lp_pools flag so the class attribute
-    # drives the probe decision.
+    # fake mirrors the real ThorAdapter's lp_backends flag so the class
+    # attribute drives the probe decision.
     import swapsack.backends as backends_mod
     import swapsack.cli as cli
     from swapsack.chains.thor import ThorAdapter
@@ -882,7 +942,7 @@ def test_balance_probes_rune_pool_on_maya(monkeypatch):
     class FakeThorAdapter:
         chain = "THOR"
         asset = "THOR.RUNE"
-        lp_pools = getattr(ThorAdapter, "lp_pools", True)
+        lp_backends = getattr(ThorAdapter, "lp_backends", None)
 
         def __enter__(self):
             return self

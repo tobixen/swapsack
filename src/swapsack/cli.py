@@ -59,6 +59,7 @@ ASSET = {
     "LTC": "LTC.LTC",
     "DOGE": "DOGE.DOGE",
     "BCH": "BCH.BCH",
+    # Hold + balance + destination, receive-only (no spend path yet):
     "DASH": "DASH.DASH",  # Maya-only pool; see docs/dash.md
     "ZEC": "ZEC.ZEC",  # Maya-only pool; transparent (t-addr) only; see docs/zcash.md
     "CACAO": "MAYA.CACAO",  # Maya native asset; 1e10 decimals; see docs/cacao.md
@@ -125,6 +126,17 @@ def _bsc_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN20
     return BscAdapter(url, bip39_passphrase=passphrase)
 
 
+def _dash_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
+    from swapsack.chains.dash import DEFAULT_DASH_API, DashAdapter
+
+    url = (
+        getattr(args, "dash_api", None)
+        or os.environ.get("SWAPSACK_DASH_API")
+        or DEFAULT_DASH_API
+    )
+    return DashAdapter(url, bip39_passphrase=passphrase)
+
+
 def _maya_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
     from swapsack.chains.maya import DEFAULT_MAYANODE, MayaAdapter
 
@@ -154,6 +166,7 @@ def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  #
         _eth_adapter(args, passphrase),
         _tron_adapter(args, passphrase),
         _bsc_adapter(args, passphrase),
+        _dash_adapter(args, passphrase),
         _maya_adapter(args, passphrase),
         _thor_adapter(args, passphrase),
     ]
@@ -289,6 +302,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_address(args: argparse.Namespace) -> int:
     from swapsack.chains.bsc import BscAdapter
     from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.dash import DashAdapter
     from swapsack.chains.eth import EthAdapter
     from swapsack.chains.maya import MayaAdapter
     from swapsack.chains.thor import ThorAdapter
@@ -309,6 +323,11 @@ def cmd_address(args: argparse.Namespace) -> int:
         "(same EVM address as ETH)",
     )
     print("TRON:", TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
+    print(
+        "DASH:",
+        DashAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
+        "(receive-only: the spend path is not implemented yet, see docs/dash.md)",
+    )
     print("MAYA:", MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("THOR:", ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     return 0
@@ -341,13 +360,22 @@ def cmd_balance(args: argparse.Namespace) -> int:
                     )
                     continue
                 print(report.format())
-                # Adapters flag themselves pool-less (BSC: no pools anywhere;
-                # CACAO/RUNE: settlement assets have no pool of themselves) —
-                # probing those is guaranteed-404 round-trips.
-                if getattr(adapter, "lp_pools", True):
-                    _report_liquidity(backends, adapter.asset, report.addresses)
+                # Adapters flag where their pools live: () = pool-less (BSC: no
+                # pools anywhere; CACAO: the settlement asset has no pool of
+                # itself), a backend-name tuple = only there (DASH: Maya-only —
+                # THORChain answers the probe with a 500, not a clean 404), and
+                # None/absent = every backend. Probing a backend that cannot
+                # host the pool is wasted round-trips at best and noise at worst.
+                lp_backends = getattr(adapter, "lp_backends", None)
+                if lp_backends != ():
+                    probed = (
+                        backends
+                        if lp_backends is None
+                        else [b for b in backends if b.name in lp_backends]
+                    )
+                    _report_liquidity(probed, adapter.asset, report.addresses)
                     for pool_asset in _token_pool_assets(adapter):
-                        _report_liquidity(backends, pool_asset, report.addresses)
+                        _report_liquidity(probed, pool_asset, report.addresses)
                 _report_token_balances(adapter, mnemonic)
     finally:
         for backend in backends:
@@ -449,6 +477,12 @@ def _derive_tron(mnemonic: str, passphrase: str) -> str:
     return TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
 
+def _derive_dash(mnemonic: str, passphrase: str) -> str:
+    from swapsack.chains.dash import DashAdapter
+
+    return DashAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+
+
 def _derive_maya(mnemonic: str, passphrase: str) -> str:
     from swapsack.chains.maya import MayaAdapter
 
@@ -469,10 +503,14 @@ _DESTINATION_DERIVERS: dict[str, Callable[[str, str], str]] = {
     "BTC": _derive_btc,
     "ETH": _derive_eth,
     "TRON": _derive_tron,
+    "DASH": _derive_dash,
     "MAYA": _derive_maya,
     "THOR": _derive_thor,
 }
 DERIVABLE_CHAINS = tuple(_DESTINATION_DERIVERS)
+# Chains we can receive on but not spend from (Phase 1 in their design notes) —
+# auto-deriving a swap destination there parks the funds, so warn loudly.
+RECEIVE_ONLY_CHAINS = ("DASH",)
 
 
 def _derive_destination_address(
@@ -497,7 +535,15 @@ def _resolve_destination(
     # TRON.USDT lands at the same Tron address as native TRX, ETH.USDT at the
     # ETH address, etc. The BIP-39 passphrase must be applied here too, or an
     # auto-derived --dest would pay an address the user cannot spend.
-    return _derive_destination_address(_derivable_chain(args.to_), mnemonic, passphrase)
+    chain = _derivable_chain(args.to_)
+    if chain in RECEIVE_ONLY_CHAINS:
+        _warn(
+            f"the derived {chain} destination is receive-only:",
+            "this wallet cannot spend from it yet (no spend path implemented)",
+            "funds stay recoverable by importing the seed into another wallet",
+            f"see docs/{chain.lower()}.md — or pay an external --dest instead",
+        )
+    return _derive_destination_address(chain, mnemonic, passphrase)
 
 
 def _backends_for(args: argparse.Namespace):  # noqa: ANN202 (list[Backend], lazy import)
@@ -1754,6 +1800,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
     s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($SWAPSACK_BSC_RPC)")
+    s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
     s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
     s.set_defaults(func=cmd_balance)

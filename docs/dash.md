@@ -1,9 +1,10 @@
 # Dash (DASH) support — design notes
 
-Status: **not started** as a wallet chain; **destination-only is trivial and
-recommended first.** This note records the findings from scoping "full support
-for Dash" so the work is recoverable and the risky parts are decided
-deliberately rather than in the middle of a money path.
+Status: **Phase 0 (destination) and Phase 1 (Hold + Balance, receive-only) are
+DONE** (2026-07-10). The spend side (Phase 2/3: send/sweep/swap-from/liquidity)
+is **not started** — `broadcast` refuses loudly. This note records the findings
+from scoping "full support for Dash" so the work is recoverable and the risky
+parts are decided deliberately rather than in the middle of a money path.
 
 ## TL;DR
 
@@ -79,8 +80,12 @@ Notes:
   degraded can do exactly that, so the "let me decide later / configurable +
   union" path is the safest and is the current owner preference.
 
-**Decision deferred (owner):** compare Insight / Blockbook / Blockchair /
-configurable-endpoint and pick before committing wallet-side code.
+**Decision (2026-07-10):** configurable endpoint with **Insight as the
+default** (`--dash-api` / `$SWAPSACK_DASH_API`). Re-probed before committing:
+Insight was up and consistent; the Blockbook hosts (`dashN.trezor.io`) no
+longer resolve in DNS; Blockchair works keyless but transiently blacklists IPs.
+Unioning a second source stays a TODO for the spend side, where a lying/stale
+explorer does the most damage.
 
 ## Testability caveat
 
@@ -94,16 +99,23 @@ gated on a funded account/secret, mirroring the Nile TRC-20 loop.
 
 ## Recommended phasing
 
-- **Phase 0 — destination (`--to DASH`).** Add `DASH: "DASH.DASH"` to the CLI
+- **Phase 0 — destination (`--to DASH`). DONE.** Add `DASH: "DASH.DASH"` to the CLI
   asset map and a `--dest` rule to `addresses.py`
   (`re.compile(rf"^[X7]{_B58}{{24,34}}$")` — Dash P2PKH `X` / P2SH `7`, charset
   + length, **not** checksum; Maya validates the checksum). Confirm with a live
   `--backend maya`/`auto` quote that a `DASH.DASH` pool is hit and the memo
   pays the dest. Fully doable and testable today.
-- **Phase 1 — Hold + Balance (read-only).** Register the Dash network in
-  bitcoinlib; new `chains/dash.py` with `derive_address` (`m/44'/5'`, p2pkh)
-  and `wallet_balance` via the chosen data source + `scan_account`. Read-only,
-  so testable without spending. Wire into `cmd_address` and the balance report.
+- **Phase 1 — Hold + Balance (read-only). DONE.** `chains/dash.py` with
+  `derive_address` (`m/44'/5'`, p2pkh) and `wallet_balance` via Insight +
+  `scan_account`; wired into `cmd_address`, `balance` and destination
+  auto-derivation (with a loud receive-only warning). No bitcoinlib network
+  registration needed after all: BIP32 derivation is network-independent, so
+  the shared `chains/p2pkh.py` derives the pubkey and base58check-encodes the
+  address directly (pinned to golden vectors cross-checked against three
+  independent implementations; registering the network in bitcoinlib is only
+  needed for Phase 2's Transaction building). The derived 0/0 address of the
+  standard BIP39 test mnemonic has real on-chain history, giving the scan an
+  opt-in live guard (`pytest -m network`).
 - **Phase 2 — Send / Sweep.** Generalize `coins.py` for legacy (P2PKH) vsizes;
   build a legacy `build_unsigned_*` in `dash.py`; add a `verify_dash_send`
   gate (recipient + amount, no memo/witness) mirroring `verify_btc_send`. Wire
