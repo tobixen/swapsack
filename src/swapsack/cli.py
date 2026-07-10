@@ -47,6 +47,8 @@ DEFAULT_KEYSTORE = "~/.config/swapsack/keystore.json"
 BTC_ACCOUNT = "m/84'/0'/0'"
 BTC_RECEIVE_PATH = "m/84'/0'/0'/0/0"
 BTC_CHANGE_PATH = "m/84'/0'/0'/1/0"
+DASH_ACCOUNT = "m/44'/5'/0'"
+DASH_CHANGE_PATH = "m/44'/5'/0'/1/0"
 ETH_MAX_FEE_WEI = 10**16  # 0.01 ETH sanity ceiling on inbound gas
 ASSET = {
     "BTC": "BTC.BTC",
@@ -59,8 +61,8 @@ ASSET = {
     "LTC": "LTC.LTC",
     "DOGE": "DOGE.DOGE",
     "BCH": "BCH.BCH",
+    "DASH": "DASH.DASH",  # Maya-only pool; hold/bal/send/sweep; see docs/dash.md
     # Hold + balance + destination, receive-only (no spend path yet):
-    "DASH": "DASH.DASH",  # Maya-only pool; see docs/dash.md
     "ZEC": "ZEC.ZEC",  # Maya-only; transparent (t-addr) only; see docs/zcash.md
     "CACAO": "MAYA.CACAO",  # Maya native asset; 1e10 decimals; see docs/cacao.md
     "RUNE": "THOR.RUNE",  # THORChain native asset (Cosmos MsgSend/MsgDeposit)
@@ -336,11 +338,7 @@ def cmd_address(args: argparse.Namespace) -> int:
         "(same EVM address as ETH)",
     )
     print("TRON:", TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
-    print(
-        "DASH:",
-        DashAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
-        "(receive-only: the spend path is not implemented yet, see docs/dash.md)",
-    )
+    print("DASH:", DashAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print(
         "ZEC: ",
         ZecAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
@@ -535,8 +533,8 @@ _DESTINATION_DERIVERS: dict[str, Callable[[str, str], str]] = {
 DERIVABLE_CHAINS = tuple(_DESTINATION_DERIVERS)
 # Chains we can receive on but not spend from (Phase 1 in their design notes,
 # mapped here) — auto-deriving a swap destination there parks the funds, so
-# warn loudly.
-RECEIVE_ONLY_CHAINS = {"DASH": "docs/dash.md", "ZEC": "docs/zcash.md"}
+# warn loudly. (DASH graduated: send/sweep landed with Phase 2.)
+RECEIVE_ONLY_CHAINS = {"ZEC": "docs/zcash.md"}
 
 
 def _derive_destination_address(
@@ -800,7 +798,9 @@ def cmd_send(args: argparse.Namespace) -> int:
         print(f"recipient: {problem}", file=sys.stderr)
         return 2
     if chain == "BTC":
-        return _send_btc(args)
+        return _send_utxo(args, _btc_adapter, BTC_ACCOUNT, BTC_CHANGE_PATH)
+    if chain == "DASH":
+        return _send_utxo(args, _dash_adapter, DASH_ACCOUNT, DASH_CHANGE_PATH)
     if chain == "ETH":  # native ETH and ERC-20 tokens (USDT-ETH / USDC-ETH)
         return _send_eth(args)
     if chain == "TRON":  # native TRX and TRC-20 tokens (USDT-TRON)
@@ -934,18 +934,24 @@ def _send_tron(args: argparse.Namespace) -> int:
         return _confirm_and_execute(prepared, adapter, args)
 
 
-def _send_btc(args: argparse.Namespace) -> int:
+def _send_utxo(
+    args: argparse.Namespace,
+    adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter])
+    account: str,
+    change_path: str,
+) -> int:
+    """Plain send for a UTXO chain (BTC/DASH): scan, select, gate, broadcast."""
     from swapsack.chains.coins import InsufficientFunds, sweep_amount
     from swapsack.chains.scan import scan_account
 
     mnemonic, passphrase = _load_mnemonic(args)
     recipient = args.address
     sweep = args.amount == "max"
-    with _btc_adapter(args, passphrase) as adapter:
+    with adapter_factory(args, passphrase) as adapter:
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(mnemonic, p),
             probe=adapter.address_info,
-            account=BTC_ACCOUNT,
+            account=account,
         )
         utxos = [
             dataclasses.replace(u, path=path)
@@ -957,12 +963,14 @@ def _send_btc(args: argparse.Namespace) -> int:
             print("no confirmed UTXOs found for this wallet", file=sys.stderr)
             return 1
 
-        change_address = adapter.derive_address(mnemonic, BTC_CHANGE_PATH)
+        change_address = adapter.derive_address(mnemonic, change_path)
         fee_rate = adapter.fetch_fee_rate()
         try:
             if sweep:
                 total = sum(u.value for u in utxos)
-                amount, _ = sweep_amount(total, len(utxos), fee_rate, memo_len=0)
+                amount, _ = sweep_amount(
+                    total, len(utxos), fee_rate, memo_len=0, script=adapter.script
+                )
             else:
                 amount = _base_units(args.amount)
             prepared = adapter.build_and_verify_send(
@@ -980,8 +988,9 @@ def _send_btc(args: argparse.Namespace) -> int:
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
 
-        print(f"send:    {amount} sats to {recipient}")
-        print(f"btc fee: {prepared.built.fee} sats @ {fee_rate} sat/vB")
+        label = adapter.chain.lower()
+        print(f"send:    {amount} base units (1e-8 {adapter.chain}) to {recipient}")
+        print(f"{label} fee: {prepared.built.fee} @ {fee_rate}/vB")
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1906,9 +1915,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--yes", action="store_true", help="skip the interactive confirm (automation)"
     )
-    s.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
+    s.add_argument(
+        "--max-fee",
+        type=int,
+        default=50_000,
+        help="max UTXO-chain fee in base units (BTC sats / DASH duffs)",
+    )
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
+    s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
     s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
     s.set_defaults(func=cmd_send)

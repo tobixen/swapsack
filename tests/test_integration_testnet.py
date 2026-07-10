@@ -175,3 +175,81 @@ def test_eth_sepolia_send_broadcast_and_confirm():
             time.sleep(3)
         assert receipt, f"tx {txid} not confirmed in time"
         assert int(receipt["status"], 16) == 1  # 1 = success, 0 = reverted
+
+
+DASH_MNEMONIC = os.environ.get("SWAPSACK_DASH_MNEMONIC")
+
+
+@pytest.mark.skipif(
+    not DASH_MNEMONIC,
+    reason="set SWAPSACK_DASH_MNEMONIC (a funded MAINNET account) to run the "
+    "DASH broadcast loop",
+)
+def test_dash_mainnet_send_broadcast():
+    """Sweep the wallet's DASH UTXOs to itself: build -> verify -> sign ->
+    broadcast, then confirm Insight sees the tx.
+
+    Unlike the BTC/ETH loops there is no funded-testnet path for Dash (see
+    docs/dash.md), so this runs on MAINNET — the coins moved are real, but it
+    is a self-send and Dash fees are ~half a cent. This is the one place the
+    legacy spend path gets exercised against a real network before users do.
+    """
+    from swapsack.chains.coins import P2PKH
+    from swapsack.chains.dash import ACCOUNT as DASH_ACCOUNT
+    from swapsack.chains.dash import DashAdapter
+
+    receive_path = "m/44'/5'/0'/0/0"
+    change_path = "m/44'/5'/0'/1/0"
+    api = os.environ.get("SWAPSACK_DASH_API")
+    with DashAdapter(api) if api else DashAdapter() as adapter:
+        recipient = os.environ.get("SWAPSACK_DASH_RECIPIENT") or adapter.derive_address(
+            DASH_MNEMONIC, receive_path
+        )
+        records = scan_account(
+            derive_address=lambda p: adapter.derive_address(DASH_MNEMONIC, p),
+            probe=adapter.address_info,
+            account=DASH_ACCOUNT,
+        )
+        utxos = [
+            dataclasses.replace(u, path=path)
+            for path, address, info in records
+            if info.confirmed > 0
+            for u in adapter.fetch_utxos(address)
+        ]
+        if not utxos:
+            pytest.skip(
+                "no confirmed DASH UTXOs — fund "
+                + adapter.derive_address(DASH_MNEMONIC, receive_path)
+            )
+
+        fee_rate = adapter.fetch_fee_rate()
+        total = sum(u.value for u in utxos)
+        try:
+            amount, _ = sweep_amount(
+                total, len(utxos), fee_rate, memo_len=0, script=P2PKH
+            )
+        except InsufficientFunds as exc:
+            pytest.skip(f"DASH account too small to sweep after fee: {exc}")
+        prepared = adapter.build_and_verify_send(
+            recipient=recipient,
+            amount=amount,
+            now=int(time.time()),
+            mnemonic=DASH_MNEMONIC,
+            scanned_utxos=utxos,
+            fee_rate=fee_rate,
+            change_address=adapter.derive_address(DASH_MNEMONIC, change_path),
+            max_fee=100_000,
+            sweep=True,
+        )
+        assert prepared.safe, prepared.problems
+        txid = adapter.broadcast(adapter.sign(prepared.built))
+        assert txid
+
+        seen = False
+        for _ in range(20):  # wait for mempool acceptance, not a confirmation
+            resp = adapter._get(f"{adapter.api_url}/tx/{txid}")
+            if resp.status_code == 200:
+                seen = True
+                break
+            time.sleep(3)
+        assert seen, f"tx {txid} not seen by Insight"

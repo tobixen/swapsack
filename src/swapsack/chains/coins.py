@@ -1,8 +1,10 @@
-"""Bitcoin coin selection and OP_RETURN encoding — pure, dependency-free logic.
+"""UTXO coin selection and OP_RETURN encoding — pure, dependency-free logic.
 
-Kept separate from the bitcoinlib-backed adapter so it can be tested without the
-``btc`` extra, and so the money-sensitive selection/fee maths is easy to read.
-All amounts are in satoshis.
+Kept separate from the bitcoinlib-backed adapters so it can be tested without
+the ``btc`` extra, and so the money-sensitive selection/fee maths is easy to
+read. All amounts are in the chain's base units (sats/duffs). The maths is
+parameterized by script type — native segwit (BTC) and legacy P2PKH (DASH)
+share one code path, not copies.
 """
 
 from __future__ import annotations
@@ -14,12 +16,28 @@ OP_RETURN_MAX_BYTES = 80
 OP_PUSHDATA1 = 0x4C
 OP_RETURN_OPCODE = 0x6A
 
-# Approximate virtual sizes (vbytes) for a native-segwit (P2WPKH) spend.
 TX_OVERHEAD_VB = 11
-P2WPKH_INPUT_VB = 68
-P2WPKH_OUTPUT_VB = 31
-# A P2WPKH output's value is not worth keeping below this (sats).
-DUST_P2WPKH = 294
+
+
+@dataclasses.dataclass(frozen=True)
+class ScriptParams:
+    """Per-script-type sizing constants for the fee/dust maths (vbytes, base units)."""
+
+    input_vb: int
+    output_vb: int
+    dust: int  # an output's value is not worth keeping below this
+
+
+# Native segwit (BTC): witness-discounted sizes, dust 294.
+P2WPKH = ScriptParams(input_vb=68, output_vb=31, dust=294)
+# Legacy pay-to-pubkey-hash (DASH; pre-segwit sizes, no witness discount):
+# input 32 txid + 4 vout + 1 len + ~107 scriptSig + 4 sequence, output 8 + 1 + 25.
+P2PKH = ScriptParams(input_vb=148, output_vb=34, dust=546)
+
+# Backwards-compatible aliases (pre-ScriptParams API).
+P2WPKH_INPUT_VB = P2WPKH.input_vb
+P2WPKH_OUTPUT_VB = P2WPKH.output_vb
+DUST_P2WPKH = P2WPKH.dust
 
 
 class InsufficientFunds(RuntimeError):
@@ -71,13 +89,15 @@ def _op_return_vb(data_len: int) -> int:
     return 8 + 1 + 2 + data_len
 
 
-def estimate_vsize(n_inputs: int, n_p2wpkh_outputs: int, op_return_len: int) -> int:
-    """Estimate transaction vsize for P2WPKH inputs/outputs plus one OP_RETURN."""
-    vsize = (
-        TX_OVERHEAD_VB
-        + n_inputs * P2WPKH_INPUT_VB
-        + n_p2wpkh_outputs * P2WPKH_OUTPUT_VB
-    )
+def estimate_vsize(
+    n_inputs: int,
+    n_outputs: int,
+    op_return_len: int,
+    *,
+    script: ScriptParams = P2WPKH,
+) -> int:
+    """Estimate transaction vsize for ``script``-type inputs/outputs + OP_RETURN."""
+    vsize = TX_OVERHEAD_VB + n_inputs * script.input_vb + n_outputs * script.output_vb
     if op_return_len:
         vsize += _op_return_vb(op_return_len)
     return vsize
@@ -89,17 +109,17 @@ def sweep_amount(
     fee_rate: float,
     memo_len: int = OP_RETURN_MAX_BYTES,
     *,
-    dust: int = DUST_P2WPKH,
+    script: ScriptParams = P2WPKH,
 ) -> tuple[int, int]:
     """Return ``(send_amount, fee)`` for sweeping ``total`` into one output.
 
-    Spends every input into a single P2WPKH (vault) output plus the OP_RETURN
-    memo, with no change. ``memo_len`` defaults to the maximum so the fee is
-    never underestimated.
+    Spends every input into a single (vault/recipient) output plus the
+    OP_RETURN memo, with no change. ``memo_len`` defaults to the maximum so the
+    fee is never underestimated.
     """
-    fee = math.ceil(estimate_vsize(n_inputs, 1, memo_len) * fee_rate)
+    fee = math.ceil(estimate_vsize(n_inputs, 1, memo_len, script=script) * fee_rate)
     send = total - fee
-    if send < dust:
+    if send < script.dust:
         raise InsufficientFunds(f"balance {total} too small to sweep after fee {fee}")
     return send, fee
 
@@ -124,13 +144,14 @@ def select_coins(
     fee_rate: float,
     memo_len: int,
     *,
-    dust: int = DUST_P2WPKH,
+    script: ScriptParams = P2WPKH,
 ) -> Selection:
     """Greedily select UTXOs (largest first) to fund a swap output.
 
-    The transaction shape is: one P2WPKH vault output, one OP_RETURN (memo), and
-    an optional P2WPKH change output. If the change would fall below ``dust`` it
-    is dropped and folded into the fee.
+    The transaction shape is: one vault/recipient output, one OP_RETURN (memo),
+    and an optional change output, all of ``script``'s type. If the change
+    would fall below the script's dust threshold it is dropped and folded into
+    the fee.
     """
     chosen: list[Utxo] = []
     total = 0
@@ -139,14 +160,20 @@ def select_coins(
         total += utxo.value
 
         # With a change output.
-        fee_with_change = math.ceil(estimate_vsize(len(chosen), 2, memo_len) * fee_rate)
+        fee_with_change = math.ceil(
+            estimate_vsize(len(chosen), 2, memo_len, script=script) * fee_rate
+        )
         change = total - send_amount - fee_with_change
-        if change >= dust:
+        if change >= script.dust:
             return Selection(utxos=chosen, fee=fee_with_change, change=change)
 
         # Without a change output: any remainder above the minimal fee is fee.
-        fee_no_change = math.ceil(estimate_vsize(len(chosen), 1, memo_len) * fee_rate)
+        fee_no_change = math.ceil(
+            estimate_vsize(len(chosen), 1, memo_len, script=script) * fee_rate
+        )
         if total >= send_amount + fee_no_change:
             return Selection(utxos=chosen, fee=total - send_amount, change=0)
 
-    raise InsufficientFunds(f"have {total} sats, need {send_amount} + fee for the swap")
+    raise InsufficientFunds(
+        f"have {total} base units, need {send_amount} + fee for the spend"
+    )

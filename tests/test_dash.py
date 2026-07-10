@@ -118,11 +118,178 @@ def test_wallet_balance_scans_and_sums(monkeypatch):
     assert report.addresses == (funded,)
 
 
-def test_broadcast_refuses_loudly():
-    # Phase 1 is receive-only: a spend path that silently "succeeds" would be
-    # catastrophic, so broadcast must refuse with a pointer to the design note.
-    with pytest.raises(NotImplementedError, match="docs/dash.md"):
-        DashAdapter().broadcast(["00"])
+# --- Phase 2: send / sweep (legacy P2PKH build + sign) -----------------------
+
+
+def test_bitcoinlib_dash_network_agrees_with_pinned_derivation():
+    # The signer derives its keys through bitcoinlib's registered "dash"
+    # network; the receive addresses come from the independent golden-vector
+    # path (chains/p2pkh.py). The two must agree, or we'd sign for keys that
+    # don't own the scanned UTXOs.
+    from bitcoinlib.keys import HDKey
+    from bitcoinlib.mnemonic import Mnemonic
+
+    seed = Mnemonic().to_seed(TEST_MNEMONIC, "")
+    for path, address in GOLDEN.items():
+        key = HDKey.from_seed(seed, network="dash").key_for_path(path)
+        assert key.address(script_type="p2pkh", encoding="base58") == address
+
+
+# A trimmed real response shape from insight-api /addr/{a}/utxo.
+INSIGHT_UTXOS = [
+    {
+        "address": "XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5",
+        "txid": "cc" * 32,
+        "vout": 1,
+        "satoshis": 150000,
+        "confirmations": 12,
+    },
+    {
+        "address": "XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5",
+        "txid": "dd" * 32,
+        "vout": 0,
+        "satoshis": 50000,
+        "confirmations": 0,  # unconfirmed: must be excluded (fail closed)
+    },
+]
+
+
+def test_fetch_utxos_excludes_unconfirmed(monkeypatch):
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return INSIGHT_UTXOS
+
+    a = DashAdapter()
+    monkeypatch.setattr(a, "_get", lambda url: FakeResp())
+    utxos = a.fetch_utxos("XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5")
+    assert [(u.txid, u.vout, u.value) for u in utxos] == [("cc" * 32, 1, 150000)]
+
+
+def test_built_send_passes_verify_gate_and_signs():
+    from swapsack.chains.coins import Utxo
+
+    a = DashAdapter()
+    path0, path1 = "m/44'/5'/0'/0/0", "m/44'/5'/0'/0/1"
+    addr0, addr1 = (a.derive_address(TEST_MNEMONIC, p) for p in (path0, path1))
+    utxos = [
+        Utxo(txid="cc" * 32, vout=1, value=150000, address=addr0, path=path0),
+        Utxo(txid="dd" * 32, vout=0, value=90000, address=addr1, path=path1),
+    ]
+    recipient = "XdAUmwtig27HBG6WfYyHAzP8n6XC9jESEw"  # foreign X-address
+    prepared = a.build_and_verify_send(
+        recipient=recipient,
+        amount=200000,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=1.0,
+        change_address=addr0,
+        max_fee=10_000,
+    )
+    assert prepared.problems == []
+    # Both inputs sign (across two derivation paths) and the tx verifies.
+    raws = a.sign(prepared.built)
+    assert len(raws) == 1
+    assert all(inp.signatures for inp in prepared.built.tx.inputs)
+    # value is conserved: inputs = recipient + change + fee
+    outputs_total = sum(o.value for o in prepared.built.outputs)
+    assert outputs_total + prepared.built.fee == 240000
+
+
+def test_built_send_folds_legacy_subdust_change_into_fee():
+    from swapsack.chains.coins import Utxo
+
+    a = DashAdapter()
+    path0 = "m/44'/5'/0'/0/0"
+    addr0 = a.derive_address(TEST_MNEMONIC, path0)
+    # 1-in 2-out legacy @1 duff/vB = 227 fee; change would be 400 < dust 546.
+    utxos = [Utxo(txid="cc" * 32, vout=1, value=100627, address=addr0, path=path0)]
+    prepared = a.build_and_verify_send(
+        recipient="XdAUmwtig27HBG6WfYyHAzP8n6XC9jESEw",
+        amount=100000,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=1.0,
+        change_address=addr0,
+        max_fee=10_000,
+    )
+    assert prepared.problems == []
+    assert prepared.built.fee == 627
+    assert len(prepared.built.outputs) == 1  # no change output
+
+
+def test_built_sweep_spends_everything():
+    from swapsack.chains.coins import P2PKH as P2PKH_SCRIPT
+    from swapsack.chains.coins import Utxo, sweep_amount
+
+    a = DashAdapter()
+    path0 = "m/44'/5'/0'/0/0"
+    addr0 = a.derive_address(TEST_MNEMONIC, path0)
+    utxos = [Utxo(txid="cc" * 32, vout=1, value=150000, address=addr0, path=path0)]
+    amount, fee = sweep_amount(150000, 1, 1.0, memo_len=0, script=P2PKH_SCRIPT)
+    prepared = a.build_and_verify_send(
+        recipient="XdAUmwtig27HBG6WfYyHAzP8n6XC9jESEw",
+        amount=amount,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=1.0,
+        change_address=addr0,
+        max_fee=10_000,
+        sweep=True,
+    )
+    assert prepared.problems == []
+    assert amount + prepared.built.fee == 150000
+    assert len(prepared.built.outputs) == 1  # nothing left behind
+
+
+def test_verify_gate_blocks_foreign_change():
+    a = DashAdapter()
+    path0 = "m/44'/5'/0'/0/0"
+    addr0 = a.derive_address(TEST_MNEMONIC, path0)
+    # The builder's owned set is change_address ∪ utxo addresses, so a wrongly
+    # routed change output has to be simulated at the verify layer: the gate
+    # must reject change paid to a stranger.
+    from swapsack.verify import SendPlan, TxOutput, verify_btc_send
+
+    problems = verify_btc_send(
+        [
+            TxOutput(address="XdAUmwtig27HBG6WfYyHAzP8n6XC9jESEw", value=100000),
+            TxOutput(address="XsomeStrangerAddressAAAAAAAAAAAAAA", value=399000),
+        ],
+        fee=1000,
+        plan=SendPlan(recipient="XdAUmwtig27HBG6WfYyHAzP8n6XC9jESEw", amount=100000),
+        owned_addresses={addr0},
+        max_fee=10_000,
+    )
+    assert any("non-owned" in p for p in problems)
+
+
+def test_broadcast_posts_to_insight(monkeypatch):
+    sent = {}
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"txid": "ee" * 32}
+
+    def fake_post(url, **kwargs):
+        sent["url"] = url
+        sent["json"] = kwargs.get("json")
+        return FakeResp()
+
+    a = DashAdapter()
+    monkeypatch.setattr(a, "_post", fake_post)
+    txid = a.broadcast(["deadbeef"])
+    assert txid == "ee" * 32
+    assert sent["url"].endswith("/tx/send")
+    assert sent["json"] == {"rawtx": "deadbeef"}
 
 
 @pytest.mark.network

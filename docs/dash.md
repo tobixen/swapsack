@@ -1,10 +1,12 @@
 # Dash (DASH) support — design notes
 
-Status: **Phase 0 (destination) and Phase 1 (Hold + Balance, receive-only) are
-DONE** (2026-07-10). The spend side (Phase 2/3: send/sweep/swap-from/liquidity)
-is **not started** — `broadcast` refuses loudly. This note records the findings
-from scoping "full support for Dash" so the work is recoverable and the risky
-parts are decided deliberately rather than in the middle of a money path.
+Status: **Phases 0–2 are DONE** (2026-07-10): destination, Hold + Balance, and
+**send/sweep**. The spend path ships **unproven on mainnet** (no Dash testnet;
+an opt-in mainnet self-sweep test exists — see `docs/testnet.md`) — test with a
+tiny amount first. Phase 3 (swap-**from** / liquidity) is not started. This
+note records the findings from scoping "full support for Dash" so the work is
+recoverable and the risky parts are decided deliberately rather than in the
+middle of a money path.
 
 ## TL;DR
 
@@ -116,10 +118,20 @@ gated on a funded account/secret, mirroring the Nile TRC-20 loop.
   needed for Phase 2's Transaction building). The derived 0/0 address of the
   standard BIP39 test mnemonic has real on-chain history, giving the scan an
   opt-in live guard (`pytest -m network`).
-- **Phase 2 — Send / Sweep.** Generalize `coins.py` for legacy (P2PKH) vsizes;
-  build a legacy `build_unsigned_*` in `dash.py`; add a `verify_dash_send`
-  gate (recipient + amount, no memo/witness) mirroring `verify_btc_send`. Wire
-  into `cmd_send`. Add an opt-in mainnet broadcast test.
+- **Phase 2 — Send / Sweep. DONE.** `coins.py` grew a `ScriptParams`
+  parameterization (P2WPKH 68/31/294 vs P2PKH 148/34/546 — one code path, not
+  copies), and the whole BTC build/gate/sign machinery moved to a shared
+  `chains/utxo.py::UtxoTxBuilder` that `DashAdapter` joins with
+  `witness_type="legacy"`, `script=P2PKH` and a `dash` network registered in
+  bitcoinlib (address/WIF prefixes + standard BIP32 bytes; a test pins that
+  the registered network derives the same golden addresses as the independent
+  `p2pkh.py` path, so the signer's keys own the scanned UTXOs). The verify
+  gate is the chain-agnostic `verify_btc_send` (pure output checks — no
+  Dash-specific copy needed). UTXOs come from Insight `/addr/{a}/utxo`
+  (confirmed-only, fail closed), broadcast posts to `/tx/send`, and the fee
+  rate is a conservative flat 2 duffs/vB (Insight exposes no usable
+  `estimatefee`). Opt-in mainnet self-sweep test: `SWAPSACK_DASH_MNEMONIC`,
+  see `docs/testnet.md`.
 - **Phase 3 — From (swap source) + Liq.** Reuse the Phase-2 deposit path with a
   Maya vault + `=:`-memo OP_RETURN (mind Dash relay policy on OP_RETURN size);
   `build_and_verify` / `build_and_verify_deposit` against the **Maya** client;

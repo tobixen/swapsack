@@ -8,6 +8,14 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **DASH send + sweep (Phase 2):** `send --asset DASH` (and `--amount max`)
+  builds, gates and signs legacy P2PKH transactions through the same
+  build/verify/sign path as BTC, broadcasting via the configured Insight API.
+  The fee/dust maths is parameterized by script type (legacy 148/34-vB sizing,
+  546-duff dust) and the fee rate is a conservative flat 2 duffs/vB. The
+  broadcast ships **unproven on mainnet** (Dash has no testnet path) — an
+  opt-in mainnet self-sweep test is gated on `SWAPSACK_DASH_MNEMONIC`; test
+  with a tiny amount first. Swap-*from* (vault deposits) remains Phase 3.
 - **ZEC wallet side, Phase 1 (receive-only):** `address` derives the Zcash
   transparent receive address (standard BIP44, `m/44'/133'/0'/0/0`), `balance`
   gap-limit scans and reports ZEC via a configurable lightwalletd gRPC

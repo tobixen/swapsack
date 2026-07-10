@@ -27,6 +27,17 @@ a tiny amount, so both just need a small balance at the address above (enough to
 cover fees). Each test **skips** (not fails) when its account is unfunded or too
 small, so a dry faucet never turns CI red.
 
+## DASH: a MAINNET loop (no testnet path)
+
+Dash has no faucet-plus-explorer testnet path (see `docs/dash.md`), so its
+broadcast loop (`test_dash_mainnet_send_broadcast`) runs on **mainnet**, gated
+on `SWAPSACK_DASH_MNEMONIC` (optional: `SWAPSACK_DASH_RECIPIENT`,
+`SWAPSACK_DASH_API`). It self-sweeps like the BTC test: the coins moved are
+real but stay in the wallet, and a sweep costs ~450 duffs (≈ €0.0002). Fund
+the `m/44'/5'/0'/0/0` address the seed derives (`swapsack address` prints it,
+or mirror the re-derivation snippet below with `DashAdapter`). Prefer a
+dedicated small-value seed over reusing a real wallet's.
+
 ## Faucets
 
 - **BTC signet:** https://signetfaucet.com/ · https://faucet.mutinynet.com/

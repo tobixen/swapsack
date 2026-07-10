@@ -450,7 +450,7 @@ def test_send_validates_recipient_before_dispatch(monkeypatch, capsys):
     import swapsack.cli as cli
 
     called = []
-    monkeypatch.setattr(cli, "_send_btc", lambda args: called.append(1) or 0)
+    monkeypatch.setattr(cli, "_send_utxo", lambda *a, **kw: called.append(1) or 0)
     args = build_parser().parse_args(
         # a TRON-looking address for a BTC send
         [

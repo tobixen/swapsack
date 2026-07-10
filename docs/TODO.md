@@ -163,12 +163,14 @@ lowest-price routing across backends.
   The **full wallet side** is *not* that cheap for the UTXO ones: DASH/ZEC are
   legacy (non-segwit) UTXO chains with no Blockstream Esplora and no easy
   testnet. **Hold + Balance (Phase 1) is DONE for both** (2026-07-10: DASH via
-  a configurable Insight API, ZEC via lightwalletd gRPC — receive-only, loud
-  warnings). The **spend side (Phase 2)** still needs generalized legacy fee
-  maths + a verify gate; see `docs/dash.md` for the phased plan. **ZEC is
-  harder still**: its Overwinter/Sapling/NU5 tx format (ZIP-143/243/225
-  sighash, consensus branch ID) can't be signed by bitcoinlib even for
-  transparent spends — a bespoke signer is needed. See `docs/zcash.md`.
+  a configurable Insight API, ZEC via lightwalletd gRPC). **DASH send/sweep
+  (Phase 2) is DONE too** (shared `chains/utxo.py` builder + `ScriptParams`
+  legacy fee maths; ships mainnet-unproven — the opt-in broadcast test needs a
+  funded `SWAPSACK_DASH_MNEMONIC`). Remaining: DASH Phase 3 (swap-from via a
+  Maya vault + OP_RETURN memo — the building blocks all exist) and the ZEC
+  spend side. **ZEC is harder**: its Overwinter/Sapling/NU5 tx format
+  (ZIP-143/243/225 sighash, consensus branch ID) can't be signed by bitcoinlib
+  even for transparent spends — a bespoke signer is needed. See `docs/zcash.md`.
 - **USDC on cheaper chains**: ETH.USDC is done (mirrors USDT-ETH). THORChain also
   pools USDC on AVAX/BASE and Maya on ARB — all far cheaper to use than ETH
   mainnet. Each needs a new EVM chain adapter (RPC, chain-id, native coin, dest
