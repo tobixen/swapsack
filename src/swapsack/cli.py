@@ -61,7 +61,7 @@ ASSET = {
     "BCH": "BCH.BCH",
     # Hold + balance + destination, receive-only (no spend path yet):
     "DASH": "DASH.DASH",  # Maya-only pool; see docs/dash.md
-    "ZEC": "ZEC.ZEC",  # Maya-only pool; transparent (t-addr) only; see docs/zcash.md
+    "ZEC": "ZEC.ZEC",  # Maya-only; transparent (t-addr) only; see docs/zcash.md
     "CACAO": "MAYA.CACAO",  # Maya native asset; 1e10 decimals; see docs/cacao.md
     "RUNE": "THOR.RUNE",  # THORChain native asset (Cosmos MsgSend/MsgDeposit)
 }
@@ -137,6 +137,17 @@ def _dash_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN2
     return DashAdapter(url, bip39_passphrase=passphrase)
 
 
+def _zec_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
+    from swapsack.chains.zcash import DEFAULT_ZEC_LWD, ZecAdapter
+
+    url = (
+        getattr(args, "zec_lwd", None)
+        or os.environ.get("SWAPSACK_ZEC_LWD")
+        or DEFAULT_ZEC_LWD
+    )
+    return ZecAdapter(url, bip39_passphrase=passphrase)
+
+
 def _maya_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
     from swapsack.chains.maya import DEFAULT_MAYANODE, MayaAdapter
 
@@ -167,6 +178,7 @@ def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  #
         _tron_adapter(args, passphrase),
         _bsc_adapter(args, passphrase),
         _dash_adapter(args, passphrase),
+        _zec_adapter(args, passphrase),
         _maya_adapter(args, passphrase),
         _thor_adapter(args, passphrase),
     ]
@@ -307,6 +319,7 @@ def cmd_address(args: argparse.Namespace) -> int:
     from swapsack.chains.maya import MayaAdapter
     from swapsack.chains.thor import ThorAdapter
     from swapsack.chains.tron import TronAdapter
+    from swapsack.chains.zcash import ZecAdapter
 
     mnemonic, passphrase = _load_mnemonic(args)
     print(
@@ -327,6 +340,11 @@ def cmd_address(args: argparse.Namespace) -> int:
         "DASH:",
         DashAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
         "(receive-only: the spend path is not implemented yet, see docs/dash.md)",
+    )
+    print(
+        "ZEC: ",
+        ZecAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
+        "(receive-only: the spend path is not implemented yet, see docs/zcash.md)",
     )
     print("MAYA:", MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("THOR:", ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
@@ -483,6 +501,12 @@ def _derive_dash(mnemonic: str, passphrase: str) -> str:
     return DashAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
 
+def _derive_zec(mnemonic: str, passphrase: str) -> str:
+    from swapsack.chains.zcash import ZecAdapter
+
+    return ZecAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+
+
 def _derive_maya(mnemonic: str, passphrase: str) -> str:
     from swapsack.chains.maya import MayaAdapter
 
@@ -504,13 +528,15 @@ _DESTINATION_DERIVERS: dict[str, Callable[[str, str], str]] = {
     "ETH": _derive_eth,
     "TRON": _derive_tron,
     "DASH": _derive_dash,
+    "ZEC": _derive_zec,
     "MAYA": _derive_maya,
     "THOR": _derive_thor,
 }
 DERIVABLE_CHAINS = tuple(_DESTINATION_DERIVERS)
-# Chains we can receive on but not spend from (Phase 1 in their design notes) —
-# auto-deriving a swap destination there parks the funds, so warn loudly.
-RECEIVE_ONLY_CHAINS = ("DASH",)
+# Chains we can receive on but not spend from (Phase 1 in their design notes,
+# mapped here) — auto-deriving a swap destination there parks the funds, so
+# warn loudly.
+RECEIVE_ONLY_CHAINS = {"DASH": "docs/dash.md", "ZEC": "docs/zcash.md"}
 
 
 def _derive_destination_address(
@@ -541,7 +567,7 @@ def _resolve_destination(
             f"the derived {chain} destination is receive-only:",
             "this wallet cannot spend from it yet (no spend path implemented)",
             "funds stay recoverable by importing the seed into another wallet",
-            f"see docs/{chain.lower()}.md — or pay an external --dest instead",
+            f"see {RECEIVE_ONLY_CHAINS[chain]} — or pay an external --dest instead",
         )
     return _derive_destination_address(chain, mnemonic, passphrase)
 
@@ -1801,6 +1827,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
     s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($SWAPSACK_BSC_RPC)")
     s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
+    s.add_argument("--zec-lwd", help="Zcash lightwalletd host:port ($SWAPSACK_ZEC_LWD)")
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
     s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
     s.set_defaults(func=cmd_balance)

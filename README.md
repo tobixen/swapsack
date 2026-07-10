@@ -38,7 +38,7 @@ The wallet is still under rapid development as of 2026-07-10.  Missing features 
 | DOGE      |      |     |  ✅ |      |      |      |     |
 | BCH       |      |     |  ✅ |      |      |      |     |
 | DASH      |  ✅  |  ✅ |  ✅ |      |      |      |     |
-| ZEC       |      |     |  ✅ |      |      |      |     |
+| ZEC       |  ✅  |  ✅ |  ✅ |      |      |      |     |
 | CACAO     |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |      |     |
 | RUNE      |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |      |     |
 
@@ -94,7 +94,7 @@ capability grid above for the per-feature detail.
 | DOGE | Dogecoin | UTXO | partial | destination only (via `--dest`) |
 | BCH | Bitcoin Cash | UTXO | partial | destination only (via `--dest`) |
 | DASH | Dash | UTXO | partial | **Maya-only** (`--backend maya`/`auto`). Hold + balance + destination done — **receive-only**: the spend path (send/sweep/swap-from) is not implemented yet; funds stay recoverable by importing the seed elsewhere (standard `m/44'/5'`). See [docs/dash.md](docs/dash.md) |
-| ZEC | Zcash | UTXO | partial | **Maya-only**; destination only (via `--dest`, `--backend maya`/`auto`). Full wallet side is harder than DASH — Zcash's tx format can't be signed by bitcoinlib; see [docs/zcash.md](docs/zcash.md) |
+| ZEC | Zcash | UTXO | partial | **Maya-only** (`--backend maya`/`auto`); transparent (`t1…`) addresses only. Hold + balance (via lightwalletd) + destination done — **receive-only**: the spend path needs a bespoke signer (Zcash's tx format can't be signed by bitcoinlib); funds stay recoverable by importing the seed elsewhere (standard `m/44'/133'`). See [docs/zcash.md](docs/zcash.md) |
 | RUNE | THORChain native | THORChain | partial | Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`) done — reuses the shared Cosmos-SDK adapter (RUNE is 1e8). Spend paths ship unproven on mainnet (no testnet); see [docs/cacao.md](docs/cacao.md) |
 | CACAO | Maya native | Maya | partial | **Maya-only**; 1e10 decimals (not 1e8). Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`, no vault) done; single-sided liquidity n/a for the settlement asset (it's the RUNE-leg of symmetric LP, TODO #4). Spend paths ship unproven on mainnet (no Maya testnet); see [docs/cacao.md](docs/cacao.md) |
 | ATOM | Cosmos Hub | Cosmos | none | |
@@ -138,7 +138,8 @@ Config via flags or env: keystore `$SWAPSACK_KEYSTORE`
 (`~/.config/swapsack/keystore.json`), passphrase
 `$SWAPSACK_PASSPHRASE`, Esplora `$SWAPSACK_ESPLORA`, Ethereum
 RPC `$SWAPSACK_ETH_RPC`, TRON API `$SWAPSACK_TRON_API`, BSC RPC
-`$SWAPSACK_BSC_RPC`, Dash Insight API `$SWAPSACK_DASH_API`.
+`$SWAPSACK_BSC_RPC`, Dash Insight API `$SWAPSACK_DASH_API`, Zcash
+lightwalletd `$SWAPSACK_ZEC_LWD` (gRPC `host:port`).
 
 **Shell tab-completion** (via argcomplete) — enable for the current shell, e.g. bash:
 

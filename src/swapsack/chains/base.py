@@ -14,6 +14,19 @@ from typing import Protocol, runtime_checkable
 
 
 @dataclasses.dataclass(frozen=True)
+class AddressInfo:
+    """One address's history + balance, as probed by an adapter's data source.
+
+    ``has_history`` (not a nonzero balance) is what keeps the gap-limit scan
+    going past used-but-emptied addresses — see :mod:`swapsack.chains.scan`.
+    """
+
+    has_history: bool
+    confirmed: int  # base units (sats/duffs/zats), confirmed balance
+    pending: int  # base units, net mempool delta (negative when spending)
+
+
+@dataclasses.dataclass(frozen=True)
 class BalanceReport:
     """A chain-agnostic balance, in the chain's base units."""
 

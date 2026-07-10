@@ -14,9 +14,7 @@ spendable by importing the seed into another Dash wallet (standard BIP44,
 
 from __future__ import annotations
 
-import dataclasses
-
-from swapsack.chains.base import BalanceReport
+from swapsack.chains.base import AddressInfo, BalanceReport
 from swapsack.chains.p2pkh import derive_p2pkh_address
 from swapsack.net import HttpClient
 
@@ -24,15 +22,6 @@ DEFAULT_DASH_API = "https://insight.dash.org/insight-api"
 DEFAULT_DERIVATION = "m/44'/5'/0'/0/0"
 ACCOUNT = "m/44'/5'/0'"
 PREFIX_P2PKH = b"\x4c"  # addresses start with "X"
-
-
-@dataclasses.dataclass(frozen=True)
-class AddressInfo:
-    """Summary of an address from a single Insight ``/addr`` call."""
-
-    has_history: bool
-    confirmed: int  # duffs (1e-8 DASH), confirmed balance
-    pending: int  # duffs, net mempool delta (negative when spending)
 
 
 def parse_insight_addr(stats: dict) -> AddressInfo:

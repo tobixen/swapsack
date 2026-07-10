@@ -17,7 +17,7 @@ from bitcoinlib.keys import HDKey
 from bitcoinlib.mnemonic import Mnemonic
 from bitcoinlib.transactions import Transaction
 
-from swapsack.chains.base import BalanceReport
+from swapsack.chains.base import AddressInfo, BalanceReport
 from swapsack.chains.coins import (
     InsufficientFunds,
     Utxo,
@@ -46,16 +46,8 @@ def generate_mnemonic(strength: int = 128) -> str:
     return Mnemonic().generate(strength)
 
 
-@dataclasses.dataclass(frozen=True)
-class AddressInfo:
-    """Summary of an address from a single Esplora ``/address`` call."""
-
-    has_history: bool
-    confirmed: int  # sats, confirmed balance
-    pending: int  # sats, net mempool delta (negative when spending)
-
-
 def parse_address_info(stats: dict) -> AddressInfo:
+    """Parse a single Esplora ``/address`` response."""
     chain = stats.get("chain_stats", {})
     mem = stats.get("mempool_stats", {})
     confirmed = chain.get("funded_txo_sum", 0) - chain.get("spent_txo_sum", 0)

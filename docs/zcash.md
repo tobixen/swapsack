@@ -1,12 +1,14 @@
 # Zcash (ZEC) support — design notes
 
-Status: **destination-only is DONE** (`swap --to ZEC --dest t1... --backend
-maya`/`auto`). The **full wallet side (Hold/Bal/Send/Sweep/From/Liq) is not
-started, and is harder than Dash** — Zcash is not merely a legacy-UTXO chain,
-its transaction format is incompatible with the bitcoinlib signer. This note
-records the scoping so the risky parts are decided deliberately, not mid-way
-through a money path. It mirrors `docs/dash.md`; read that first for the shared
-legacy-UTXO issues.
+Status: **Phase 0 (destination) and Phase 1 (Hold + Balance, receive-only) are
+DONE** (2026-07-10): `swap --to ZEC` auto-derives the `t1…` destination, and
+`address`/`balance` cover ZEC via **lightwalletd** (gRPC, default `zec.rocks`,
+override `--zec-lwd` / `$SWAPSACK_ZEC_LWD`). The **spend side (Send/Sweep/
+From/Liq) is not started, and is harder than Dash** — Zcash is not merely a
+legacy-UTXO chain, its transaction format is incompatible with the bitcoinlib
+signer, so `broadcast` refuses loudly. This note records the scoping so the
+risky parts are decided deliberately, not mid-way through a money path. It
+mirrors `docs/dash.md`; read that first for the shared legacy-UTXO issues.
 
 ## TL;DR
 
@@ -49,11 +51,18 @@ sighash wrong yields a tx that is either rejected or — worse — malleable.
 
 ## The other blockers (shared with Dash)
 
-- **No data source.** No Blockstream Esplora for Zcash. The balance / UTXO /
-  broadcast / fee-rate layer needs a chosen, trusted source (Blockchair, a
-  Zcash `lightwalletd`/`zcashd` RPC, or a community explorer). Same "a single
-  explorer that is behind can silently *under-report* funds" risk as Dash —
-  prefer a configurable endpoint, ideally unioning two sources.
+- **Data source: decided (owner, 2026-07-10) — lightwalletd.** No Blockstream
+  Esplora for Zcash, and the alternatives probed poorly (Blockbook's `zecN.
+  trezor.io` is Cloudflare-blocked for non-browsers, Blockchair keyless
+  transiently blacklists IPs, the community explorers expose no address API).
+  lightwalletd is the canonical Zcash light-client infra with several
+  reputable public operators (default `zec.rocks`, configurable) and covers
+  the whole roadmap: `GetTaddressBalance`/`GetTaddressTxids` (Phase 1, done),
+  `GetAddressUtxos` + `SendTransaction` (Phase 2). It's gRPC: the transport
+  uses grpcio, but the messages are tiny and hand-rolled on the cosmos_tx
+  protobuf primitives — no codegen/protobuf dependency. The "single source
+  that is behind can silently *under-report* funds" caveat still applies;
+  unioning a second source stays a TODO for the spend side.
 - **Fees.** Zcash uses **ZIP-317** (conventional fee ≈ `5000 * max(2,
   n_logical_actions)` zatoshis; for a small transparent spend this is ~10,000
   zat = 0.0001 ZEC). For a **swap**, prefer Maya's quote
@@ -69,11 +78,18 @@ sighash wrong yields a tx that is either rejected or — worse — malleable.
 - **Phase 0 — destination (`--to ZEC`). DONE.** `ZEC: "ZEC.ZEC"` in the CLI
   asset map, a `t[13]…` `--dest` rule in `addresses.py`, and `ZEC: "zcash"` in
   `pricefeed.py`. Unit-tested (address sanity + CoinGecko id).
-- **Phase 1 — Hold + Balance (read-only).** Register Zcash params (t-addr
-  version bytes `1CB8` for t1 / `1CBD` for t3; `bip44_cointype = 133`, path
-  `m/44'/133'/0'/0/x`) enough to *derive* transparent addresses; a new
-  `chains/zcash.py` with `wallet_balance` via the chosen data source +
-  `scan_account`. Read-only, testable without spending.
+- **Phase 1 — Hold + Balance (read-only). DONE.** `chains/zcash.py` derives
+  `t1…` at `m/44'/133'/0'/0/x` via the shared `chains/p2pkh.py` (no bitcoinlib
+  network registration — BIP32 derivation is network-independent, and the
+  two-byte `1CB8` prefix wouldn't fit bitcoinlib's one-byte `prefix_address`
+  anyway; golden vectors cross-checked against three independent
+  implementations), and `wallet_balance` gap-limit scans via lightwalletd
+  (`GetTaddressTxids` answers "ever used?" so used-but-emptied addresses keep
+  the scan going; `GetTaddressBalance` prices the hits; no per-address mempool
+  view, so pending is always 0). Wired into `cmd_address`, `balance` and
+  destination auto-derivation (with a loud receive-only warning). The standard
+  test mnemonic's 0/0 address has real 2018-era on-chain history, giving the
+  scan an opt-in live guard (`pytest -m network`).
 - **Phase 2 — Send / Sweep. Hard.** Needs the bespoke transparent-tx signer
   above (ZIP-243/225 sighash, consensus branch ID), generalized legacy (P2PKH)
   fee maths in `coins.py`, and a `verify_zcash_send` gate mirroring
