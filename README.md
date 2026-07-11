@@ -196,17 +196,23 @@ Several GitHub projects share a name with this project or live in the same
 
 ### Backend ideas from the survey
 
-- **Same-chain EVM DEX aggregators (ParaSwap/Velora, 1inch, 0x)** —
-  THORChain/Maya only trade *between* their pooled assets, and same-chain
-  token↔token swaps (e.g. USDT-ETH↔USDC-ETH) route needlessly through the
-  pools. A DEX aggregator would cover those with one signed on-chain
-  transaction — fully non-custodial, and it would slot naturally into
-  `--backend auto`. The most promising candidate.
+Scoped in depth (with live API probes) in [docs/backends.md](docs/backends.md);
+the short version:
+
+- **CoW Protocol** — the recommended first addition: same-chain ETH-token
+  swaps (where THORChain/Maya are at their worst) via a keyless API and an
+  *intent* model (sign a structured EIP-712 order, solvers settle) that fits
+  this wallet's verify-gate philosophy — unlike calldata-style aggregators
+  (ParaSwap/1inch/0x/LiFi), whose opaque router calldata can't be
+  independently gated.
+- **Chainflip** — the recommended second: a second *independent* non-custodial
+  cross-chain venue (keyless quotes probed) that adds **SOL and DOT** and
+  price-competes on BTC/ETH. Deposits are plain sends to per-swap deposit
+  addresses, so the existing send builders and gates get reused.
 - **Instant-exchange APIs (LightningEX, ChangeNOW, SideShift, …)** — huge coin
-  coverage (hundreds of assets) behind a trivial REST API, but the operator
-  holds your funds mid-swap (custodial in flight, occasionally
-  KYC/AML-frozen), which cuts against this project's non-custodial premise.
-  Only worth adding with loud labeling, if ever.
+  coverage behind a trivial REST API, but the operator holds your funds
+  mid-swap (custodial in flight, occasionally KYC/AML-frozen), which cuts
+  against this project's non-custodial premise. Not planned.
 - **P2P atomic swaps (à la MultiCurrencyWallet)** — trust-minimized in theory,
   but they require a counterparty/orderbook network; there is no liquidity
   pool to route against.

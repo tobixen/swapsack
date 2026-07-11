@@ -152,6 +152,16 @@ Still open:
 Done: Maya backend (THORChain fork, same API/memo) + `--backend auto`
 lowest-price routing across backends.
 
+- **Non-thornode backends — scoped 2026-07-11, see `docs/backends.md`** (live
+  API probes + recommendation). Order: **CoW Protocol** first (same-chain
+  ETH-token swaps, keyless, intent model → gateable like a SendPlan), then
+  **Chainflip** (second independent cross-chain venue; adds SOL/DOT; deposits
+  are plain sends so the existing builders/gates get reused — but executing
+  needs a broker/deposit-channel decision first). Both need the `Backend`
+  protocol widened beyond the thornode client (normalized quote + an executor
+  discriminator). Calldata-style aggregators (ParaSwap/1inch/0x/LiFi) and
+  custodial instant exchangers: not planned (gating problem / custody).
+
 - **Maya-only assets**: expose DASH, ZEC, ADA (Cardano), ARB (Arbitrum), and the
   Maya-native CACAO — Maya has pools THORChain lacks. **Destination-only is just
   an `ASSET` entry + a `--dest` rule** (DASH **DONE**, live `DASH.DASH` pool
