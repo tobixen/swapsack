@@ -1447,3 +1447,41 @@ def test_select_backend_closes_unused_clients(monkeypatch):
     assert chosen is b1
     assert b2.client.closed is True  # the backend we won't use is closed
     assert b1.client.closed is False  # the chosen one stays open for the caller
+
+
+def test_swap_routes_zec_to_the_utxo_handler(monkeypatch):
+    import swapsack.cli as cli
+
+    routed = {}
+
+    def fake_swap_from_utxo(args, adapter_factory, account, change_path):
+        routed.update(factory=adapter_factory, account=account)
+        return 0
+
+    monkeypatch.setattr(cli, "_swap_from_utxo", fake_swap_from_utxo)
+    args = build_parser().parse_args(
+        ["swap", "--from", "ZEC", "--to", "BTC", "--amount", "0.5"]
+    )
+    assert cli.cmd_swap(args) == 0
+    assert routed["factory"] is cli._zec_adapter
+    assert routed["account"] == cli.ZEC_ACCOUNT
+
+
+def test_add_liquidity_zec_requires_maya_backend(monkeypatch, capsys):
+    # Same Maya-only guard as DASH, via the shared _lp_backend_refused helper.
+    import swapsack.cli as cli
+
+    called = []
+    monkeypatch.setattr(cli, "_liquidity_utxo", lambda *a, **kw: called.append(1) or 0)
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "ZEC", "--amount", "1"]
+    )  # --backend defaults to thorchain
+    assert cli.cmd_add_liquidity(args) == 2
+    assert not called
+    assert "maya" in capsys.readouterr().err.lower()
+
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "ZEC", "--amount", "1", "--backend", "maya"]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    assert called

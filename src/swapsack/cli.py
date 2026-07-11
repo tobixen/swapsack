@@ -779,6 +779,8 @@ def cmd_swap(args: argparse.Namespace) -> int:
         return _swap_from_utxo(args, _btc_adapter, BTC_ACCOUNT, BTC_CHANGE_PATH)
     if chain == "DASH":  # Maya-only pool; _select_backend routes accordingly
         return _swap_from_utxo(args, _dash_adapter, DASH_ACCOUNT, DASH_CHANGE_PATH)
+    if chain == "ZEC":  # Maya-only pool; bespoke v4/ZIP-243 signer
+        return _swap_from_utxo(args, _zec_adapter, ZEC_ACCOUNT, ZEC_CHANGE_PATH)
     if chain == "ETH":  # native ETH and ERC-20 tokens (e.g. USDT-ETH)
         return _swap_from_eth(args)
     if chain == "TRON":  # native TRX (TRC-20 tokens not yet a source)
@@ -1062,12 +1064,14 @@ def _swap_from_utxo(
         change_address = adapter.derive_address(mnemonic, change_path)
         fee_rate = adapter.fetch_fee_rate()
         if sweep:
-            from swapsack.chains.coins import sweep_amount
+            from swapsack.chains.coins import OP_RETURN_MAX_BYTES
 
             total = sum(u.value for u in utxos)
             try:
-                amount, _ = sweep_amount(
-                    total, len(utxos), fee_rate, script=adapter.script
+                # The memo isn't known until the quote; size for the maximum
+                # so the fee is never underestimated.
+                amount, _ = adapter.sweep_send_amount(
+                    total, len(utxos), fee_rate, memo_len=OP_RETURN_MAX_BYTES
                 )
             except InsufficientFunds as exc:
                 print(f"ABORTED: {exc}", file=sys.stderr)
@@ -1131,7 +1135,8 @@ def _swap_from_utxo(
                 amount,
                 price_check=args.price_check,
             )
-            print(f"inbound: {prepared.built.fee} on {adapter.chain} @ {fee_rate}/vB")
+            rate = f"@ {fee_rate}/vB" if fee_rate else "(ZIP-317 conventional fee)"
+            print(f"inbound: {prepared.built.fee} on {adapter.chain} {rate}")
             return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1450,14 +1455,7 @@ def _liquidity(
     if chain == "DASH":
         from swapsack.chains.dash import DashAdapter
 
-        # DASH.DASH pools exist only on Maya; refuse a THORChain LP request up
-        # front, before any keystore/network work (LP has no 'auto' routing —
-        # it's a choice of network/pairing, so the user must say maya).
-        if args.backend not in DashAdapter.lp_backends:
-            print(
-                "DASH liquidity exists only on Maya — re-run with --backend maya",
-                file=sys.stderr,
-            )
+        if _lp_backend_refused(args, DashAdapter):
             return 2
         return _liquidity_utxo(
             args,
@@ -1468,12 +1466,44 @@ def _liquidity(
             amount=amount,
             sweep=sweep,
         )
+    if chain == "ZEC":
+        from swapsack.chains.zcash import ZecAdapter
+
+        if _lp_backend_refused(args, ZecAdapter):
+            return 2
+        return _liquidity_utxo(
+            args,
+            _zec_adapter,
+            ZEC_ACCOUNT,
+            ZEC_CHANGE_PATH,
+            memo=memo,
+            amount=amount,
+            sweep=sweep,
+        )
     if chain == "ETH":
         return _liquidity_eth(args, memo=memo, amount=amount, sweep=sweep)
     if chain == "TRON":
         return _liquidity_tron(args, memo=memo, amount=amount, sweep=sweep)
     print(f"liquidity on {chain} is not implemented", file=sys.stderr)
     return 2
+
+
+def _lp_backend_refused(args: argparse.Namespace, adapter_cls: type) -> bool:
+    """Refuse an LP request against a backend that cannot host the pool.
+
+    Checked up front, before any keystore/network work: LP has no 'auto'
+    routing (it's a choice of network/pairing), so the user must name a
+    backend the chain's pools exist on (``adapter_cls.lp_backends``).
+    """
+    allowed = getattr(adapter_cls, "lp_backends", None)
+    if allowed is None or args.backend in allowed:
+        return False
+    print(
+        f"{adapter_cls.chain} liquidity exists only on {'/'.join(allowed)} — "
+        f"re-run with --backend {allowed[0]}",
+        file=sys.stderr,
+    )
+    return True
 
 
 def _liquidity_utxo(
@@ -1513,16 +1543,10 @@ def _liquidity_utxo(
         change_address = adapter.derive_address(mnemonic, change_path)
         fee_rate = adapter.fetch_fee_rate()
         if sweep:
-            from swapsack.chains.coins import sweep_amount
-
             total = sum(u.value for u in utxos)
             try:
-                amount, _ = sweep_amount(
-                    total,
-                    len(utxos),
-                    fee_rate,
-                    memo_len=len(memo.encode()),
-                    script=adapter.script,
+                amount, _ = adapter.sweep_send_amount(
+                    total, len(utxos), fee_rate, memo_len=len(memo.encode())
                 )
             except InsufficientFunds as exc:
                 print(f"ABORTED: {exc}", file=sys.stderr)
@@ -1554,7 +1578,8 @@ def _liquidity_utxo(
         )
         print(f"memo:    {memo}")
         label = adapter.chain.lower()
-        print(f"{label} fee: {prepared.built.fee} @ {fee_rate}/vB")
+        rate = f"@ {fee_rate}/vB" if fee_rate else "(ZIP-317 conventional fee)"
+        print(f"{label} fee: {prepared.built.fee} {rate}")
         return _confirm_and_execute(prepared, adapter, args)
 
 

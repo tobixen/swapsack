@@ -218,3 +218,31 @@ def test_sweep_amount_zip317_refuses_dust_sweep():
 
     with pytest.raises(InsufficientFunds):
         sweep_amount_zip317(10_500, 1)  # 10_000 fee leaves 500 < dust
+
+
+def test_zip317_fee_counts_the_memo_bytes():
+    from swapsack.chains.coins import zip317_fee
+
+    # An 80-byte OP_RETURN adds ~92 output bytes = 3 more 34-byte units:
+    # 2 standard outputs (68 B) + memo (92 B) = 160 B -> ceil(160/34) = 5.
+    assert zip317_fee(2, 2, memo_len=80) == 25_000
+    assert zip317_fee(2, 2, memo_len=0) == 10_000  # unchanged without a memo
+    # Inputs can still dominate.
+    assert zip317_fee(7, 2, memo_len=80) == 35_000
+
+
+def test_select_coins_zip317_prices_the_memo():
+    from swapsack.chains.coins import select_coins_zip317
+
+    sel = select_coins_zip317([u(200_000)], 100_000, memo_len=80)
+    assert sel.fee == 25_000  # 5 logical actions (see above)
+    assert sel.change == 75_000
+
+
+def test_sweep_amount_zip317_prices_the_memo():
+    from swapsack.chains.coins import sweep_amount_zip317
+
+    send, fee = sweep_amount_zip317(1_000_000, 1, memo_len=80)
+    # 1 standard output (34 B) + memo (92 B) = 126 B -> ceil(126/34) = 4.
+    assert fee == 20_000
+    assert send + fee == 1_000_000

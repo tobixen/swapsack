@@ -171,9 +171,11 @@ lowest-price routing across backends.
   (Phase 2) is DONE too**, via the bespoke v4/ZIP-243 signer in
   `chains/zcash_tx.py` (bitcoinlib can't sign Zcash; the sighash is anchored
   to a real mainnet tx's signature; ZIP-317 fees; same mainnet-unproven
-  caveat — `SWAPSACK_ZEC_MNEMONIC` gates the broadcast test). Remaining: ZEC
-  Phase 3 (swap-from — needs an OP_RETURN memo output in the v4 builder plus
-  the Maya vault plumbing that DASH already has). See `docs/zcash.md`.
+  caveat — `SWAPSACK_ZEC_MNEMONIC` gates the broadcast test), **and so is ZEC
+  Phase 3** (swap-from + Maya-only LP; the v4 builder carries OP_RETURN memos
+  and ZIP-317 prices them). DASH and ZEC are now feature-complete; what
+  remains for both is **proving the broadcasts on mainnet** (fund the seeds in
+  `docs/testnet.md` and run the opt-in loops). See `docs/zcash.md`.
 - **USDC on cheaper chains**: ETH.USDC is done (mirrors USDT-ETH). THORChain also
   pools USDC on AVAX/BASE and Maya on ARB — all far cheaper to use than ETH
   mainnet. Each needs a new EVM chain adapter (RPC, chain-id, native coin, dest

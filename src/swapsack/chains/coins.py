@@ -213,23 +213,40 @@ ZIP317_GRACE_ACTIONS = 2
 DUST_ZEC = 546
 
 
-def zip317_fee(n_inputs: int, n_outputs: int) -> int:
-    """The ZIP-317 conventional fee for a transparent-only transaction."""
-    return ZIP317_MARGINAL_FEE * max(ZIP317_GRACE_ACTIONS, n_inputs, n_outputs)
+def zip317_fee(n_inputs: int, n_outputs: int, memo_len: int = 0) -> int:
+    """The ZIP-317 conventional fee for a transparent-only transaction.
+
+    ``n_outputs`` counts the standard (34-byte) P2PKH outputs; a non-zero
+    ``memo_len`` adds an OP_RETURN output, whose serialized size (up to ~92
+    bytes for the 80-byte max) contributes ~3 logical actions of its own —
+    ignoring it would put the fee below the conventional floor and get the tx
+    deprioritized.
+    """
+    in_actions = math.ceil(n_inputs * 150 / 150)  # P2PKH input ≈ the 150-B unit
+    out_bytes = n_outputs * 34
+    if memo_len:
+        out_bytes += _op_return_vb(memo_len) + 1  # +1: OP_PUSHDATA1 worst case
+    out_actions = math.ceil(out_bytes / 34)
+    return ZIP317_MARGINAL_FEE * max(ZIP317_GRACE_ACTIONS, in_actions, out_actions)
 
 
 def select_coins_zip317(
-    utxos: list[Utxo], send_amount: int, *, dust: int = DUST_ZEC
+    utxos: list[Utxo], send_amount: int, memo_len: int = 0, *, dust: int = DUST_ZEC
 ) -> Selection:
-    """Greedy selection under the ZIP-317 fee model (Zcash transparent sends)."""
-    return _select(utxos, send_amount, dust, zip317_fee)
+    """Greedy selection under the ZIP-317 fee model (Zcash transparent spends)."""
+    return _select(
+        utxos,
+        send_amount,
+        dust,
+        lambda n_in, n_out: zip317_fee(n_in, n_out, memo_len),
+    )
 
 
 def sweep_amount_zip317(
-    total: int, n_inputs: int, *, dust: int = DUST_ZEC
+    total: int, n_inputs: int, memo_len: int = 0, *, dust: int = DUST_ZEC
 ) -> tuple[int, int]:
     """Return ``(send_amount, fee)`` sweeping ``total`` into one output (ZIP-317)."""
-    fee = zip317_fee(n_inputs, 1)
+    fee = zip317_fee(n_inputs, 1, memo_len)
     send = total - fee
     if send < dust:
         raise InsufficientFunds(f"balance {total} too small to sweep after fee {fee}")

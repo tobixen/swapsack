@@ -397,3 +397,52 @@ def test_sign_refuses_non_p2pkh_input():
     tx = TxV4(inputs=(TxIn(b"\xaa" * 32, 0),), outputs=(TxOut(1000, b"\x51"),))
     with pytest.raises(ZcashTxError, match="non-P2PKH"):
         sign_transparent(tx, [(b"\x51", 2000)], [key.private_byte], REAL_BRANCH_ID)
+
+
+# --- Phase 3: swap-from / LP deposits (vault + OP_RETURN memo) ----------------
+
+
+def test_built_deposit_carries_memo_and_signs(monkeypatch):
+    # The swap-from/LP shape: vault output + OP_RETURN memo + change, priced
+    # with the memo's ZIP-317 actions, gated by verify_btc_swap, signed and
+    # re-verified from the serialized bytes.
+    from coincurve import PublicKey
+
+    from swapsack.chains.coins import Utxo
+    from swapsack.chains.zcash_tx import parse_v4 as zparse
+    from swapsack.chains.zcash_tx import sighash_zip243
+
+    a = ZecAdapter()
+    monkeypatch.setattr(a, "latest_height", lambda: 3_407_167)
+    monkeypatch.setattr(a, "branch_id", lambda: REAL_BRANCH_ID)
+    path0 = "m/44'/133'/0'/0/0"
+    addr0 = GOLDEN[path0]
+    utxos = [Utxo(txid="cc" * 32, vout=1, value=500_000, address=addr0, path=path0)]
+    memo = "=:BTC.BTC:bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+    vault = "t1evBud5G5F4HFUPRBpt7sz5s66PeVUYBur"
+    prepared = a.build_and_verify_deposit(
+        vault=vault,
+        memo=memo,
+        amount=200_000,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=0.0,
+        change_address=addr0,
+        max_fee=50_000,
+    )
+    assert prepared.problems == []
+    op_returns = [o for o in prepared.built.outputs if o.op_return_data is not None]
+    assert [o.op_return_data for o in op_returns] == [memo.encode()]
+    # 2 standard outputs (68 B) + 51-byte memo (~63 B) = 131 B -> 4 actions.
+    assert prepared.built.fee == 20_000
+
+    (raw_hex,) = a.sign(prepared.built)
+    assert memo.encode().hex() in raw_hex  # the raw v4 tx carries the memo
+    reparsed = zparse(bytes.fromhex(raw_hex))
+    s = reparsed.inputs[0].script_sig
+    der, pub = s[1 : s[0]], s[s[0] + 2 :]
+    digest = sighash_zip243(
+        reparsed, 0, prepared.built.spent[0][0], 500_000, REAL_BRANCH_ID
+    )
+    assert PublicKey(pub).verify(der, digest, hasher=None)

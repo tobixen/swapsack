@@ -1,15 +1,16 @@
 # Zcash (ZEC) support — design notes
 
-Status: **Phases 0–2 are DONE** (2026-07-10): destination, Hold + Balance, and
-**send/sweep via a bespoke v4/ZIP-243 signer** (`chains/zcash_tx.py` — see
-below; bitcoinlib cannot sign Zcash). Everything network rides **lightwalletd**
-(gRPC, default `zec.rocks`, override `--zec-lwd` / `$SWAPSACK_ZEC_LWD`). The
-spend path ships **unproven on mainnet** (no Zcash testnet path; an opt-in
-mainnet self-sweep test exists — see `docs/testnet.md`) — test with a tiny
-amount first. Phase 3 (swap-**from** / liquidity) is not started. This note
-records the scoping so the risky parts are decided deliberately, not mid-way
-through a money path. It mirrors `docs/dash.md`; read that first for the
-shared legacy-UTXO issues.
+Status: **all phases (0–3) are DONE** (2026-07-11): destination, Hold +
+Balance, send/sweep, swap-**from** and single-sided LP (Maya, pairs with
+CACAO) — the spend side via a bespoke v4/ZIP-243 signer (`chains/zcash_tx.py`,
+see below; bitcoinlib cannot sign Zcash). Everything network rides
+**lightwalletd** (gRPC, default `zec.rocks`, override `--zec-lwd` /
+`$SWAPSACK_ZEC_LWD`). Every spend path ships **unproven on mainnet** (no
+Zcash testnet path; an opt-in mainnet self-sweep test exists — see
+`docs/testnet.md`) — test with a tiny amount first. This note records the
+scoping so the risky parts are decided deliberately, not mid-way through a
+money path. It mirrors `docs/dash.md`; read that first for the shared
+legacy-UTXO issues.
 
 ## TL;DR
 
@@ -116,8 +117,16 @@ sighash wrong yields a tx that is either rejected or — worse — malleable.
     `GetAddressUtxos`, broadcast via `SendTransaction` (a zero errorCode is
     the node's mempool acceptance). Opt-in mainnet self-sweep test:
     `SWAPSACK_ZEC_MNEMONIC`, see `docs/testnet.md`.
-- **Phase 3 — From (swap source) + Liq.** Reuse the Phase-2 deposit path with a
-  Maya vault + memo, against the Maya client; single-sided LP pairs with CACAO.
+- **Phase 3 — From (swap source) + Liq. DONE.** The Phase-2 builder grew the
+  OP_RETURN memo output (v4 transparent txs carry them exactly like Bitcoin;
+  the shared 80-byte cap matches zcashd's relay default), and the ZIP-317 fee
+  now counts the memo's bytes as logical actions (an 80-byte memo ≈ 3 extra
+  actions — undercounting would drop the tx below the conventional-fee floor).
+  `swap --from ZEC` and `add-liquidity --asset ZEC --backend maya` route
+  through the same generalized `_swap_from_utxo`/`_liquidity_utxo` CLI paths
+  as BTC/DASH; a THORChain LP request is refused up front (Maya-only, pairs
+  with CACAO). Gated by the same chain-agnostic swap gate (vault + memo +
+  change binding) as the other UTXO chains.
 
 ## See also
 

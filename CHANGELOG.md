@@ -8,6 +8,12 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **ZEC swap-from + liquidity (Phase 3):** `swap --from ZEC` (Maya-routed,
+  vault + OP_RETURN memo, streaming supported) and single-sided
+  `add-liquidity`/`withdraw-liquidity --asset ZEC --backend maya` (pairs with
+  CACAO; a THORChain LP request is refused up front). The v4 builder carries
+  OP_RETURN outputs and the ZIP-317 fee counts the memo's bytes as logical
+  actions. Same mainnet-unproven caveat as the ZEC send path.
 - **ZEC send + sweep (Phase 2):** `send --asset ZEC` (and `--amount max`)
   spends transparent funds through a **bespoke v4/ZIP-243 signer**
   (`chains/zcash_tx.py`) — bitcoinlib cannot sign Zcash's post-Overwinter
