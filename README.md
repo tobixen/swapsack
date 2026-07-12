@@ -2,7 +2,7 @@
 
 It's a **Python library** and a **CLI** for holding, sending, receiving and swapping **multiple** cryptocurrencies.
 
-Non-custodial cross-chain swaps are supported via [THORChain](https://thorchain.org/) and [Maya](https://www.mayaprotocol.com/).
+Non-custodial cross-chain swaps are supported via [THORChain](https://thorchain.org/) and [Maya](https://www.mayaprotocol.com/); same-chain ETH-token swaps additionally route through [CoW Protocol](https://cow.fi/)'s keyless intent API.
 
 ⚠️ This project is vibed-up ... what could possibly go wrong?
 
@@ -56,7 +56,7 @@ Other features:
 
 * `quote` — read-only price preview for any supported asset
 * `status` — track a swap by its inbound txid
-* `--backend auto` — compares **THORChain + Maya** and routes to the best price (`quote`, `swap`) for currencies supported by both backends.  (Other backends may be considered in the future)
+* `--backend auto` — compares **THORChain + Maya + CoW** (CoW only quotes same-chain ETH-token pairs) and routes to the best price (`quote`, `swap`). `--backend cow` forces it: a same-chain USDT-ETH/USDC-ETH/ETH swap settles via a signed EIP-712 order (no vault, no memo) instead of THORChain/Maya's two-pool-leg route — see [docs/backends.md](docs/backends.md). `status <order-uid>` tracks a submitted CoW order (auto-detected by its 56-byte uid shape, vs. a chain txid).
 * `swap --tolerance-bps N` — raise the slippage/fee tolerance (default 300 = 3%). Small or thinly-traded swaps whose fees exceed the default are *refused* by THORChain; the wallet aborts with a clear message instead of a traceback, and you can opt into a wider tolerance here.
 * **cost breakdown** — `quote` and `swap` itemise what you lose: the slip/swap (liquidity) fee, the flat outbound fee, and the quoted total (with `bps`), plus the inbound (source-chain) tx fee shown separately. On THORChain the *liquidity fee is the slippage* — the two are one number, not two.
 * **`Market:` block** — by default `quote`/`swap` also compare the quoted output against a public spot price (CoinGecko), surfacing the *total* realised cost including the pool-vs-market spread arbitrageurs capture (which the protocol's own fee fields don't include). Three lines: a source header, the per-asset comparison (`~X DEST at spot → ~N bps total vs market`), and the estimated absolute loss in **EUR**. Best-effort: silently dropped if the feed is unreachable or the asset isn't mapped (the EUR line is dropped if the feed has no EUR price). Disable with `--no-price-check`.
@@ -118,6 +118,7 @@ swapsack quote --from ETH --to USDT-TRON --amount 0.02
 swapsack swap  --from ETH --to BTC --amount max          # DRY RUN (sweep)
 swapsack swap  --from BTC --to USDT-TRON --amount 0.001 --confirm
 swapsack swap  --from BTC --to DASH --dest X... --stream-interval 1  # streamed, low slip
+swapsack swap  --from USDT-ETH --to USDC-ETH --amount 100 --backend cow  # DRY RUN (CoW order)
 swapsack send  bc1q...recipient --amount 0.001                 # DRY RUN
 swapsack send  bc1q...recipient --amount max --confirm         # sweep + send
 swapsack send  0x...recipient --asset ETH --amount 0.01        # native ETH
@@ -199,13 +200,13 @@ Several GitHub projects share a name with this project or live in the same
 Scoped in depth (with live API probes) in [docs/backends.md](docs/backends.md);
 the short version:
 
-- **CoW Protocol** — the recommended first addition: same-chain ETH-token
+- **CoW Protocol** — **done** (`--backend cow`/`auto`): same-chain ETH-token
   swaps (where THORChain/Maya are at their worst) via a keyless API and an
   *intent* model (sign a structured EIP-712 order, solvers settle) that fits
   this wallet's verify-gate philosophy — unlike calldata-style aggregators
   (ParaSwap/1inch/0x/LiFi), whose opaque router calldata can't be
   independently gated.
-- **Chainflip** — the recommended second: a second *independent* non-custodial
+- **Chainflip** — the recommended next: a second *independent* non-custodial
   cross-chain venue (keyless quotes probed) that adds **SOL and DOT** and
   price-competes on BTC/ETH. Deposits are plain sends to per-swap deposit
   addresses, so the existing send builders and gates get reused.

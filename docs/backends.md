@@ -1,9 +1,11 @@
 # More swap backends — scoping notes
 
-Status: **scoping only, nothing implemented** (probed live 2026-07-11). This
-note records what a new backend must provide, which candidates are actually
-usable from a keyless CLI, and a recommended order — so the work starts from
-decisions, not mid-way through a money path. Style/spirit as `docs/dash.md`.
+Status: **Phase A (CoW Protocol) done** (2026-07-12) — `--backend cow`/`auto`
+for same-chain ETH-token swaps; see `src/swapsack/cow.py`. Phase B
+(Chainflip) is still scoping-only. This note records what a new backend must
+provide, which candidates are actually usable from a keyless CLI, and a
+recommended order — so the work starts from decisions, not mid-way through a
+money path. Style/spirit as `docs/dash.md`.
 
 ## Why more backends at all
 
@@ -70,12 +72,18 @@ refunded — Chainflip has refund parameters worth setting.
 
 ## Recommendation
 
-1. **Phase A — CoW Protocol** (same-chain ETH tokens): keyless end to end,
-   intent model matches our gating philosophy, and the ETH adapter already
-   has the ERC-20 plumbing (approval = a `transfer`-style tx; EIP-712 signing
-   via eth-account). Wire as a quote source in `auto` for same-chain pairs
-   (where THORChain/Maya are at their worst) + an execute path that posts the
-   signed order and polls the order uid. No new chain adapters.
+1. **Phase A — CoW Protocol** (same-chain ETH tokens) — **done**. Keyless end
+   to end, intent model matches our gating philosophy, and the ETH adapter's
+   existing ERC-20 plumbing covers the approval (`EthAdapter.build_and_verify_
+   approvals`, granting the vault relayer — not the THORChain router — exact
+   allowance, with the USDT reset-to-zero quirk handled); EIP-712 signing via
+   eth-account (`cow.sign_order`). Wired as a quote source in `auto` for
+   same-chain pairs (`CowBackend.serves`/`try_quote` in `backends.py`) + an
+   execute path (`cli._swap_via_cow`) that builds/gates/signs the order and
+   posts it, printing the order uid; `status <uid>` polls it. No new chain
+   adapters. Live-tested: `tests/test_integration_cow.py` proves a signed
+   order from an unfunded key clears every orderbook check up to
+   `InsufficientBalance`.
 2. **Phase B — Chainflip** (cross-chain): brings SOL/DOT and a second
    independent cross-chain venue. Read-only first (quote in `auto`), then the
    broker/channel decision, then execution — which reuses the existing plain-

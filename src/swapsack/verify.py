@@ -603,3 +603,95 @@ def verify_cosmos_deposit(
         )
 
     return problems
+
+
+# CoW submits orders with the zero appData hash ("no metadata"); anything else
+# in the order we are about to sign was injected by someone.
+COW_ZERO_APP_DATA = "0x" + "00" * 32
+# Refuse orders valid further out than this: an open order is a standing
+# instruction at today's price, so a long validity is risk, not convenience.
+COW_MAX_ORDER_VALIDITY = 7200
+
+
+@dataclasses.dataclass(frozen=True)
+class CowOrderPlan:
+    """What we intend a CoW order to do, from sources independent of the API.
+
+    ``sell_token``/``buy_token`` come from the wallet's own asset table (never
+    the quote response), ``receiver`` is the destination the user resolved, and
+    ``sell_amount`` is the user's requested amount in the token's native units
+    — so a quote response lying about any of them is caught here, before the
+    EIP-712 signature authorizes it. ``min_buy_amount`` is the tolerance floor
+    recomputed by the caller; ``expiry`` is the quote's expiration (checked
+    again right before submission, like every other plan's expiry).
+    """
+
+    sell_token: str
+    buy_token: str
+    receiver: str
+    sell_amount: int  # native sell-token units, fee included
+    min_buy_amount: int  # native buy-token units the order must enforce
+    expiry: int
+    max_validity: int = COW_MAX_ORDER_VALIDITY
+
+
+def verify_cow_order(*, order: dict, plan: CowOrderPlan, now: int) -> list[str]:
+    """Return reasons the order-to-be-signed does not match ``plan``; empty is ok.
+
+    The signed order IS the authorization — a solver can settle exactly what
+    these fields say, nothing else — so every field is bound. Addresses compare
+    case-insensitively (EIP-55 casing is display-only); amounts arrive as the
+    API's uint256 strings and are compared as ints.
+    """
+    problems: list[str] = []
+
+    def addr_eq(a: object, b: str) -> bool:
+        return isinstance(a, str) and a.lower() == b.lower()
+
+    if not addr_eq(order.get("sellToken"), plan.sell_token):
+        problems.append(
+            f"order sell token {order.get('sellToken')} != {plan.sell_token}"
+        )
+    if not addr_eq(order.get("buyToken"), plan.buy_token):
+        problems.append(f"order buy token {order.get('buyToken')} != {plan.buy_token}")
+    receiver = order.get("receiver")
+    if not addr_eq(receiver, plan.receiver):
+        problems.append(f"order receiver {receiver} != destination {plan.receiver}")
+    if isinstance(receiver, str) and set(receiver.lower().removeprefix("0x")) <= {"0"}:
+        # On-chain, a zero receiver means "pay the order owner"; this wallet
+        # always sets an explicit receiver, so a zero is a build bug.
+        problems.append("order receiver is the zero address")
+    if int(order.get("sellAmount", -1)) != plan.sell_amount:
+        problems.append(
+            f"order sell amount {order.get('sellAmount')} != requested "
+            f"{plan.sell_amount}"
+        )
+    if int(order.get("buyAmount", -1)) < plan.min_buy_amount:
+        problems.append(
+            f"order buy amount {order.get('buyAmount')} is below the tolerance "
+            f"floor {plan.min_buy_amount}"
+        )
+    if int(order.get("feeAmount", -1)) != 0:
+        problems.append(
+            f"order fee amount {order.get('feeAmount')} != 0 (the fee must be "
+            f"folded into the sell amount)"
+        )
+    if order.get("kind") != "sell":
+        problems.append(f"order kind {order.get('kind')!r} != 'sell'")
+    if order.get("partiallyFillable") is not False:
+        problems.append("order must not be partially fillable (fill-or-kill)")
+    for side in ("sellTokenBalance", "buyTokenBalance"):
+        if order.get(side) != "erc20":
+            problems.append(f"order {side} balance {order.get(side)!r} != 'erc20'")
+    app_data = order.get("appData")
+    if not isinstance(app_data, str) or app_data.lower() != COW_ZERO_APP_DATA:
+        problems.append(f"order appData {app_data!r} != the zero hash")
+    valid_to = int(order.get("validTo", 0))
+    if valid_to <= now:
+        problems.append(f"order validTo {valid_to} already passed (now {now})")
+    elif valid_to > now + plan.max_validity:
+        problems.append(
+            f"order validTo {valid_to} is more than {plan.max_validity}s away"
+        )
+
+    return problems

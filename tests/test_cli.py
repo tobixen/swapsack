@@ -313,9 +313,16 @@ def test_swap_from_eth_token_sweep_uses_full_token_balance(monkeypatch):
     assert captured["amount"] == 250_000_000  # 2.5 USDT in THORChain 1e8 units
 
 
-def test_swap_tolerance_bps_defaults_to_300():
+def test_swap_tolerance_bps_defaults_to_backend_default():
+    # None = "use the backend's default": DEFAULT_TOLERANCE_BPS (300) on the
+    # thornode paths, the much tighter DEFAULT_COW_TOLERANCE_BPS (50) on CoW —
+    # a signed CoW order's buyAmount floor is what a solver must beat, so a 3%
+    # floor on a stable pair would authorize a 3% haircut.
     args = build_parser().parse_args(["swap", "--amount", "1"])
-    assert args.tolerance_bps == 300
+    assert args.tolerance_bps is None
+    from swapsack.cli import _tolerance
+
+    assert _tolerance(args) == 300
 
 
 def test_swap_tolerance_bps_flag_parses():
@@ -1485,3 +1492,46 @@ def test_add_liquidity_zec_requires_maya_backend(monkeypatch, capsys):
     )
     assert cli.cmd_add_liquidity(args) == 0
     assert called
+
+
+def test_backend_cow_parses_for_swap_and_quote():
+    args = build_parser().parse_args(
+        [
+            "swap",
+            "--from",
+            "USDT-ETH",
+            "--to",
+            "USDC-ETH",
+            "--amount",
+            "1",
+            "--backend",
+            "cow",
+        ]
+    )
+    assert args.backend == "cow"
+    args = build_parser().parse_args(
+        [
+            "quote",
+            "--from",
+            "USDT-ETH",
+            "--to",
+            "ETH",
+            "--amount",
+            "1",
+            "--backend",
+            "cow",
+        ]
+    )
+    assert args.backend == "cow"
+
+
+def test_status_accepts_cow_order_uid():
+    # A CoW order uid is 56 bytes (digest + owner + validTo) = 114 chars with
+    # the 0x prefix; a chain txid is 32 bytes. status auto-detects.
+    from swapsack.cli import _is_cow_order_uid
+
+    uid = "0x" + "ab" * 56
+    assert _is_cow_order_uid(uid)
+    assert not _is_cow_order_uid("ab" * 32)  # plain txid
+    assert not _is_cow_order_uid("0x" + "ab" * 32)  # EVM txid
+    assert not _is_cow_order_uid("0x" + "zz" * 56)  # not hex

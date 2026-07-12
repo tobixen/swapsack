@@ -48,6 +48,7 @@ DEPOSIT_SELECTOR = (
 )
 DECIMALS_SELECTOR = "313ce567"  # decimals()
 BALANCEOF_SELECTOR = "70a08231"  # balanceOf(address)
+ALLOWANCE_SELECTOR = "dd62ed3e"  # allowance(address,address)
 TRANSFER_SELECTOR = "a9059cbb"  # transfer(address,uint256) — plain ERC-20 send
 APPROVE_GAS = 70000
 TOKEN_DEPOSIT_GAS = 200000
@@ -243,6 +244,59 @@ def verify_eth_token_swap(
     return problems
 
 
+@dataclasses.dataclass
+class EthApprovals:
+    """0–2 ERC-20 ``approve`` txs granting ``spender`` exactly ``amount``.
+
+    Used by the CoW path to fund the vault relayer's pull. Empty ``txs`` means
+    the standing allowance already suffices. Two txs is the USDT quirk: it
+    reverts on a nonzero -> nonzero allowance change, so a leftover partial
+    allowance is reset to 0 first (a nonzero -> zero change is always allowed).
+    Shaped like the other built-swap types (``txs``/``private_key``/``fee``) so
+    ``EthAdapter.sign``/``broadcast`` drive it unchanged.
+    """
+
+    txs: list[dict[str, Any]]
+    private_key: Any
+    token: str
+    spender: str
+    amount: int
+    chain_id: int = CHAIN_ID
+
+    @property
+    def fee(self) -> int:
+        return sum(t["gas"] * t["maxFeePerGas"] for t in self.txs)
+
+
+def verify_eth_approvals(built: EthApprovals, *, max_fee_wei: int) -> list[str]:
+    """Gate for the approval txs: every tx must be an ``approve`` on the
+    intended token, to the intended spender, and only the final one may grant
+    a non-zero amount — exactly ``built.amount``."""
+    problems: list[str] = []
+    for i, tx in enumerate(built.txs):
+        expected = built.amount if i == len(built.txs) - 1 else 0
+        if tx["to"].lower() != built.token.lower():
+            problems.append(f"approve 'to' {tx['to']} != token {built.token}")
+        if tx["value"] != 0:
+            problems.append("approve tx must not send ETH value")
+        if tx["chainId"] != built.chain_id:
+            problems.append("wrong chainId")
+        try:
+            spender, allowance = _decode_call(
+                tx["data"], APPROVE_SELECTOR, ["address", "uint256"]
+            )
+        except Exception:  # noqa: BLE001 - any decode failure is a reject
+            problems.append("approve calldata could not be decoded")
+            continue
+        if spender.lower() != built.spender.lower():
+            problems.append(f"approve spender {spender} != {built.spender}")
+        if allowance != expected:
+            problems.append(f"approve amount {allowance} != {expected}")
+    if built.fee > max_fee_wei:
+        problems.append(f"max fee {built.fee} wei exceeds limit {max_fee_wei}")
+    return problems
+
+
 class EthAdapter(HttpClient):
     """ChainAdapter for native Ethereum.
 
@@ -337,6 +391,79 @@ class EthAdapter(HttpClient):
         data = "0x" + BALANCEOF_SELECTOR + owner.rjust(64, "0")
         return int(self._rpc("eth_call", [{"to": token, "data": data}, "latest"]), 16)
 
+    def fetch_token_allowance(self, token: str, owner: str, spender: str) -> int:
+        """ERC-20 ``allowance(owner, spender)`` in the token's native units."""
+        data = (
+            "0x"
+            + ALLOWANCE_SELECTOR
+            + to_checksum_address(owner)[2:].lower().rjust(64, "0")
+            + to_checksum_address(spender)[2:].lower().rjust(64, "0")
+        )
+        return int(self._rpc("eth_call", [{"to": token, "data": data}, "latest"]), 16)
+
+    def build_and_verify_approvals(
+        self,
+        *,
+        mnemonic: str,
+        token: str,
+        spender: str,
+        amount: int,
+        current_allowance: int,
+        nonce: int,
+        max_fee_per_gas: int,
+        max_priority_fee_per_gas: int,
+        max_fee_wei: int,
+        path: str = DEFAULT_ETH_DERIVATION,
+    ) -> Prepared:
+        """Build + gate the ``approve`` txs granting ``spender`` exactly
+        ``amount`` (native token units) — or none, when ``current_allowance``
+        already covers it. See :class:`EthApprovals` for the 2-tx USDT case.
+        """
+        account = self._key(mnemonic, path)
+        token = to_checksum_address(token)
+        spender = to_checksum_address(spender)
+        amounts: list[int] = []
+        if current_allowance < amount:
+            if current_allowance > 0:
+                amounts.append(0)
+            amounts.append(amount)
+        txs = [
+            {
+                "type": 2,
+                "chainId": self.chain_id,
+                "nonce": nonce + i,
+                "to": token,
+                "value": 0,
+                "gas": APPROVE_GAS,
+                "maxFeePerGas": max_fee_per_gas,
+                "maxPriorityFeePerGas": max_priority_fee_per_gas,
+                "data": encode_approve(spender, value),
+            }
+            for i, value in enumerate(amounts)
+        ]
+        built = EthApprovals(
+            txs=txs,
+            private_key=account.key,
+            token=token,
+            spender=spender,
+            amount=amount,
+            chain_id=self.chain_id,
+        )
+        problems = verify_eth_approvals(built, max_fee_wei=max_fee_wei)
+        return Prepared(quote=None, built=built, plan=built, problems=problems)
+
+    def sign_cow_order(
+        self, order: dict[str, Any], mnemonic: str, path: str = DEFAULT_ETH_DERIVATION
+    ) -> str:
+        """EIP-712-sign a CoW order with this wallet's ETH key.
+
+        Keeps the private key inside the adapter (like every other signing
+        path here) rather than handing it to the CLI.
+        """
+        from swapsack.cow import sign_order
+
+        return sign_order(order, self._key(mnemonic, path).key)
+
     def token_balances(self, mnemonic: str) -> list[BalanceReport]:
         """ERC-20 balances (e.g. USDT-ETH) at the wallet's EVM address."""
         address = self.derive_address(mnemonic)
@@ -417,7 +544,7 @@ class EthAdapter(HttpClient):
             raw = signed.rawTransaction
         return "0x" + raw.hex()
 
-    def sign(self, built: EthBuiltSwap | EthTokenBuiltSwap) -> list[str]:
+    def sign(self, built: EthBuiltSwap | EthTokenBuiltSwap | EthApprovals) -> list[str]:
         return [self._sign_tx(tx, built.private_key) for tx in built.txs]
 
     def _build_token_deposit(

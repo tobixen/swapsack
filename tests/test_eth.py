@@ -541,3 +541,112 @@ def test_eth_derivation_honors_bip39_passphrase():
     # An empty passphrase MUST equal the no-passphrase derivation, so a v1
     # wallet (passphrase stripped to "") keeps deriving its existing addresses.
     assert EthAdapter(bip39_passphrase="").derive_address(MNEMONIC) == base
+
+
+# --- ERC-20 allowance + approvals (CoW vault relayer) ---
+
+
+RELAYER = "0xC92E8bdf79f0507f65a392b0ab4667716BFE0110"
+USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+
+
+def test_fetch_token_allowance_encodes_owner_and_spender(monkeypatch):
+    adapter = EthAdapter()
+    captured = {}
+
+    def fake_rpc(method, params):
+        captured["method"] = method
+        captured["params"] = params
+        return "0x" + (777).to_bytes(32, "big").hex()
+
+    monkeypatch.setattr(adapter, "_rpc", fake_rpc)
+    owner = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+    assert adapter.fetch_token_allowance(USDT, owner, RELAYER) == 777
+    assert captured["method"] == "eth_call"
+    call = captured["params"][0]
+    assert call["to"].lower() == USDT.lower()
+    # allowance(owner, spender): selector + two left-padded addresses.
+    assert call["data"] == (
+        "0xdd62ed3e" + "0" * 24 + owner[2:].lower() + "0" * 24 + RELAYER[2:].lower()
+    )
+
+
+def _approvals(*, amount=100_000_000, current_allowance=0, max_fee_wei=10**16):
+    return EthAdapter().build_and_verify_approvals(
+        mnemonic=MNEMONIC,
+        token=USDT,
+        spender=RELAYER,
+        amount=amount,
+        current_allowance=current_allowance,
+        nonce=7,
+        max_fee_per_gas=20_000_000_000,
+        max_priority_fee_per_gas=1_000_000_000,
+        max_fee_wei=max_fee_wei,
+    )
+
+
+def test_approvals_skipped_when_allowance_sufficient():
+    prepared = _approvals(current_allowance=100_000_000)
+    assert prepared.problems == []
+    assert prepared.built.txs == []
+
+
+def test_approvals_single_tx_from_zero_allowance():
+    prepared = _approvals()
+    assert prepared.problems == []
+    txs = prepared.built.txs
+    assert len(txs) == 1
+    assert txs[0]["to"].lower() == USDT.lower()
+    assert txs[0]["nonce"] == 7
+    assert txs[0]["value"] == 0
+    # approve(spender, amount)
+    assert txs[0]["data"] == (
+        "0x095ea7b3"
+        + "0" * 24
+        + RELAYER[2:].lower()
+        + (100_000_000).to_bytes(32, "big").hex()
+    )
+
+
+def test_approvals_reset_to_zero_first_on_partial_allowance():
+    # USDT reverts on a nonzero -> nonzero allowance change, so a leftover
+    # partial allowance (e.g. an expired earlier order) needs approve(0) first.
+    prepared = _approvals(current_allowance=5)
+    assert prepared.problems == []
+    txs = prepared.built.txs
+    assert len(txs) == 2
+    assert txs[0]["nonce"] == 7 and txs[1]["nonce"] == 8
+    assert txs[0]["data"].endswith("0" * 64)  # approve(spender, 0)
+    assert txs[1]["data"].endswith((100_000_000).to_bytes(32, "big").hex())
+
+
+def test_approvals_fee_ceiling_blocks():
+    prepared = _approvals(max_fee_wei=1)
+    assert any("fee" in p for p in prepared.problems)
+
+
+def test_approvals_verify_rejects_tampered_spender():
+    from swapsack.chains.eth import encode_approve, verify_eth_approvals
+
+    prepared = _approvals()
+    built = prepared.built
+    built.txs[0]["data"] = encode_approve("0x" + "11" * 20, 100_000_000)
+    problems = verify_eth_approvals(built, max_fee_wei=10**16)
+    assert any("spender" in p for p in problems)
+
+
+def test_approvals_verify_rejects_tampered_amount():
+    from swapsack.chains.eth import encode_approve, verify_eth_approvals
+
+    prepared = _approvals()
+    built = prepared.built
+    built.txs[0]["data"] = encode_approve(RELAYER, 999)
+    problems = verify_eth_approvals(built, max_fee_wei=10**16)
+    assert any("amount" in p for p in problems)
+
+
+def test_approvals_sign_with_shared_adapter_sign():
+    # EthAdapter.sign iterates built.txs, so the approvals ride the same signer.
+    raws = EthAdapter().sign(_approvals(current_allowance=5).built)
+    assert len(raws) == 2
+    assert all(raw.startswith("0x02") for raw in raws)

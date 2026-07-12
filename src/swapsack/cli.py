@@ -22,6 +22,7 @@ from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
 
 from swapsack.addresses import validate_destination_address
+from swapsack.cow import DEFAULT_COW_TOLERANCE_BPS
 from swapsack.keystore import HdKey, Keystore
 from swapsack.net import HTTP_ERRORS
 from swapsack.swap import (
@@ -570,11 +571,11 @@ def _resolve_destination(
     return _derive_destination_address(chain, mnemonic, passphrase)
 
 
-def _backends_for(args: argparse.Namespace):  # noqa: ANN202 (list[Backend], lazy import)
-    from swapsack.backends import default_backends, get_backend
+def _backends_for(args: argparse.Namespace):  # noqa: ANN202 (list[SwapBackend], lazy import)
+    from swapsack.backends import get_backend, swap_backends
 
     if args.backend == "auto":
-        return default_backends()
+        return swap_backends()
     return [get_backend(args.backend)]
 
 
@@ -584,6 +585,44 @@ def _streaming_kwargs(args: argparse.Namespace) -> dict[str, int | None]:
         "streaming_interval": getattr(args, "stream_interval", None),
         "streaming_quantity": getattr(args, "stream_quantity", None),
     }
+
+
+def _tolerance(args: argparse.Namespace) -> int:
+    """The thornode-path price tolerance: the flag, or DEFAULT_TOLERANCE_BPS.
+
+    The flag defaults to None ("use the backend's default") because the right
+    default differs per backend: 300 bps quote tolerance on THORChain/Maya, but
+    only DEFAULT_COW_TOLERANCE_BPS on CoW, where the tolerance becomes the
+    signed order's on-chain buyAmount floor (see _swap_via_cow).
+    """
+    tolerance = getattr(args, "tolerance_bps", None)
+    return DEFAULT_TOLERANCE_BPS if tolerance is None else tolerance
+
+
+def _cow_tolerance(args: argparse.Namespace) -> int:
+    """The CoW order tolerance: the flag, or DEFAULT_COW_TOLERANCE_BPS."""
+    tolerance = getattr(args, "tolerance_bps", None)
+    return DEFAULT_COW_TOLERANCE_BPS if tolerance is None else tolerance
+
+
+def _is_cow_order_uid(value: str) -> bool:
+    """Whether ``value`` looks like a CoW order uid, not a chain txid.
+
+    A uid is 56 bytes (order digest + owner address + validTo) hex-encoded
+    with a ``0x`` prefix -> 112 hex chars. Every chain txid this wallet deals
+    with is shorter (a bare 32-byte hash, or an EVM ``0x``-prefixed 32-byte
+    hash), so length alone disambiguates cleanly.
+    """
+    if not value.lower().startswith("0x"):
+        return False
+    hex_part = value[2:]
+    if len(hex_part) != 112:
+        return False
+    try:
+        int(hex_part, 16)
+    except ValueError:
+        return False
+    return True
 
 
 def _select_backend(  # noqa: ANN202 (Backend, lazy import)
@@ -1092,7 +1131,7 @@ def _swap_from_utxo(
                 to_asset=request.to_asset,
                 amount=amount,
                 destination=dest,
-                tolerance_bps=args.tolerance_bps,
+                tolerance_bps=_tolerance(args),
             )
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
@@ -1105,7 +1144,7 @@ def _swap_from_utxo(
                     request=request,
                     now=int(time.time()),
                     mnemonic=mnemonic,
-                    tolerance_bps=args.tolerance_bps,
+                    tolerance_bps=_tolerance(args),
                     **_streaming_kwargs(args),
                     scanned_utxos=utxos,
                     fee_rate=fee_rate,
@@ -1158,9 +1197,9 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
     sweep = args.amount == "max"
     if is_token:
         _warn(
-            "token source — 2 transactions (approve + deposit):",
-            "if the deposit fails after the approve, an exact-amount allowance to "
-            "the router remains",
+            "token source — 2 transactions (approve + deposit/order):",
+            "if the deposit/order fails after the approve, an exact-amount "
+            "allowance to the router/relayer remains",
         )
     with _eth_adapter(args, passphrase) as adapter:
         from_address = adapter.derive_address(mnemonic)
@@ -1203,11 +1242,26 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
                 to_asset=request.to_asset,
                 amount=amount,
                 destination=dest,
-                tolerance_bps=args.tolerance_bps,
+                tolerance_bps=_tolerance(args),
             )
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
+        if backend.executor == "signed-order":
+            return _swap_via_cow(
+                args,
+                adapter,
+                backend,
+                from_asset=from_asset,
+                to_asset=request.to_asset,
+                amount=amount,
+                dest=dest,
+                mnemonic=mnemonic,
+                from_address=from_address,
+                nonce=nonce,
+                max_fee_per_gas=max_fee_per_gas,
+                max_priority_fee_per_gas=max_priority_fee_per_gas,
+            )
         with backend.client as thor:
             try:
                 prepared = prepare_swap(
@@ -1216,7 +1270,7 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
                     request=request,
                     now=int(time.time()),
                     mnemonic=mnemonic,
-                    tolerance_bps=args.tolerance_bps,
+                    tolerance_bps=_tolerance(args),
                     **_streaming_kwargs(args),
                     nonce=nonce,
                     gas=args.eth_gas,
@@ -1245,6 +1299,154 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
             )
             print(f"inbound: {max_fee_eth:.6f} ETH max ({len(prepared.built.txs)} tx)")
             return _confirm_and_execute(prepared, adapter, args)
+
+
+def _swap_via_cow(
+    args: argparse.Namespace,
+    adapter,  # noqa: ANN001 (EthAdapter)
+    backend,  # noqa: ANN001 (CowBackend)
+    *,
+    from_asset: str,
+    to_asset: str,
+    amount: int,
+    dest: str,
+    mnemonic: str,
+    from_address: str,
+    nonce: int,
+    max_fee_per_gas: int,
+    max_priority_fee_per_gas: int,
+) -> int:
+    """CoW's execute path: sign an EIP-712 order instead of paying a vault.
+
+    Re-quotes with the *real* signer as ``from`` (backend selection quoted
+    with ``dest`` doubling as both, matching the shared ``SwapBackend`` quote
+    signature — fine for price comparison, but the order's counterparty must
+    be the address that will actually sign it). Funds the CoW vault relayer's
+    allowance first if short, then gates the order exactly like a memo-deposit
+    swap gates its tx, before ever asking for a signature.
+    """
+    from swapsack.cow import (
+        COW_ASSETS,
+        VAULT_RELAYER,
+        CowError,
+        build_order,
+        parse_cow_quote,
+    )
+    from swapsack.verify import CowOrderPlan, verify_cow_order
+
+    if not backend.serves(from_asset, to_asset):
+        print(
+            f"ABORTED: cow cannot serve {args.from_} -> {args.to_} "
+            "(same-chain ERC-20 sell, ERC-20/ETH buy only)",
+            file=sys.stderr,
+        )
+        return 1
+
+    sell_contract, sell_decimals = COW_ASSETS[from_asset]
+    buy_contract, buy_decimals = COW_ASSETS[to_asset]
+    sell_amount = amount * 10**sell_decimals // THORCHAIN_UNIT
+    with backend.client as client:
+        try:
+            payload = client.quote(
+                sell_contract,
+                buy_contract,
+                sell_amount,
+                from_address=from_address,
+                receiver=dest,
+            )
+            quote = parse_cow_quote(
+                payload, to_asset=to_asset, buy_decimals=buy_decimals
+            )
+        except (CowError, *HTTP_ERRORS) as exc:
+            print(f"ABORTED: cow quote failed: {exc}", file=sys.stderr)
+            return 1
+
+        order = build_order(quote, tolerance_bps=_cow_tolerance(args))
+        plan = CowOrderPlan(
+            sell_token=sell_contract,
+            buy_token=buy_contract,
+            receiver=dest,
+            sell_amount=quote.sell_amount_total,
+            min_buy_amount=int(order["buyAmount"]),
+            expiry=quote.valid_to,
+        )
+        now = int(time.time())
+        problems = verify_cow_order(order=order, plan=plan, now=now)
+
+        current_allowance = adapter.fetch_token_allowance(
+            sell_contract, from_address, VAULT_RELAYER
+        )
+        approvals = adapter.build_and_verify_approvals(
+            mnemonic=mnemonic,
+            token=sell_contract,
+            spender=VAULT_RELAYER,
+            amount=quote.sell_amount_total,
+            current_allowance=current_allowance,
+            nonce=nonce,
+            max_fee_per_gas=max_fee_per_gas,
+            max_priority_fee_per_gas=max_priority_fee_per_gas,
+            max_fee_wei=ETH_MAX_FEE_WEI,
+        )
+        problems = problems + approvals.problems
+
+        sell_in = quote.sell_amount_total / 10**sell_decimals
+        out = quote.expected_amount_out / asset_unit(to_asset)
+        buy_floor = int(order["buyAmount"]) / 10**buy_decimals
+        print(f"via:     {backend.name}")
+        print(f"sell:    {sell_in:.6f} {args.from_} (signed order, no vault/memo)")
+        print(f"expect:  {out:.8f} {args.to_} -> {dest}  (floor {buy_floor:.6f})")
+        print(f"valid:   order usable until unix {order['validTo']}")
+        _print_swap_costs(
+            quote, args.from_, args.to_, amount, price_check=args.price_check
+        )
+        if approvals.built.txs:
+            print(
+                f"approve: {len(approvals.built.txs)} tx to fund the CoW vault "
+                "relayer allowance"
+            )
+
+        if problems:
+            print("VERIFY GATE FAILED — not safe to sign:", file=sys.stderr)
+            for problem in problems:
+                print(f"  - {problem}", file=sys.stderr)
+            return 1
+        if not args.confirm:
+            print(
+                "\nDRY RUN — verified OK, not signed/submitted. Re-run with "
+                "--confirm to send."
+            )
+            return 0
+        if not args.yes:
+            prompt = "\nSign and submit the CoW order shown above? type 'yes': "
+            if input(prompt).strip() != "yes":
+                print("aborted, not submitted.")
+                return 0
+        if int(time.time()) >= order["validTo"]:
+            print("ABORTED: order expired while confirming; re-run.", file=sys.stderr)
+            return 1
+
+        if approvals.built.txs:
+            raws = adapter.sign(approvals.built)
+            try:
+                adapter.broadcast(raws)
+            except BroadcastError as exc:
+                print(f"BROADCAST FAILED (approval): {exc}", file=sys.stderr)
+                return 1
+
+        signature = adapter.sign_cow_order(order, mnemonic)
+        try:
+            uid = client.submit_order(
+                order,
+                signature=signature,
+                from_address=from_address,
+                quote_id=quote.quote_id,
+            )
+        except (CowError, *HTTP_ERRORS) as exc:
+            print(f"ORDER SUBMIT FAILED: {exc}", file=sys.stderr)
+            return 1
+        print(f"\nORDER submitted, uid: {uid}")
+        print(f"track: swapsack status {uid}")
+        return 0
 
 
 def _swap_from_tron(args: argparse.Namespace) -> int:
@@ -1300,7 +1502,7 @@ def _swap_from_tron(args: argparse.Namespace) -> int:
                 to_asset=request.to_asset,
                 amount=amount,
                 destination=dest,
-                tolerance_bps=args.tolerance_bps,
+                tolerance_bps=_tolerance(args),
             )
             with backend.client as thor:
                 prepared = prepare_swap(
@@ -1309,7 +1511,7 @@ def _swap_from_tron(args: argparse.Namespace) -> int:
                     request=request,
                     now=int(time.time()),
                     mnemonic=mnemonic,
-                    tolerance_bps=args.tolerance_bps,
+                    tolerance_bps=_tolerance(args),
                     **_streaming_kwargs(args),
                 )
         except (SwapAborted, ValueError) as exc:
@@ -1383,7 +1585,7 @@ def _swap_from_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa
                     request=request,
                     now=int(time.time()),
                     mnemonic=mnemonic,
-                    tolerance_bps=args.tolerance_bps,
+                    tolerance_bps=_tolerance(args),
                     **_streaming_kwargs(args),
                 )
         except (SwapAborted, ValueError) as exc:
@@ -1696,14 +1898,36 @@ def _liquidity_tron(
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    # A CoW order uid (56 bytes: digest + owner + validTo) looks nothing like a
+    # chain txid, so it's auto-detected and routed to the orderbook directly —
+    # there is no vault/inbound-observed concept for a signed order.
+    if _is_cow_order_uid(args.txid):
+        from swapsack.cow import CowError, default_cow_backend
+
+        with default_cow_backend().client as client:
+            try:
+                status = client.order_status(args.txid)
+            except (CowError, *HTTP_ERRORS) as exc:
+                print(f"ORDER STATUS FAILED: {exc}", file=sys.stderr)
+                return 1
+        print(json.dumps(status, indent=2))
+        return 0
+
     # A bare tx hash doesn't say which network observed it, and an inbound only
     # exists on the chain it was deposited to (a Maya LP is invisible to
-    # thornode). With --backend auto we query every backend and report the one
-    # that actually observed it; an unknown hash just yields a "not observed"
-    # body on each, so falling through to the last is harmless.
-    from swapsack.net import HTTP_ERRORS
+    # thornode). With --backend auto we query every (thornode-style) backend
+    # and report the one that actually observed it; an unknown hash just
+    # yields a "not observed" body on each, so falling through to the last is
+    # harmless. Deliberately thornode-only backends here (not _backends_for's
+    # swap_backends()): CoW has no tx_status concept, only order_status above.
+    from swapsack.backends import default_backends
 
-    backends = _backends_for(args)
+    if args.backend == "auto":
+        backends = default_backends()
+    else:
+        from swapsack.backends import get_backend
+
+        backends = [get_backend(args.backend)]
     status: dict[str, object] = {}
     for backend in backends:
         try:
@@ -1812,9 +2036,10 @@ def _add_swap_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--key", help="keystore HD key label (default: first)")
     sub.add_argument(
         "--backend",
-        choices=["thorchain", "maya", "auto"],
+        choices=["thorchain", "maya", "cow", "auto"],
         default="auto",
-        help="swap backend (auto = lowest price across all)",
+        help="swap backend (auto = lowest price across all; cow = same-chain "
+        "ETH-token swaps via a signed intent order, no memo/vault)",
     )
     sub.add_argument(
         "--price-check",
@@ -1945,9 +2170,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--tolerance-bps",
         type=int,
-        default=DEFAULT_TOLERANCE_BPS,
-        help="max basis points of price tolerance; raise it for small/high-fee "
-        f"swaps THORChain refuses at the default {DEFAULT_TOLERANCE_BPS}. Ignored "
+        default=None,
+        help="max basis points of price tolerance; omit for the backend's own "
+        f"default ({DEFAULT_TOLERANCE_BPS} thornode/maya, {DEFAULT_COW_TOLERANCE_BPS} "
+        "cow — there it becomes the signed order's on-chain buyAmount floor). "
+        "Raise it for small/high-fee swaps refused at the default. Ignored "
         "when --stream-interval is set (streaming manages slippage itself)",
     )
     s.set_defaults(func=cmd_swap)

@@ -152,15 +152,28 @@ Still open:
 Done: Maya backend (THORChain fork, same API/memo) + `--backend auto`
 lowest-price routing across backends.
 
-- **Non-thornode backends — scoped 2026-07-11, see `docs/backends.md`** (live
-  API probes + recommendation). Order: **CoW Protocol** first (same-chain
-  ETH-token swaps, keyless, intent model → gateable like a SendPlan), then
-  **Chainflip** (second independent cross-chain venue; adds SOL/DOT; deposits
-  are plain sends so the existing builders/gates get reused — but executing
-  needs a broker/deposit-channel decision first). Both need the `Backend`
-  protocol widened beyond the thornode client (normalized quote + an executor
-  discriminator). Calldata-style aggregators (ParaSwap/1inch/0x/LiFi) and
-  custodial instant exchangers: not planned (gating problem / custody).
+Done: **CoW Protocol backend** (`src/swapsack/cow.py`, scoped 2026-07-11 in
+`docs/backends.md`, landed 2026-07-12). `--backend cow`/`auto` for same-chain
+USDT-ETH/USDC-ETH/ETH swaps via a keyless intent API — sign a structured
+EIP-712 order (no vault, no memo), gated field-by-field by
+`verify.verify_cow_order` before signing. Funds the CoW vault relayer's ERC-20
+allowance first when short (`EthAdapter.build_and_verify_approvals`, handling
+USDT's reset-to-zero quirk). Widened `Backend` into a `SwapBackend` protocol
+(`serves()`/`try_quote()`/`executor`) so `gather_quotes`/`best_quote` and
+`cli._select_backend` treat thornode-style and signed-order backends
+uniformly; `cli._swap_via_cow` is the executor for the latter.
+`status <order-uid>` auto-detects and tracks a submitted order. Live-tested
+(`tests/test_integration_cow.py`): a throwaway, unfunded key's signed order
+clears every orderbook check up to `InsufficientBalance`, proving the
+EIP-712 domain/signing matches the live API exactly.
+
+- **Chainflip** — the remaining non-thornode backend from the
+  `docs/backends.md` scoping: a second independent cross-chain venue; adds
+  SOL/DOT. Deposits are plain sends to a per-swap channel, so the existing
+  send builders/gates get reused — but executing needs a broker/deposit-
+  channel decision first (see `docs/backends.md`'s Chainflip execution
+  notes). Calldata-style aggregators (ParaSwap/1inch/0x/LiFi) and custodial
+  instant exchangers: not planned (gating problem / custody).
 
 - **Maya-only assets**: expose DASH, ZEC, ADA (Cardano), ARB (Arbitrum), and the
   Maya-native CACAO — Maya has pools THORChain lacks. **Destination-only is just

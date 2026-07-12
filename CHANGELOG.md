@@ -8,6 +8,20 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **CoW Protocol backend (same-chain ETH-token swaps):** `--backend cow`
+  (and `auto`) for `quote`/`swap` between USDT-ETH/USDC-ETH/ETH — a keyless
+  intent API (`api.cow.fi`) that settles a solver auction instead of routing
+  through two THORChain/Maya pool legs, cutting cost sharply for same-chain
+  pairs (see `docs/backends.md`). Execution signs a structured EIP-712 order
+  (no vault, no memo) rather than paying calldata to a router, so it stays
+  gateable exactly like a `SendPlan` — every order field (tokens, amounts,
+  receiver, validity, fill-or-kill, balance mode) is bound and checked before
+  signing (`verify_cow_order`). Funds the CoW vault relayer's ERC-20 allowance
+  first when short (handling USDT's reset-to-zero quirk), and widens the
+  `Backend` protocol (`serves()`/`try_quote()`/`executor`) so THORChain, Maya
+  and CoW all price-compare under `--backend auto`. `status <order-uid>`
+  tracks a submitted order. Live-signature-tested: a throwaway, unfunded key's
+  signed order clears every orderbook check up to the balance check.
 - **ZEC swap-from + liquidity (Phase 3):** `swap --from ZEC` (Maya-routed,
   vault + OP_RETURN memo, streaming supported) and single-sided
   `add-liquidity`/`withdraw-liquidity --asset ZEC --backend maya` (pairs with
