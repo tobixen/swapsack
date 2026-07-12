@@ -71,6 +71,15 @@ automatically from git tags (PEP 440 / SemVer).
   loudly that the chain is receive-only. The spend path (send/sweep/swap-from)
   is deliberately not implemented yet — see docs/dash.md.
 
+### Fixed
+
+- **THORChain node outage resilience:** `ThorchainClient` (and the `thorchain`
+  swap backend) now tries an ordered list of nodes rather than a single
+  hardcoded default, falling through on connection failure and pinning the
+  first that answers. Prompted by `thornode.thorchain.network` going dark to
+  DNS on 2026-07-12; the default list now also includes Liquify's public
+  gateway. Override with `$SWAPSACK_THORNODE` as before (a single URL).
+
 ## [0.1.0] - 2026-07-08
 
 First release

@@ -14,14 +14,24 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any
 
-from swapsack.net import HttpClient
+from swapsack.net import HTTP_ERRORS, HttpClient
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
+
+    import niquests
 
 THORCHAIN_UNIT = 100_000_000
-# See backends.DEFAULT_THORNODE: the old liquify default's cert expired 2024-02-07.
+# thornode.thorchain.liquify.com's TLS cert expired 2024-02-07 (never renewed),
+# the ninerealms gateways were retired (no A record), and thornode.thorchain.network
+# itself went dark to DNS on 2026-07-12 — so ThorchainClient tries a short list of
+# independently-operated nodes in order rather than trusting a single default.
+# Override with SWAPSACK_THORNODE (a single URL) if this list degrades too.
 DEFAULT_BASE_URL = "https://thornode.thorchain.network"
+DEFAULT_BASE_URLS: tuple[str, ...] = (
+    DEFAULT_BASE_URL,
+    "https://gateway.liquify.com/chain/thorchain_api",
+)
 # Default price tolerance for a quote, in basis points. Defined here (not in
 # swap.py) so the client default matches the ThorchainLike protocol default
 # without a circular import.
@@ -375,27 +385,60 @@ class ThorchainClient(HttpClient):
 
     def __init__(
         self,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str | Sequence[str] = DEFAULT_BASE_URLS,
         client_id: str | None = None,
         timeout: float = 20.0,
         path_prefix: str = "thorchain",
     ) -> None:
         super().__init__(timeout)
-        self.base_url = base_url.rstrip("/")
+        candidates = (base_url,) if isinstance(base_url, str) else tuple(base_url)
+        if not candidates:
+            raise ValueError("base_url must contain at least one node")
+        self._candidates = tuple(c.rstrip("/") for c in candidates)
+        self.base_url = self._candidates[0]
         self.path_prefix = path_prefix
         self._headers = {"x-client-id": client_id} if client_id else {}
 
+    def _get_with_fallback(self, suffix: str, **kwargs: object) -> niquests.Response:
+        """GET ``{node}/{suffix}`` against each configured node in turn.
+
+        Starts from the currently pinned node (``self.base_url``) and only
+        advances on a connection-level failure (DNS, refused, timeout) — an
+        HTTP error response is a real answer from a live node, not an outage,
+        so it's returned as-is for the caller's own ``raise_for_status()``.
+        The first node that answers is pinned to ``self.base_url`` so later
+        calls skip the dead ones instead of re-probing every time.
+        """
+        start = (
+            self._candidates.index(self.base_url)
+            if self.base_url in self._candidates
+            else 0
+        )
+        ordered = self._candidates[start:] + self._candidates[:start]
+        last_exc: Exception | None = None
+        for base in ordered:
+            try:
+                resp = self._get(f"{base}/{suffix}", **kwargs)
+            except HTTP_ERRORS as exc:
+                last_exc = exc
+                continue
+            self.base_url = base
+            return resp
+        # ordered is non-empty (__init__ checked candidates), so the loop ran.
+        assert last_exc is not None
+        raise last_exc
+
     def inbound_addresses(self) -> dict[str, ChainStatus]:
-        resp = self._get(
-            f"{self.base_url}/{self.path_prefix}/inbound_addresses",
+        resp = self._get_with_fallback(
+            f"{self.path_prefix}/inbound_addresses",
             headers=self._headers,
         )
         resp.raise_for_status()
         return parse_inbound_addresses(resp.json())
 
     def tx_status(self, txid: str) -> dict[str, Any]:
-        resp = self._get(
-            f"{self.base_url}/{self.path_prefix}/tx/status/{normalize_txid(txid)}",
+        resp = self._get_with_fallback(
+            f"{self.path_prefix}/tx/status/{normalize_txid(txid)}",
             headers=self._headers,
         )
         resp.raise_for_status()
@@ -408,8 +451,8 @@ class ThorchainClient(HttpClient):
         that as "no position" rather than an error, so a single shared address
         set can be probed against every backend.
         """
-        resp = self._get(
-            f"{self.base_url}/{self.path_prefix}/pool/{pool}/liquidity_provider/{address}",
+        resp = self._get_with_fallback(
+            f"{self.path_prefix}/pool/{pool}/liquidity_provider/{address}",
             headers=self._headers,
         )
         if resp.status_code == 404:
@@ -419,8 +462,8 @@ class ThorchainClient(HttpClient):
 
     def pool(self, asset: str) -> PoolDepth:
         """Current depths for ``asset``'s pool (to value an LP's RUNE/CACAO side)."""
-        resp = self._get(
-            f"{self.base_url}/{self.path_prefix}/pool/{asset}",
+        resp = self._get_with_fallback(
+            f"{self.path_prefix}/pool/{asset}",
             headers=self._headers,
         )
         resp.raise_for_status()
@@ -428,8 +471,8 @@ class ThorchainClient(HttpClient):
 
     def mimir(self) -> dict[str, Any]:
         """Network config toggles (e.g. ``PAUSELP``); values are ints."""
-        resp = self._get(
-            f"{self.base_url}/{self.path_prefix}/mimir",
+        resp = self._get_with_fallback(
+            f"{self.path_prefix}/mimir",
             headers=self._headers,
         )
         resp.raise_for_status()
@@ -460,8 +503,8 @@ class ThorchainClient(HttpClient):
             params["streaming_quantity"] = streaming_quantity
         if tolerance_bps is not None:
             params["tolerance_bps"] = tolerance_bps
-        resp = self._get(
-            f"{self.base_url}/{self.path_prefix}/quote/swap",
+        resp = self._get_with_fallback(
+            f"{self.path_prefix}/quote/swap",
             params=params,
             headers=self._headers,
         )

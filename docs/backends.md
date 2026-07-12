@@ -21,8 +21,11 @@ new money path and maintenance surface. Honest reasons to add one anyway:
 2. **Assets neither protocol lists** — SOL and DOT exist on Chainflip; nothing
    on THORChain/Maya serves them.
 3. **Resilience.** `thornode.thorchain.network` (our default) had a DNS outage
-   while this note was written. `--backend auto` across *independent*
-   protocols also hedges against one protocol's infra/halt days.
+   while this note was written, and went dark to DNS entirely on 2026-07-12
+   — `ThorchainClient` now takes an ordered list of nodes and falls through
+   on connection failure (see `thorchain.DEFAULT_BASE_URLS`), rather than a
+   single hardcoded default. `--backend auto` across *independent* protocols
+   also hedges against one protocol's infra/halt days.
 
 ## What a backend must provide (current abstraction)
 

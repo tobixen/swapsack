@@ -3,6 +3,7 @@
 Fixtures are trimmed real responses captured from the live API; see README.
 """
 
+import niquests
 import pytest
 
 from swapsack.thorchain import (
@@ -404,6 +405,50 @@ def test_liquidity_provider_client_builds_url(monkeypatch):
     assert captured["url"] == (
         "https://node.example/mayachain/pool/BTC.BTC/liquidity_provider/bc1qnope"
     )
+
+
+class _MimirResp:
+    def raise_for_status(self) -> None: ...
+
+    def json(self) -> dict[str, object]:
+        return {"PAUSELP": 0}
+
+
+def test_falls_back_to_next_node_on_connection_error(monkeypatch):
+    """Regression: thornode.thorchain.network going dark (DNS outage, 2026-07)
+    must not take the client down with it when a second node is configured."""
+    client = ThorchainClient(("https://dead.example", "https://alive.example"))
+    calls: list[str] = []
+
+    def fake_get(url: str, **_kw: object):
+        calls.append(url)
+        if url.startswith("https://dead.example"):
+            raise niquests.exceptions.ConnectionError("simulated outage")
+        return _MimirResp()
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    assert client.mimir() == {"PAUSELP": 0}
+    assert calls == [
+        "https://dead.example/thorchain/mimir",
+        "https://alive.example/thorchain/mimir",
+    ]
+    # The dead node is now known-bad; pin to the one that answered so later
+    # calls don't pay its connection-timeout cost again.
+    assert client.base_url == "https://alive.example"
+    calls.clear()
+    client.mimir()
+    assert calls == ["https://alive.example/thorchain/mimir"]
+
+
+def test_raises_when_every_node_is_unreachable(monkeypatch):
+    client = ThorchainClient(("https://dead1.example", "https://dead2.example"))
+
+    def fake_get(url: str, **_kw: object):
+        raise niquests.exceptions.ConnectionError(url)
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    with pytest.raises(niquests.exceptions.ConnectionError):
+        client.mimir()
 
 
 def test_parse_pool_depth_thorchain():

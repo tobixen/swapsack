@@ -69,8 +69,8 @@ def test_liquidity_provider_live():
     # listed providers are fully withdrawn (units linger, nothing redeemable ->
     # None), so probe a handful until one with redeemable value turns up.
     with ThorchainClient() as thor:
-        providers = thor._get(
-            f"{thor.base_url}/{thor.path_prefix}/pool/BTC.BTC/liquidity_providers"
+        providers = thor._get_with_fallback(
+            f"{thor.path_prefix}/pool/BTC.BTC/liquidity_providers"
         ).json()
         position = None
         for lp in providers[:50]:

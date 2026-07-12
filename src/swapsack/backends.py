@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from swapsack.net import HTTP_ERRORS
 from swapsack.thorchain import (
+    DEFAULT_BASE_URLS,
     Quote,
     ThorchainClient,
     ThorchainError,
@@ -32,11 +33,9 @@ from swapsack.thorchain import (
 if TYPE_CHECKING:
     from swapsack.cow import CowQuote
 
-# thornode.thorchain.liquify.com's TLS cert expired 2024-02-07 (never renewed)
-# and the ninerealms gateways were retired (no A record), so default to a node
-# that currently resolves + serves a valid cert. Override with
-# SWAPSACK_THORNODE if this one degrades.
-DEFAULT_THORNODE = "https://thornode.thorchain.network"
+# See thorchain.DEFAULT_BASE_URLS for why THORChain has a fallback list rather
+# than a single default. Maya has no known second public node yet, so it stays
+# a single URL; override either with SWAPSACK_THORNODE/SWAPSACK_MAYANODE.
 DEFAULT_MAYANODE = "https://mayanode.mayachain.info"
 
 
@@ -125,7 +124,7 @@ class Backend:
 def default_backends() -> list[Backend]:
     """The thornode-style backends (used directly by LP/status/balance, which
     speak the thornode API; swap routing adds CoW via :func:`swap_backends`)."""
-    thornode = os.environ.get("SWAPSACK_THORNODE") or DEFAULT_THORNODE
+    thornode = os.environ.get("SWAPSACK_THORNODE") or DEFAULT_BASE_URLS
     mayanode = os.environ.get("SWAPSACK_MAYANODE") or DEFAULT_MAYANODE
     return [
         Backend("thorchain", ThorchainClient(thornode)),
