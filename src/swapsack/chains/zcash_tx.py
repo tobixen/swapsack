@@ -6,7 +6,9 @@ version-group id, an expiry height and shielded sections, and the signature
 hash is ZIP-243 — BLAKE2b-256 personalized with the *consensus branch id* of
 the active network upgrade, over a BIP143-like-but-different preimage. This
 module implements exactly the transparent-only subset the wallet needs: v4
-transactions with P2PKH inputs/outputs and empty shielded sections.
+transactions with P2PKH inputs, P2PKH/P2SH (t1/t3) outputs and empty shielded
+sections. The wallet only ever *spends* its own P2PKH inputs; P2SH support is
+for paying t3 recipients (exchange/multisig deposit addresses).
 
 Correctness anchors (test_zcash.py): a real mainnet v4 transaction round-trips
 byte-identically through ``parse_v4``/``serialize_v4``, and its embedded ECDSA
@@ -34,6 +36,7 @@ V4_HEADER = 0x80000004  # fOverwintered | version 4
 V4_VERSION_GROUP = 0x892F2085  # Sapling
 SIGHASH_ALL = 1
 PREFIX_T1 = b"\x1c\xb8"  # transparent P2PKH ("t1…")
+PREFIX_T3 = b"\x1c\xbd"  # transparent P2SH ("t3…")
 
 
 class ZcashTxError(ValueError):
@@ -44,21 +47,48 @@ class ZcashTxError(ValueError):
 
 
 def address_to_script(address: str) -> bytes:
-    """The P2PKH scriptPubKey for a transparent ``t1…`` address."""
+    """The scriptPubKey for a transparent ``t1…`` (P2PKH) or ``t3…`` (P2SH) address.
+
+    t1 pays to ``76 a9 14 <hash160> 88 ac``; t3 (exchange/multisig deposit
+    addresses) pays to ``a9 14 <hash160> 87``.
+    """
     payload = base58.b58decode_check(address)
-    if payload[:2] != PREFIX_T1 or len(payload) != 22:
-        raise ZcashTxError(f"not a transparent t1 P2PKH address: {address}")
-    return b"\x76\xa9\x14" + payload[2:] + b"\x88\xac"
+    prefix, hash160 = payload[:2], payload[2:]
+    if len(payload) != 22:
+        raise ZcashTxError(f"not a transparent t1/t3 address: {address}")
+    if prefix == PREFIX_T1:
+        return b"\x76\xa9\x14" + hash160 + b"\x88\xac"
+    if prefix == PREFIX_T3:
+        return b"\xa9\x14" + hash160 + b"\x87"
+    raise ZcashTxError(f"not a transparent t1/t3 address: {address}")
 
 
-def script_to_address(script: bytes) -> str | None:
-    """The ``t1…`` address of a P2PKH scriptPubKey, or None for other scripts."""
+def _p2pkh_hash160(script: bytes) -> bytes | None:
+    """The 20-byte hash of a P2PKH scriptPubKey, or None for other scripts."""
     if (
         len(script) == 25
         and script[:3] == b"\x76\xa9\x14"
         and script[23:] == b"\x88\xac"
     ):
-        return base58.b58encode_check(PREFIX_T1 + script[3:23]).decode()
+        return script[3:23]
+    return None
+
+
+def _p2sh_hash160(script: bytes) -> bytes | None:
+    """The 20-byte hash of a P2SH scriptPubKey, or None for other scripts."""
+    if len(script) == 23 and script[:2] == b"\xa9\x14" and script[22:] == b"\x87":
+        return script[2:22]
+    return None
+
+
+def script_to_address(script: bytes) -> str | None:
+    """The ``t1…``/``t3…`` address of a P2PKH/P2SH scriptPubKey, else None."""
+    h = _p2pkh_hash160(script)
+    if h is not None:
+        return base58.b58encode_check(PREFIX_T1 + h).decode()
+    h = _p2sh_hash160(script)
+    if h is not None:
+        return base58.b58encode_check(PREFIX_T3 + h).decode()
     return None
 
 
@@ -239,7 +269,10 @@ def sign_transparent(
     for index, (inp, (script_code, value), priv) in enumerate(
         zip(tx.inputs, spent, privkeys, strict=True)
     ):
-        if script_to_address(script_code) is None:
+        # The wallet only owns t1 P2PKH; a P2SH (t3) input cannot be signed with
+        # this single-key <sig><pubkey> scriptSig, so reject it explicitly rather
+        # than lean on script_to_address (which now also decodes P2SH outputs).
+        if _p2pkh_hash160(script_code) is None:
             raise ZcashTxError(f"input {index} spends a non-P2PKH output")
         digest = sighash_zip243(tx, index, script_code, value, branch_id)
         key = PrivateKey(priv)

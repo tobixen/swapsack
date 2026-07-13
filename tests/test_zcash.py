@@ -209,6 +209,48 @@ def test_build_and_verify_send_full_offline_loop(monkeypatch):
         assert PublicKey(pub).verify(der, digest, hasher=None)
 
 
+def test_build_and_verify_send_to_t3_p2sh_recipient(monkeypatch):
+    # A send to a t3 (P2SH) address — e.g. an exchange deposit — must build,
+    # gate and sign like any t1 send; regression for the raw-ValueError crash
+    # when address_to_script only knew P2PKH.
+    from coincurve import PublicKey
+
+    from swapsack.chains.coins import Utxo
+    from swapsack.chains.zcash_tx import parse_v4 as zparse
+    from swapsack.chains.zcash_tx import sighash_zip243
+
+    a = ZecAdapter()
+    monkeypatch.setattr(a, "latest_height", lambda: 3_407_167)
+    monkeypatch.setattr(a, "branch_id", lambda: REAL_BRANCH_ID)
+    path0 = "m/44'/133'/0'/0/0"
+    addr0 = GOLDEN[path0]
+    utxos = [Utxo(txid="cc" * 32, vout=1, value=250_000, address=addr0, path=path0)]
+    t3 = "t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd"
+    prepared = a.build_and_verify_send(
+        recipient=t3,
+        amount=200_000,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=0.0,
+        change_address=addr0,
+        max_fee=50_000,
+    )
+    assert prepared.problems == []
+    # Neutral extraction must decode the P2SH output back to the t3 recipient,
+    # so the gate confirms the payee (not report address=None).
+    payee = [o for o in prepared.built.outputs if o.op_return_data is None]
+    assert any(o.address == t3 and o.value == 200_000 for o in payee)
+
+    (raw_hex,) = a.sign(prepared.built)
+    reparsed = zparse(bytes.fromhex(raw_hex))
+    for i, (script_code, value) in enumerate(prepared.built.spent):
+        s = reparsed.inputs[i].script_sig
+        der, pub = s[1 : s[0]], s[s[0] + 2 :]
+        digest = sighash_zip243(reparsed, i, script_code, value, REAL_BRANCH_ID)
+        assert PublicKey(pub).verify(der, digest, hasher=None)
+
+
 def test_build_and_verify_sweep_spends_everything(monkeypatch):
     from swapsack.chains.coins import Utxo
 
@@ -342,6 +384,23 @@ def test_address_script_roundtrip_and_prefix_check():
     )
     with pytest.raises(ZcashTxError):
         address_to_script("XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5")  # a DASH address
+
+
+def test_t3_p2sh_address_script_roundtrip():
+    # t3 (P2SH, prefix 0x1cbd) recipients — e.g. exchange/multisig deposit
+    # addresses. The scriptPubKey is `a9 14 <hash160> 87`. Anchored to the same
+    # hash160 as the t1 vector above (t1evBud…/76a914e6d7…88ac): re-encoded under
+    # the P2SH prefix it is the on-chain-consistent t3 address below.
+    from swapsack.chains.zcash_tx import address_to_script, script_to_address
+
+    t3 = "t3fcCqAZhd9NfLe5rJvYiJcSoEcgN3Z5R9Q"
+    script = address_to_script(t3)
+    assert script == bytes.fromhex("a914e6d7c5deebc177fafd724e65bd1fa2c826245aef87")
+    assert script[:2] == b"\xa9\x14" and script[-1:] == b"\x87" and len(script) == 23
+    assert script_to_address(script) == t3
+    # A real mainnet t3 address round-trips too (external anchor for the prefix).
+    real = "t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd"
+    assert script_to_address(address_to_script(real)) == real
 
 
 def test_build_sign_own_tx_and_verify_roundtrip():
