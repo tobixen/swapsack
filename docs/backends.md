@@ -61,6 +61,13 @@ calldata-style doesn't, regardless of price.
 
 ### Chainflip execution notes (for its phase)
 
+**Superseded by `docs/chainflip.md`** (live-probed 2026-07-13): the open
+broker/channel decision below is resolved there — a channel's registered
+destination is readable from a public keyless State Chain RPC
+(`cf_*_open_deposit_channels`), so the verify gate can confirm the broker
+registered *our* destination before funding. The notes below stand as the
+original scoping.
+
 Quoting is keyless REST (probed: 0.1 BTC → 3.57 ETH with itemized ingress/
 egress/broker fees and a recommended slippage). Executing requires a deposit
 channel from a **broker**: options are (a) the same swap-service the official
@@ -90,7 +97,8 @@ refunded — Chainflip has refund parameters worth setting.
 2. **Phase B — Chainflip** (cross-chain): brings SOL/DOT and a second
    independent cross-chain venue. Read-only first (quote in `auto`), then the
    broker/channel decision, then execution — which reuses the existing plain-
-   send builders and gates.
+   send builders and gates. Feasibility assessment + resolved broker gating +
+   B1/B2/B3 phasing in **`docs/chainflip.md`**.
 3. **Not planned**: keyed aggregators (1inch/0x — key friction for a CLI),
    calldata-style keyless ones (ParaSwap/LiFi — gating problem; revisit only
    if CoW's coverage disappoints), instant exchangers (custodial).
