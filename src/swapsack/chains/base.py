@@ -60,6 +60,6 @@ class ChainAdapter(Protocol):
         """The wallet's balance for this chain, derived from the mnemonic."""
         ...
 
-    def broadcast(self, raw_hex: str) -> str:
+    def broadcast(self, raws: list[str]) -> str:
         """Broadcast a signed transaction; return its txid."""
         ...

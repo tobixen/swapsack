@@ -30,6 +30,7 @@ import datetime
 import os
 from typing import TYPE_CHECKING, Any
 
+from swapsack.chains.eth import TRACKED_TOKENS
 from swapsack.net import HTTP_ERRORS, HttpClient
 from swapsack.thorchain import THORCHAIN_UNIT, SwapFees
 
@@ -58,18 +59,25 @@ NATIVE_ETH = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 # the quoted buy amount (solver competition normally fills well above it).
 DEFAULT_COW_TOLERANCE_BPS = 50
 
+
+def _erc20_cow_assets(
+    tracked_tokens: tuple[tuple[str, str, int], ...],
+) -> dict[str, tuple[str, int]]:
+    """THORChain-style asset key -> (contract, decimals) for each tracked
+    ERC-20, in the same format as cli.ASSET's token keys."""
+    return {
+        f"ETH.{symbol}-0X{contract[2:].upper()}": (contract, decimals)
+        for symbol, contract, decimals in tracked_tokens
+    }
+
+
 # THORChain-style asset string -> (contract, decimals). Keys must match
-# cli.ASSET values. ETH.ETH is buyable only (see NATIVE_ETH above); the
-# ERC-20 entries are both sellable and buyable.
+# cli.ASSET values. The ERC-20 entries are derived from eth.TRACKED_TOKENS (the
+# single source of truth for contract/decimals) so the two can't drift.
+# ETH.ETH is buyable only (see NATIVE_ETH above); the ERC-20 entries are both
+# sellable and buyable.
 COW_ASSETS: dict[str, tuple[str, int]] = {
-    "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7": (
-        "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-        6,
-    ),
-    "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48": (
-        "0xA0b86991c6218B36c1d19D4a2e9Eb0cE3606eB48",
-        6,
-    ),
+    **_erc20_cow_assets(TRACKED_TOKENS),
     "ETH.ETH": (NATIVE_ETH, 18),
 }
 
@@ -389,7 +397,7 @@ class CowBackend:
             return parse_cow_quote(
                 payload, to_asset=to_asset, buy_decimals=buy_decimals
             )
-        except (CowError, *HTTP_ERRORS):
+        except (CowError, KeyError, ValueError, TypeError, *HTTP_ERRORS):
             return None
 
 

@@ -14,8 +14,8 @@ comes from :data:`swapsack.chains.coins.P2PKH`. Insight exposes no usable
 ``estimatefee``, and Dash fees are ~fixed and low, so ``fetch_fee_rate``
 returns a conservative constant instead of a network estimate.
 
-The swap-*from* side (vault deposit + OP_RETURN memo) is Phase 3 — the
-building blocks are here, but it is not wired into the CLI.
+The swap-*from* side (vault deposit + OP_RETURN memo) is wired into the CLI
+via ``_swap_from_utxo``.
 """
 
 from __future__ import annotations
@@ -68,16 +68,31 @@ _DASH_NETWORK = {
 NETWORK_DEFINITIONS.setdefault("dash", _DASH_NETWORK)
 
 
+def _appearances(stats: dict, sic: str, corrected: str) -> int:
+    """The larger of Insight's two spellings of an appearance counter.
+
+    Insight spells it "txApperances" (sic); newer forks add the corrected
+    spelling. Take the max rather than preferring either, because a fork that
+    emits *both* may keep only one of them current — and a stale 0 in the
+    preferred key would read as "no history", stopping the gap-limit scan early
+    and hiding funded addresses.
+    """
+    return max(int(stats.get(sic, 0) or 0), int(stats.get(corrected, 0) or 0))
+
+
 def parse_insight_addr(stats: dict) -> AddressInfo:
-    # Insight spells it "txApperances" (sic); newer forks add the corrected
-    # spelling as an alias. Accept either, preferring the original.
-    appearances = stats.get("txApperances", stats.get("txAppearances", 0))
-    unconfirmed = stats.get("unconfirmedTxApperances", 0)
+    appearances = _appearances(stats, "txApperances", "txAppearances")
+    unconfirmed = _appearances(
+        stats, "unconfirmedTxApperances", "unconfirmedTxAppearances"
+    )
     received = stats.get("totalReceivedSat", 0)
+    pending = stats.get("unconfirmedBalanceSat", 0)
     return AddressInfo(
-        has_history=appearances > 0 or unconfirmed > 0 or received > 0,
+        # Any evidence of use keeps the scan going. `pending` is checked for
+        # non-zero, not positive: an unconfirmed *spend* is evidence too.
+        has_history=appearances > 0 or unconfirmed > 0 or received > 0 or pending != 0,
         confirmed=stats.get("balanceSat", 0),
-        pending=stats.get("unconfirmedBalanceSat", 0),
+        pending=pending,
     )
 
 
@@ -141,20 +156,13 @@ class DashAdapter(HttpClient, UtxoTxBuilder):
         return DEFAULT_FEE_RATE
 
     def wallet_balance(self, mnemonic: str, account: str = ACCOUNT) -> BalanceReport:
-        from swapsack.chains.scan import scan_account
+        from swapsack.chains.scan import wallet_balance_from_scan
 
-        records = scan_account(
+        return wallet_balance_from_scan(
             derive_address=lambda p: self.derive_address(mnemonic, p),
             probe=self.address_info,
             account=account,
-        )
-        return BalanceReport(
             symbol="DASH",
-            confirmed=sum(info.confirmed for _, _, info in records),
-            decimals=8,
-            pending=sum(info.pending for _, _, info in records),
-            note=f"({len(records)} used addresses)",
-            addresses=tuple(address for _, address, _ in records),
         )
 
     def broadcast(self, raws: list[str]) -> str:

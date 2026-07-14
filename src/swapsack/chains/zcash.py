@@ -254,21 +254,14 @@ class ZecAdapter:
         return AddressInfo(has_history=True, confirmed=balance, pending=0)
 
     def wallet_balance(self, mnemonic: str, account: str = ACCOUNT) -> BalanceReport:
-        from swapsack.chains.scan import scan_account
+        from swapsack.chains.scan import wallet_balance_from_scan
 
         self._tip = self.latest_height()  # one tip for the whole scan
-        records = scan_account(
+        return wallet_balance_from_scan(
             derive_address=lambda p: self.derive_address(mnemonic, p),
             probe=self.address_info,
             account=account,
-        )
-        return BalanceReport(
             symbol="ZEC",
-            confirmed=sum(info.confirmed for _, _, info in records),
-            decimals=8,
-            pending=0,
-            note=f"({len(records)} used addresses)",
-            addresses=tuple(address for _, address, _ in records),
         )
 
     # --- Phase 2: send / sweep (bespoke v4/ZIP-243 signer, ZIP-317 fees) -------

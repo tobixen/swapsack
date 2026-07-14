@@ -35,11 +35,6 @@ P2WPKH = ScriptParams(input_vb=68, output_vb=31, dust=294)
 # input 32 txid + 4 vout + 1 len + ~107 scriptSig + 4 sequence, output 8 + 1 + 25.
 P2PKH = ScriptParams(input_vb=148, output_vb=34, dust=546)
 
-# Backwards-compatible aliases (pre-ScriptParams API).
-P2WPKH_INPUT_VB = P2WPKH.input_vb
-P2WPKH_OUTPUT_VB = P2WPKH.output_vb
-DUST_P2WPKH = P2WPKH.dust
-
 
 class InsufficientFunds(RuntimeError):
     """Raised when the available UTXOs cannot cover the amount plus fee."""

@@ -1,5 +1,6 @@
 """Tests for CLI argument parsing (handlers do I/O and are tested manually)."""
 
+import time
 from decimal import Decimal
 
 import pytest
@@ -320,9 +321,22 @@ def test_swap_tolerance_bps_defaults_to_backend_default():
     # floor on a stable pair would authorize a 3% haircut.
     args = build_parser().parse_args(["swap", "--amount", "1"])
     assert args.tolerance_bps is None
-    from swapsack.cli import _tolerance
+    from swapsack.cli import DEFAULT_COW_TOLERANCE_BPS, _tolerance
 
     assert _tolerance(args) == 300
+    assert (
+        _tolerance(args, default=DEFAULT_COW_TOLERANCE_BPS) == DEFAULT_COW_TOLERANCE_BPS
+    )
+
+
+def test_swap_tolerance_bps_flag_overrides_any_default():
+    # An explicit flag wins regardless of which backend's default is passed.
+    from swapsack.cli import DEFAULT_COW_TOLERANCE_BPS, _tolerance
+
+    args = build_parser().parse_args(
+        ["swap", "--amount", "1", "--tolerance-bps", "1500"]
+    )
+    assert _tolerance(args, default=DEFAULT_COW_TOLERANCE_BPS) == 1500
 
 
 def test_swap_tolerance_bps_flag_parses():
@@ -1420,6 +1434,47 @@ def test_add_liquidity_dash_requires_maya_backend(monkeypatch, capsys):
     assert called
 
 
+def test_select_backend_refuses_explicit_backend_that_cannot_serve_the_pair(
+    monkeypatch,
+):
+    # A single explicit --backend is returned unchecked today; cow's serves()
+    # rules out non-ETH pairs, so this must raise SwapAborted rather than
+    # handing back a backend the swap dispatch can't drive (AttributeError).
+    from types import SimpleNamespace
+
+    import swapsack.cli as cli
+    from swapsack.swap import SwapAborted
+
+    class RecordingClient:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class UnservingBackend:
+        name = "cow"
+        client = RecordingClient()
+        executor = "signed-order"
+
+        def serves(self, from_asset, to_asset):
+            return False
+
+    backend = UnservingBackend()
+    monkeypatch.setattr(cli, "_backends_for", lambda args: [backend])
+
+    with pytest.raises(SwapAborted):
+        cli._select_backend(
+            SimpleNamespace(backend="cow"),
+            from_asset="BTC.BTC",
+            to_asset="ETH.ETH",
+            amount=1,
+            destination="bc1qdest",
+            tolerance_bps=300,
+        )
+    assert backend.client.closed is True
+
+
 # --- backend sessions are closed after selection (finding #12) ---
 
 
@@ -1523,6 +1578,100 @@ def test_backend_cow_parses_for_swap_and_quote():
         ]
     )
     assert args.backend == "cow"
+
+
+def test_swap_via_cow_gate_catches_inflated_quote_amount():
+    """The gate must bind sell_amount/approval to the amount WE requested, not
+    to the API's own sellAmount+feeAmount total — otherwise a quote that
+    inflates its own total sails through the gate meant to catch exactly
+    that."""
+    import swapsack.cli as cli
+    from swapsack.cow import CowBackend
+
+    USDT_ASSET = "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7"
+    USDC_ASSET = "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48"
+    RECEIVER = "0x40A50cf069e992AA4536211B23F286eF88752187"
+
+    # Requested: 100 USDT (1e8 units) -> 100_000_000 native (6 decimals). The
+    # quote inflates sellAmount+feeAmount to 150_000_000 -- 50% more than asked.
+    valid_to = int(time.time()) + 3600  # within COW_MAX_ORDER_VALIDITY (7200s)
+    malicious_payload = {
+        "quote": {
+            "sellToken": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "buyToken": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "receiver": RECEIVER.lower(),
+            "sellAmount": "100000000",
+            "buyAmount": "99000000",
+            "validTo": valid_to,
+            "appData": "0x" + "00" * 32,
+            "feeAmount": "50000000",
+            "kind": "sell",
+            "partiallyFillable": False,
+            "sellTokenBalance": "erc20",
+            "buyTokenBalance": "erc20",
+        },
+        "from": RECEIVER.lower(),
+        "expiration": "2033-05-18T00:00:00.000000000Z",
+        "id": 1,
+        "verified": True,
+    }
+
+    class FakeCowClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def quote(self, *a, **kw):
+            return malicious_payload
+
+    class FakeAdapter:
+        def __init__(self):
+            self.approval_calls = []
+
+        def fetch_token_allowance(self, token, owner, spender):
+            return 0
+
+        def build_and_verify_approvals(self, **kw):
+            from types import SimpleNamespace
+
+            self.approval_calls.append(kw)
+            return SimpleNamespace(problems=[], built=SimpleNamespace(txs=[]))
+
+    backend = CowBackend(FakeCowClient())
+    adapter = FakeAdapter()
+    args = build_parser().parse_args(
+        [
+            "swap",
+            "--from",
+            "USDT-ETH",
+            "--to",
+            "USDC-ETH",
+            "--amount",
+            "100",
+            "--backend",
+            "cow",
+        ]
+    )
+
+    rc = cli._swap_via_cow(
+        args,
+        adapter,
+        backend,
+        from_asset=USDT_ASSET,
+        to_asset=USDC_ASSET,
+        amount=10_000_000_000,  # 100 USDT in 1e8 units
+        dest=RECEIVER,
+        mnemonic="mnemonic",
+        from_address=RECEIVER,
+        nonce=0,
+        max_fee_per_gas=20_000_000_000,
+        max_priority_fee_per_gas=1_000_000_000,
+    )
+
+    assert rc == 1
+    assert adapter.approval_calls[0]["amount"] == 100_000_000  # requested, not inflated
 
 
 def test_status_accepts_cow_order_uid():

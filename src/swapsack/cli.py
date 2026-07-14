@@ -60,13 +60,12 @@ ASSET = {
     "USDT-TRON": "TRON.USDT-TR7NHQJEKQXGTCI8Q8ZY4PL8OTSZGJLJ6T",
     "USDT-ETH": "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7",
     "USDC-ETH": "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48",
+    "DASH": "DASH.DASH",  # Maya-only pool; hold/bal/send/sweep; see docs/dash.md
+    "ZEC": "ZEC.ZEC",  # Maya-only; t-addr hold/bal/send/sweep; see docs/zcash.md
     # Destination-only (no source/hold yet): pay an external --dest address.
     "LTC": "LTC.LTC",
     "DOGE": "DOGE.DOGE",
     "BCH": "BCH.BCH",
-    "DASH": "DASH.DASH",  # Maya-only pool; hold/bal/send/sweep; see docs/dash.md
-    # Hold + balance + destination, receive-only (no spend path yet):
-    "ZEC": "ZEC.ZEC",  # Maya-only; transparent (t-addr) only; see docs/zcash.md
     "CACAO": "MAYA.CACAO",  # Maya native asset; 1e10 decimals; see docs/cacao.md
     "RUNE": "THOR.RUNE",  # THORChain native asset (Cosmos MsgSend/MsgDeposit)
 }
@@ -587,8 +586,10 @@ def _streaming_kwargs(args: argparse.Namespace) -> dict[str, int | None]:
     }
 
 
-def _tolerance(args: argparse.Namespace) -> int:
-    """The thornode-path price tolerance: the flag, or DEFAULT_TOLERANCE_BPS.
+def _tolerance(
+    args: argparse.Namespace, *, default: int = DEFAULT_TOLERANCE_BPS
+) -> int:
+    """The price tolerance: the flag, or ``default``.
 
     The flag defaults to None ("use the backend's default") because the right
     default differs per backend: 300 bps quote tolerance on THORChain/Maya, but
@@ -596,13 +597,7 @@ def _tolerance(args: argparse.Namespace) -> int:
     signed order's on-chain buyAmount floor (see _swap_via_cow).
     """
     tolerance = getattr(args, "tolerance_bps", None)
-    return DEFAULT_TOLERANCE_BPS if tolerance is None else tolerance
-
-
-def _cow_tolerance(args: argparse.Namespace) -> int:
-    """The CoW order tolerance: the flag, or DEFAULT_COW_TOLERANCE_BPS."""
-    tolerance = getattr(args, "tolerance_bps", None)
-    return DEFAULT_COW_TOLERANCE_BPS if tolerance is None else tolerance
+    return default if tolerance is None else tolerance
 
 
 def _is_cow_order_uid(value: str) -> bool:
@@ -646,7 +641,11 @@ def _select_backend(  # noqa: ANN202 (Backend, lazy import)
 
     backends = _backends_for(args)
     if len(backends) == 1:
-        return backends[0]
+        backend = backends[0]
+        if not backend.serves(from_asset, to_asset):
+            backend.client.close()
+            raise SwapAborted(f"{backend.name} cannot serve {from_asset} -> {to_asset}")
+        return backend
     results = gather_quotes(
         backends,
         from_asset,
@@ -1361,12 +1360,14 @@ def _swap_via_cow(
             print(f"ABORTED: cow quote failed: {exc}", file=sys.stderr)
             return 1
 
-        order = build_order(quote, tolerance_bps=_cow_tolerance(args))
+        order = build_order(
+            quote, tolerance_bps=_tolerance(args, default=DEFAULT_COW_TOLERANCE_BPS)
+        )
         plan = CowOrderPlan(
             sell_token=sell_contract,
             buy_token=buy_contract,
             receiver=dest,
-            sell_amount=quote.sell_amount_total,
+            sell_amount=sell_amount,
             min_buy_amount=int(order["buyAmount"]),
             expiry=quote.valid_to,
         )
@@ -1380,7 +1381,7 @@ def _swap_via_cow(
             mnemonic=mnemonic,
             token=sell_contract,
             spender=VAULT_RELAYER,
-            amount=quote.sell_amount_total,
+            amount=sell_amount,
             current_allowance=current_allowance,
             nonce=nonce,
             max_fee_per_gas=max_fee_per_gas,

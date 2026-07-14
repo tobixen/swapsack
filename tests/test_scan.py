@@ -2,7 +2,8 @@
 
 import dataclasses
 
-from swapsack.chains.scan import scan_account
+from swapsack.chains.base import AddressInfo
+from swapsack.chains.scan import scan_account, wallet_balance_from_scan
 
 ACCOUNT = "m/84'/0'/0'"
 
@@ -77,3 +78,43 @@ def test_scan_covers_receive_and_change_branches():
         branches=(0, 1),
     )
     assert {info.confirmed for _, _, info in found} == {1000, 2000}
+
+
+def make_address_info_probe(activity: dict[str, tuple[int, int]]):
+    def probe(address: str) -> AddressInfo:
+        if address in activity:
+            confirmed, pending = activity[address]
+            return AddressInfo(has_history=True, confirmed=confirmed, pending=pending)
+        return AddressInfo(has_history=False, confirmed=0, pending=0)
+
+    return probe
+
+
+def test_wallet_balance_from_scan_sums_confirmed_and_pending():
+    a0 = derive(f"{ACCOUNT}/0/0")
+    a1 = derive(f"{ACCOUNT}/0/1")
+    report = wallet_balance_from_scan(
+        derive_address=derive,
+        probe=make_address_info_probe({a0: (150000, -50000), a1: (7000, 0)}),
+        account=ACCOUNT,
+        symbol="DASH",
+    )
+    assert report.symbol == "DASH"
+    assert report.decimals == 8
+    assert report.confirmed == 157000
+    assert report.pending == -50000
+    assert report.note == "(2 used addresses)"
+    assert set(report.addresses) == {a0, a1}
+
+
+def test_wallet_balance_from_scan_decimals_override():
+    report = wallet_balance_from_scan(
+        derive_address=derive,
+        probe=make_address_info_probe({}),
+        account=ACCOUNT,
+        symbol="BTC",
+        decimals=18,
+    )
+    assert report.decimals == 18
+    assert report.confirmed == 0
+    assert report.addresses == ()

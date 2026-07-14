@@ -61,6 +61,16 @@ INSIGHT_FUNDED_PENDING = {
     "txApperances": 2,
     "txAppearances": 2,
 }
+# A fork using only the corrected spelling for the unconfirmed count (no
+# confirmed appearances yet -- an address with a single incoming unconfirmed
+# tx).
+INSIGHT_CORRECTED_SPELLING_UNCONFIRMED = {
+    "addrStr": "XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5",
+    "balanceSat": 0,
+    "totalReceivedSat": 0,
+    "unconfirmedBalanceSat": 50000,
+    "unconfirmedTxAppearances": 1,
+}
 
 
 def test_derive_address_matches_golden_vectors():
@@ -97,6 +107,14 @@ def test_parse_insight_confirmed_and_pending_are_separate():
     info = parse_insight_addr(INSIGHT_FUNDED_PENDING)
     assert info.confirmed == 150000
     assert info.pending == -50000  # net mempool delta, may be negative
+    assert info.has_history
+
+
+def test_parse_insight_unconfirmed_corrected_spelling_counts_as_history():
+    # A fork spelling only "unconfirmedTxAppearances" (not the sic
+    # "unconfirmedTxApperances") must still register history, or the
+    # gap-limit scan stops early and under-reports the wallet.
+    info = parse_insight_addr(INSIGHT_CORRECTED_SPELLING_UNCONFIRMED)
     assert info.has_history
 
 
@@ -333,3 +351,56 @@ def test_live_insight_sees_golden_address_history():
         info = a.address_info(GOLDEN["m/44'/5'/0'/0/0"])
     assert info.has_history
     assert info.confirmed == 0
+
+
+def test_parse_insight_takes_the_larger_of_the_two_spellings():
+    """A stale sic key must not mask the corrected one (or vice versa).
+
+    Preferring one spelling breaks on a fork that emits *both* and only keeps
+    the corrected one current: the sic key reads 0, history goes unnoticed, and
+    the gap-limit scan stops early — under-reporting the wallet's balance and
+    hiding spendable UTXOs.
+    """
+    both_sic_stale = {
+        "balanceSat": 0,
+        "totalReceivedSat": 0,
+        "unconfirmedBalanceSat": 0,
+        "txApperances": 0,  # sic, stale
+        "txAppearances": 3,  # corrected, current
+        "unconfirmedTxApperances": 0,
+        "unconfirmedTxAppearances": 0,
+    }
+    assert parse_insight_addr(both_sic_stale).has_history
+
+    both_sic_stale_unconfirmed = {
+        **both_sic_stale,
+        "txAppearances": 0,
+        "unconfirmedTxApperances": 0,
+        "unconfirmedTxAppearances": 2,
+    }
+    assert parse_insight_addr(both_sic_stale_unconfirmed).has_history
+
+    # ...and the reverse: a fork where only the sic key is current.
+    only_sic_current = {**both_sic_stale, "txApperances": 3, "txAppearances": 0}
+    assert parse_insight_addr(only_sic_current).has_history
+
+
+def test_parse_insight_unconfirmed_balance_alone_counts_as_history():
+    """Belt and braces: money in the mempool is history whatever the counters say.
+
+    An address whose only activity is an unconfirmed credit must keep the scan
+    going even if the appearance counters have not caught up. Negative counts
+    too — an unconfirmed *spend* is equally evidence the address is in use.
+    """
+    for pending in (5_000, -5_000):
+        info = parse_insight_addr(
+            {
+                "balanceSat": 0,
+                "totalReceivedSat": 0,
+                "unconfirmedBalanceSat": pending,
+                "txApperances": 0,
+                "unconfirmedTxApperances": 0,
+            }
+        )
+        assert info.has_history
+        assert info.pending == pending

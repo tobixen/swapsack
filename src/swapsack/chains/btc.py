@@ -84,22 +84,13 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
         return self.address_info(address).confirmed
 
     def wallet_balance(self, mnemonic: str, account: str = ACCOUNT) -> BalanceReport:
-        from swapsack.chains.scan import scan_account
+        from swapsack.chains.scan import wallet_balance_from_scan
 
-        records = scan_account(
+        return wallet_balance_from_scan(
             derive_address=lambda p: self.derive_address(mnemonic, p),
             probe=self.address_info,
             account=account,
-        )
-        confirmed = sum(info.confirmed for _, _, info in records)
-        pending = sum(info.pending for _, _, info in records)
-        return BalanceReport(
             symbol="BTC",
-            confirmed=confirmed,
-            decimals=8,
-            pending=pending,
-            note=f"({len(records)} used addresses)",
-            addresses=tuple(address for _, address, _ in records),
         )
 
     def fetch_fee_rate(self, target_blocks: int = 6) -> float:

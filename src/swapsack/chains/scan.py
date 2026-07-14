@@ -13,6 +13,8 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol
 
+from swapsack.chains.base import AddressInfo, BalanceReport
+
 
 class _HasHistory(Protocol):
     has_history: bool
@@ -55,3 +57,27 @@ def scan_account[T: _HasHistory](
                     gap += 1
             index += window
     return found
+
+
+def wallet_balance_from_scan(
+    *,
+    derive_address: Callable[[str], str],
+    probe: Callable[[str], AddressInfo],
+    account: str,
+    symbol: str,
+    decimals: int = 8,
+) -> BalanceReport:
+    """Gap-limit scan ``account``, then sum into a chain-agnostic ``BalanceReport``.
+
+    Shared by every UTXO-style adapter's ``wallet_balance``: same scan, same
+    confirmed/pending sum, same one-line note.
+    """
+    records = scan_account(derive_address=derive_address, probe=probe, account=account)
+    return BalanceReport(
+        symbol=symbol,
+        confirmed=sum(info.confirmed for _, _, info in records),
+        decimals=decimals,
+        pending=sum(info.pending for _, _, info in records),
+        note=f"({len(records)} used addresses)",
+        addresses=tuple(address for _, address, _ in records),
+    )

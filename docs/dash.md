@@ -28,7 +28,7 @@ deliberately rather than in the middle of a money path.
 The BTC adapter (`chains/btc.py`) and the coin-selection/fee maths
 (`chains/coins.py`) are hardcoded to **native segwit (P2WPKH)**: bech32
 addresses, `witness_type="segwit"`, and P2WPKH input/output virtual sizes
-(`P2WPKH_INPUT_VB = 68`, `P2WPKH_OUTPUT_VB = 31`, `DUST_P2WPKH = 294`). Dash
+(`P2WPKH.input_vb = 68`, `P2WPKH.output_vb = 31`, `P2WPKH.dust = 294`). Dash
 has **no segwit** — it is legacy pay-to-pubkey-hash only. That means:
 
 1. **No Dash network in bitcoinlib.** The installed bitcoinlib ships

@@ -250,6 +250,34 @@ def test_cow_assets_cover_the_eth_token_pairs():
     assert COW_ASSETS["ETH.ETH"][1] == 18
 
 
+def test_cow_assets_erc20_entries_derived_from_tracked_tokens():
+    # COW_ASSETS' ERC-20 entries must be derived from eth.TRACKED_TOKENS (the
+    # single source of truth for contract/decimals), not hand-copied -- so
+    # drift can't silently serve/quote against a stale contract.
+    from swapsack.chains.eth import TRACKED_TOKENS
+
+    expected = {
+        f"ETH.{symbol}-0X{contract[2:].upper()}": (contract, decimals)
+        for symbol, contract, decimals in TRACKED_TOKENS
+    }
+    erc20_entries = {k: v for k, v in COW_ASSETS.items() if k != "ETH.ETH"}
+    assert erc20_entries == expected
+
+
+def test_erc20_cow_assets_helper_derives_a_fresh_token():
+    # Direct unit check of the derivation helper (independent of whatever
+    # TRACKED_TOKENS currently contains).
+    from swapsack.cow import _erc20_cow_assets
+
+    tokens = (("DAI", "0x6b175474e89094c44da98b954eedeac495271d0f", 18),)
+    assert _erc20_cow_assets(tokens) == {
+        "ETH.DAI-0X6B175474E89094C44DA98B954EEDEAC495271D0F": (
+            "0x6b175474e89094c44da98b954eedeac495271d0f",
+            18,
+        )
+    }
+
+
 def test_serves_same_chain_token_pairs_only():
     backend = CowBackend(FakeCowClient())
     assert backend.serves(USDT_ASSET, USDC_ASSET)
@@ -294,6 +322,14 @@ def test_try_quote_refuses_streaming_unserved_and_missing_destination():
 
 def test_try_quote_swallows_cow_errors():
     backend = CowBackend(FakeCowClient(exc=CowError("SellAmountDoesNotCoverFee")))
+    assert backend.try_quote(USDT_ASSET, USDC_ASSET, 10_000_000_000, RECEIVER) is None
+
+
+def test_try_quote_swallows_malformed_200_payload():
+    # A degraded API / proxy error page served as a 200 JSON body has none of
+    # the expected keys; parse_cow_quote raising KeyError out of try_quote
+    # would crash quote/swap --backend auto instead of just skipping cow.
+    backend = CowBackend(FakeCowClient(payload={"ok": True}))
     assert backend.try_quote(USDT_ASSET, USDC_ASSET, 10_000_000_000, RECEIVER) is None
 
 
