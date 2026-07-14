@@ -30,15 +30,8 @@ from swapsack.chains.coins import (
     encode_op_return,
     select_coins,
 )
-from swapsack.swap import Prepared, SwapRequest
-from swapsack.thorchain import Quote
-from swapsack.verify import (
-    SendPlan,
-    SwapPlan,
-    TxOutput,
-    verify_btc_send,
-    verify_btc_swap,
-)
+from swapsack.chains.gated import GatedTxBuilder
+from swapsack.verify import TxOutput
 
 
 @dataclasses.dataclass
@@ -66,8 +59,12 @@ def extract_outputs(tx: Transaction) -> list[TxOutput]:
     return outputs
 
 
-class UtxoTxBuilder:
+class UtxoTxBuilder(GatedTxBuilder):
     """Mixin: build + gate + sign UTXO transactions via bitcoinlib.
+
+    The gate wrappers (``build_and_verify``/``_deposit``/``_send``) are shared
+    with ZEC via :class:`~swapsack.chains.gated.GatedTxBuilder`; this class
+    supplies the bitcoinlib ``build_unsigned_swap`` hook and ``sign``.
 
     Expects the adapter to provide ``self.network`` (bitcoinlib network name),
     ``self.bip39_passphrase`` and ``derive_address``; per-chain class attrs
@@ -174,119 +171,3 @@ class UtxoTxBuilder:
                 f"refusing to broadcast: {self.chain} tx failed signature verification"
             )
         return [built.tx.raw_hex()]
-
-    def build_and_verify(
-        self,
-        *,
-        quote: Quote,
-        request: SwapRequest,
-        now: int,
-        mnemonic: str,
-        scanned_utxos: list[Utxo],
-        fee_rate: float,
-        change_address: str,
-        max_fee: int,
-        sweep: bool = False,
-    ) -> Prepared:
-        built = self.build_unsigned_swap(
-            mnemonic=mnemonic,
-            utxos=scanned_utxos,
-            vault_address=quote.inbound_address,
-            amount=request.amount,
-            memo=quote.memo or "",
-            fee_rate=fee_rate,
-            change_address=change_address,
-            sweep=sweep,
-        )
-        owned = {change_address} | {u.address for u in scanned_utxos}
-        plan = SwapPlan(
-            inbound_address=quote.inbound_address,
-            amount=request.amount,
-            memo=quote.memo or "",
-            expiry=quote.expiry,
-            destination=request.destination,
-        )
-        problems = verify_btc_swap(
-            built.outputs,
-            fee=built.fee,
-            plan=plan,
-            owned_addresses=owned,
-            now=now,
-            max_fee=max_fee,
-        )
-        return Prepared(quote=quote, built=built, plan=plan, problems=problems)
-
-    def build_and_verify_deposit(
-        self,
-        *,
-        vault: str,
-        memo: str,
-        amount: int,
-        now: int,
-        mnemonic: str,
-        scanned_utxos: list[Utxo],
-        fee_rate: float,
-        change_address: str,
-        max_fee: int,
-        sweep: bool = False,
-    ) -> Prepared:
-        built = self.build_unsigned_swap(
-            mnemonic=mnemonic,
-            utxos=scanned_utxos,
-            vault_address=vault,
-            amount=amount,
-            memo=memo,
-            fee_rate=fee_rate,
-            change_address=change_address,
-            sweep=sweep,
-        )
-        owned = {change_address} | {u.address for u in scanned_utxos}
-        plan = SwapPlan(
-            inbound_address=vault, amount=amount, memo=memo, expiry=now + 3600
-        )
-        problems = verify_btc_swap(
-            built.outputs,
-            fee=built.fee,
-            plan=plan,
-            owned_addresses=owned,
-            now=now,
-            max_fee=max_fee,
-        )
-        return Prepared(quote=None, built=built, plan=plan, problems=problems)
-
-    def build_and_verify_send(
-        self,
-        *,
-        recipient: str,
-        amount: int,
-        now: int,  # noqa: ARG002 (kept for a uniform build_and_verify_* signature)
-        mnemonic: str,
-        scanned_utxos: list[Utxo],
-        fee_rate: float,
-        change_address: str,
-        max_fee: int,
-        sweep: bool = False,
-    ) -> Prepared:
-        """Build + verify a plain send (no swap, no memo) to ``recipient``."""
-        built = self.build_unsigned_swap(
-            mnemonic=mnemonic,
-            utxos=scanned_utxos,
-            vault_address=recipient,
-            amount=amount,
-            memo=None,
-            fee_rate=fee_rate,
-            change_address=change_address,
-            sweep=sweep,
-        )
-        owned = {change_address} | {u.address for u in scanned_utxos}
-        plan = SendPlan(recipient=recipient, amount=amount)
-        # The gate is chain-agnostic (pure output/value/dust checks) despite
-        # the historical btc name.
-        problems = verify_btc_send(
-            built.outputs,
-            fee=built.fee,
-            plan=plan,
-            owned_addresses=owned,
-            max_fee=max_fee,
-        )
-        return Prepared(quote=None, built=built, plan=plan, problems=problems)

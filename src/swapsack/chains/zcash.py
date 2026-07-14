@@ -44,6 +44,7 @@ from swapsack.chains.cosmos_tx import (
     _string,
     _uint64,
 )
+from swapsack.chains.gated import GatedTxBuilder
 from swapsack.chains.p2pkh import derive_p2pkh_address, derive_p2pkh_key
 from swapsack.chains.zcash_tx import (
     TxIn,
@@ -58,15 +59,7 @@ from swapsack.chains.zcash_tx import (
 from swapsack.chains.zcash_tx import (
     txid as compute_txid,
 )
-from swapsack.swap import Prepared, SwapRequest
-from swapsack.thorchain import Quote
-from swapsack.verify import (
-    SendPlan,
-    SwapPlan,
-    TxOutput,
-    verify_btc_send,
-    verify_btc_swap,
-)
+from swapsack.verify import TxOutput
 
 DEFAULT_ZEC_LWD = "zec.rocks:443"
 DEFAULT_DERIVATION = "m/44'/133'/0'/0/0"
@@ -163,8 +156,13 @@ class ZecBuilt:
     branch_id: int
 
 
-class ZecAdapter:
-    """ChainAdapter for Zcash (transparent P2PKH): hold, balance, send, sweep."""
+class ZecAdapter(GatedTxBuilder):
+    """ChainAdapter for Zcash (transparent P2PKH): hold, balance, send, sweep.
+
+    The build-then-gate wrappers come from :class:`GatedTxBuilder` (shared with
+    the bitcoinlib UTXO chains); this adapter supplies the bespoke v4/ZIP-243
+    ``build_unsigned_swap`` hook and ``sign``.
+    """
 
     chain = "ZEC"
     asset = "ZEC.ZEC"
@@ -287,7 +285,7 @@ class ZecAdapter:
     ) -> tuple[int, int]:
         return sweep_amount_zip317(total, n_inputs, memo_len)
 
-    def _build(
+    def build_unsigned_swap(
         self,
         *,
         vault_address: str,
@@ -296,7 +294,8 @@ class ZecAdapter:
         mnemonic: str,
         utxos: list[Utxo],
         change_address: str,
-        sweep: bool,
+        sweep: bool = False,
+        fee_rate: float = 0.0,  # noqa: ARG002 (ZIP-317 ignores it; hook parity)
     ) -> ZecBuilt:
         """Build the unsigned tx paying ``amount`` to ``vault_address``.
 
@@ -350,119 +349,6 @@ class ZecAdapter:
             change_address=change_address,
             branch_id=self.branch_id(),
         )
-
-    def build_and_verify_send(
-        self,
-        *,
-        recipient: str,
-        amount: int,
-        now: int,  # noqa: ARG002 (uniform build_and_verify_* signature)
-        mnemonic: str,
-        scanned_utxos: list[Utxo],
-        fee_rate: float,  # noqa: ARG002 (ZIP-317 ignores it)
-        change_address: str,
-        max_fee: int,
-        sweep: bool = False,
-    ) -> Prepared:
-        """Build + gate a plain transparent send (no memo) to ``recipient``."""
-        built = self._build(
-            vault_address=recipient,
-            amount=amount,
-            memo=None,
-            mnemonic=mnemonic,
-            utxos=scanned_utxos,
-            change_address=change_address,
-            sweep=sweep,
-        )
-        owned = {change_address} | {u.address for u in scanned_utxos}
-        plan = SendPlan(recipient=recipient, amount=amount)
-        problems = verify_btc_send(
-            built.outputs,
-            fee=built.fee,
-            plan=plan,
-            owned_addresses=owned,
-            max_fee=max_fee,
-        )
-        return Prepared(quote=None, built=built, plan=plan, problems=problems)
-
-    def build_and_verify(
-        self,
-        *,
-        quote: Quote,
-        request: SwapRequest,
-        now: int,
-        mnemonic: str,
-        scanned_utxos: list[Utxo],
-        fee_rate: float,  # noqa: ARG002 (ZIP-317 ignores it)
-        change_address: str,
-        max_fee: int,
-        sweep: bool = False,
-    ) -> Prepared:
-        """Build + gate a Maya swap deposit (vault + ``=:``-memo OP_RETURN)."""
-        built = self._build(
-            vault_address=quote.inbound_address,
-            amount=request.amount,
-            memo=quote.memo or "",
-            mnemonic=mnemonic,
-            utxos=scanned_utxos,
-            change_address=change_address,
-            sweep=sweep,
-        )
-        owned = {change_address} | {u.address for u in scanned_utxos}
-        plan = SwapPlan(
-            inbound_address=quote.inbound_address,
-            amount=request.amount,
-            memo=quote.memo or "",
-            expiry=quote.expiry,
-            destination=request.destination,
-        )
-        problems = verify_btc_swap(
-            built.outputs,
-            fee=built.fee,
-            plan=plan,
-            owned_addresses=owned,
-            now=now,
-            max_fee=max_fee,
-        )
-        return Prepared(quote=quote, built=built, plan=plan, problems=problems)
-
-    def build_and_verify_deposit(
-        self,
-        *,
-        vault: str,
-        memo: str,
-        amount: int,
-        now: int,
-        mnemonic: str,
-        scanned_utxos: list[Utxo],
-        fee_rate: float,  # noqa: ARG002 (ZIP-317 ignores it)
-        change_address: str,
-        max_fee: int,
-        sweep: bool = False,
-    ) -> Prepared:
-        """Build + gate an LP deposit (vault + ``+:``/``-:``-memo OP_RETURN)."""
-        built = self._build(
-            vault_address=vault,
-            amount=amount,
-            memo=memo,
-            mnemonic=mnemonic,
-            utxos=scanned_utxos,
-            change_address=change_address,
-            sweep=sweep,
-        )
-        owned = {change_address} | {u.address for u in scanned_utxos}
-        plan = SwapPlan(
-            inbound_address=vault, amount=amount, memo=memo, expiry=now + 3600
-        )
-        problems = verify_btc_swap(
-            built.outputs,
-            fee=built.fee,
-            plan=plan,
-            owned_addresses=owned,
-            now=now,
-            max_fee=max_fee,
-        )
-        return Prepared(quote=None, built=built, plan=plan, problems=problems)
 
     def sign(self, built: ZecBuilt) -> list[str]:
         signed = sign_transparent(

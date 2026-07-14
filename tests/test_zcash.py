@@ -278,6 +278,27 @@ def test_build_and_verify_sweep_spends_everything(monkeypatch):
     assert prepared.built.outputs[0].value + prepared.built.fee == 150_000
 
 
+def test_gate_wrappers_are_shared_not_duplicated():
+    # Finding 8: the build-then-gate wrappers must be inherited from the single
+    # GatedTxBuilder, not re-copied per chain (a missed copy silently weakens a
+    # chain's money-safety gate). Lock in the single source of truth.
+    from swapsack.chains.gated import GatedTxBuilder
+    from swapsack.chains.utxo import UtxoTxBuilder
+
+    assert issubclass(ZecAdapter, GatedTxBuilder)
+    assert issubclass(UtxoTxBuilder, GatedTxBuilder)
+    for name in (
+        "build_and_verify",
+        "build_and_verify_deposit",
+        "build_and_verify_send",
+    ):
+        assert getattr(ZecAdapter, name) is getattr(GatedTxBuilder, name)
+        assert getattr(UtxoTxBuilder, name) is getattr(GatedTxBuilder, name)
+    # ...while each chain still supplies its own build hook.
+    assert ZecAdapter.build_unsigned_swap is not GatedTxBuilder.build_unsigned_swap
+    assert UtxoTxBuilder.build_unsigned_swap is not GatedTxBuilder.build_unsigned_swap
+
+
 def test_lp_backends_is_maya_only():
     # ZEC.ZEC exists only on Maya; THORChain answers unknown-pool LP probes
     # with a 500, so `balance` must not probe it (same as DASH).
