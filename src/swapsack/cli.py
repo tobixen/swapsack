@@ -1429,9 +1429,30 @@ def _swap_via_cow(
         if approvals.built.txs:
             raws = adapter.sign(approvals.built)
             try:
-                adapter.broadcast(raws)
+                approval_txid = adapter.broadcast(raws)
             except BroadcastError as exc:
                 print(f"BROADCAST FAILED (approval): {exc}", file=sys.stderr)
+                return 1
+            # The orderbook validates the allowance at placement, so it must be
+            # mined before we submit — otherwise the order is rejected, gas is
+            # spent and an exact-amount allowance dangles. Wait for the receipt.
+            print("approve: broadcast; waiting for it to mine before submitting…")
+            receipt = adapter.wait_for_receipt(approval_txid)
+            if receipt is None:
+                print(
+                    "TIMED OUT waiting for the approval to mine. It is still "
+                    "pending — once it confirms, re-run the same command: the "
+                    "allowance will already be in place, so no new approval is "
+                    "sent and the order goes straight out.",
+                    file=sys.stderr,
+                )
+                return 1
+            if receipt.get("status") == "0x0":
+                print(
+                    "ABORTED: the approval transaction reverted; allowance not "
+                    "set, order not submitted.",
+                    file=sys.stderr,
+                )
                 return 1
 
         signature = adapter.sign_cow_order(order, mnemonic)

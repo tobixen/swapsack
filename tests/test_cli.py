@@ -1674,6 +1674,161 @@ def test_swap_via_cow_gate_catches_inflated_quote_amount():
     assert adapter.approval_calls[0]["amount"] == 100_000_000  # requested, not inflated
 
 
+class _FakeFees:
+    def breakdown(self, _to_key):
+        return []
+
+
+class _FakeCowQuote:
+    sell_amount_total = 100_000_000
+    valid_to = 9_999_999_999
+    expected_amount_out = 100_000_000
+    quote_id = 7
+    fees = _FakeFees()
+    streaming_swap_blocks = 0
+
+
+class _FakeApprovalsBuilt:
+    txs = [{"approve": 1}]
+
+
+class _FakeApprovals:
+    built = _FakeApprovalsBuilt()
+    problems = []
+
+
+class _FakeCowClient:
+    def __init__(self):
+        self.submitted = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def quote(self, *a, **k):
+        return {"raw": True}
+
+    def submit_order(self, order, *, signature, from_address, quote_id):
+        self.submitted = order
+        return "0xUID"
+
+
+class _FakeCowBackend:
+    name = "cow"
+
+    def __init__(self, client):
+        self.client = client
+
+    def serves(self, _from, _to):
+        return True
+
+
+class _FakeEthAdapter:
+    def __init__(self, receipt):
+        self._receipt = receipt
+        self.calls = []
+
+    def fetch_token_allowance(self, *a, **k):
+        return 0  # short -> an approval tx is built
+
+    def build_and_verify_approvals(self, **k):
+        return _FakeApprovals()
+
+    def sign(self, _built):
+        self.calls.append("sign")
+        return ["0xraw"]
+
+    def broadcast(self, _raws):
+        self.calls.append("broadcast")
+        return "0xapprovalhash"
+
+    def wait_for_receipt(self, txid, **k):
+        self.calls.append(("wait", txid))
+        return self._receipt
+
+    def sign_cow_order(self, order, mnemonic):
+        self.calls.append("sign_order")
+        return "0xsig"
+
+
+def _patch_cow_helpers(monkeypatch):
+    import swapsack.cow as cow
+    import swapsack.verify as verify
+
+    monkeypatch.setattr(cow, "parse_cow_quote", lambda *a, **k: _FakeCowQuote())
+    monkeypatch.setattr(
+        cow,
+        "build_order",
+        lambda *a, **k: {"buyAmount": "100", "validTo": 9_999_999_999},
+    )
+    monkeypatch.setattr(verify, "verify_cow_order", lambda **k: [])
+
+
+def _run_cow_confirm(monkeypatch, receipt):
+    import argparse
+
+    from swapsack.cli import _swap_via_cow
+
+    _patch_cow_helpers(monkeypatch)
+    client = _FakeCowClient()
+    adapter = _FakeEthAdapter(receipt)
+    args = argparse.Namespace(
+        from_="USDT-ETH", to_="USDC-ETH", confirm=True, yes=True, price_check=False
+    )
+    usdt = "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7"
+    usdc = "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48"
+    rc = _swap_via_cow(
+        args,
+        adapter,
+        _FakeCowBackend(client),
+        from_asset=usdt,
+        to_asset=usdc,
+        amount=10_000_000_000,  # 100 USDT in THORChain 1e8 units
+        dest="0x" + "ab" * 20,
+        mnemonic="m",
+        from_address="0x" + "cd" * 20,
+        nonce=0,
+        max_fee_per_gas=1,
+        max_priority_fee_per_gas=1,
+    )
+    return rc, adapter, client
+
+
+def test_cow_waits_for_approval_receipt_before_submitting(monkeypatch):
+    # Finding 4: the order must not be submitted until the ERC-20 approval is
+    # mined (the orderbook validates the allowance at placement).
+    rc, adapter, client = _run_cow_confirm(monkeypatch, receipt={"status": "0x1"})
+    assert rc == 0
+    assert client.submitted is not None
+    # broadcast the approval, THEN wait, THEN sign+submit the order.
+    assert [c for c in adapter.calls if c in ("broadcast", "sign_order")] == [
+        "broadcast",
+        "sign_order",
+    ]
+    assert any(isinstance(c, tuple) and c[0] == "wait" for c in adapter.calls)
+    wait_i = next(i for i, c in enumerate(adapter.calls) if c[0] == "wait")
+    assert adapter.calls.index("broadcast") < wait_i < adapter.calls.index("sign_order")
+
+
+def test_cow_aborts_without_submitting_when_approval_never_mines(monkeypatch):
+    # wait_for_receipt returns None on timeout -> abort, do NOT submit the order
+    # against a still-zero allowance.
+    rc, adapter, client = _run_cow_confirm(monkeypatch, receipt=None)
+    assert rc == 1
+    assert client.submitted is None
+    assert "sign_order" not in adapter.calls
+
+
+def test_cow_aborts_when_approval_reverts(monkeypatch):
+    # A reverted approval (status 0x0) leaves the allowance unset -> abort.
+    rc, adapter, client = _run_cow_confirm(monkeypatch, receipt={"status": "0x0"})
+    assert rc == 1
+    assert client.submitted is None
+    assert "sign_order" not in adapter.calls
+
+
 def test_status_accepts_cow_order_uid():
     # A CoW order uid is 56 bytes (digest + owner + validTo) = 114 chars with
     # the 0x prefix; a chain txid is 32 bytes. status auto-detects.

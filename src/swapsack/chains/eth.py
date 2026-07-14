@@ -12,6 +12,7 @@ to wei via WEI_PER_THORCHAIN_UNIT.
 from __future__ import annotations
 
 import dataclasses
+import time
 from typing import Any
 
 from Crypto.Hash import keccak
@@ -22,7 +23,7 @@ from eth_account.signers.local import LocalAccount
 
 from swapsack.chains.base import BalanceReport
 from swapsack.chains.coins import InsufficientFunds
-from swapsack.net import HttpClient
+from swapsack.net import HTTP_ERRORS, HttpClient
 from swapsack.swap import BroadcastError, Prepared, SwapAborted, SwapRequest
 from swapsack.thorchain import Quote
 from swapsack.verify import (
@@ -497,6 +498,35 @@ class EthAdapter(HttpClient):
             except RuntimeError as exc:
                 raise BroadcastError(str(exc)) from exc
         return str(txid)
+
+    def wait_for_receipt(
+        self, txid: str, *, timeout: float = 120.0, poll_interval: float = 3.0
+    ) -> dict[str, Any] | None:
+        """Poll ``eth_getTransactionReceipt`` until ``txid`` mines or ``timeout``.
+
+        Returns the receipt (carrying ``status`` — ``0x1`` success, ``0x0``
+        revert) once the tx is mined, or None if it is still pending when the
+        deadline passes. Used before a CoW order submit so the ERC-20 allowance
+        is actually on-chain (the orderbook validates it at placement).
+
+        A failing poll is treated exactly like a pending one, because the
+        caller is past the point of no return: the approval is broadcast, gas
+        is spent. A transport error or a non-conformant reply escaping here
+        would replace the "re-run — the allowance is already in place" guidance
+        with a traceback, leaving the user unable to tell whether the order was
+        submitted. A node that never recovers simply runs out the deadline.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                receipt = self._rpc("eth_getTransactionReceipt", [txid])
+            except (*HTTP_ERRORS, RuntimeError):
+                receipt = None
+            if receipt is not None:
+                return receipt  # type: ignore[return-value]
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(poll_interval)
 
     def build_unsigned_swap(
         self,

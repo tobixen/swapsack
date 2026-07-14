@@ -519,6 +519,88 @@ def test_eth_broadcast_wraps_rpc_error(monkeypatch):
         adapter.broadcast(["0xdeadbeef"])
 
 
+def test_wait_for_receipt_returns_receipt_once_mined(monkeypatch):
+    # eth_getTransactionReceipt returns null until the tx is mined, then the
+    # receipt object. wait_for_receipt polls until it appears.
+    adapter = EthAdapter()
+    calls = {"n": 0}
+    receipt = {"status": "0x1", "transactionHash": "0xabc"}
+
+    def fake_rpc(method, params):
+        assert method == "eth_getTransactionReceipt"
+        assert params == ["0xabc"]
+        calls["n"] += 1
+        return None if calls["n"] < 3 else receipt
+
+    monkeypatch.setattr(adapter, "_rpc", fake_rpc)
+    monkeypatch.setattr("swapsack.chains.eth.time.sleep", lambda _s: None)
+    got = adapter.wait_for_receipt("0xabc", timeout=120.0, poll_interval=0.0)
+    assert got == receipt
+    assert calls["n"] == 3
+
+
+def test_wait_for_receipt_returns_none_on_timeout(monkeypatch):
+    # If the tx never mines within the budget, return None so the CLI can tell
+    # the user to re-run rather than submit the CoW order against a 0 allowance.
+    adapter = EthAdapter()
+    monkeypatch.setattr(adapter, "_rpc", lambda method, params: None)
+    monkeypatch.setattr("swapsack.chains.eth.time.sleep", lambda _s: None)
+    # Clock jumps past the deadline on the second read.
+    ticks = iter([1000.0, 1000.0, 2000.0])
+    monkeypatch.setattr("swapsack.chains.eth.time.monotonic", lambda: next(ticks))
+    assert adapter.wait_for_receipt("0xabc", timeout=60.0, poll_interval=0.0) is None
+
+
+def test_wait_for_receipt_rides_out_a_flaky_rpc(monkeypatch):
+    """A hiccup mid-poll must not escape: the approval is already broadcast.
+
+    By the time this runs, gas is spent and an exact-amount allowance is (or is
+    about to be) on-chain. A transport error or a non-conformant node reply
+    escaping here gives the user a traceback instead of the "re-run, the
+    allowance is already in place" guidance, with no way to tell whether the
+    order went out. Keep polling; the deadline is the only way out.
+    """
+    import niquests
+
+    adapter = EthAdapter()
+    receipt = {"status": "0x1"}
+    answers = [
+        niquests.exceptions.ConnectionError("connection reset"),
+        RuntimeError("RPC eth_getTransactionReceipt: no result"),
+        None,
+        receipt,
+    ]
+
+    def fake_rpc(method, params):
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(adapter, "_rpc", fake_rpc)
+    monkeypatch.setattr("swapsack.chains.eth.time.sleep", lambda _s: None)
+    assert (
+        adapter.wait_for_receipt("0xabc", timeout=120.0, poll_interval=0.0) == receipt
+    )
+    assert answers == []
+
+
+def test_wait_for_receipt_times_out_on_a_permanently_dead_rpc(monkeypatch):
+    """A node that never answers must time out, not raise — same guidance path."""
+    import niquests
+
+    adapter = EthAdapter()
+
+    def always_boom(method, params):
+        raise niquests.exceptions.ConnectionError("node down")
+
+    monkeypatch.setattr(adapter, "_rpc", always_boom)
+    monkeypatch.setattr("swapsack.chains.eth.time.sleep", lambda _s: None)
+    ticks = iter([1000.0, 1000.0, 2000.0])
+    monkeypatch.setattr("swapsack.chains.eth.time.monotonic", lambda: next(ticks))
+    assert adapter.wait_for_receipt("0xabc", timeout=60.0, poll_interval=0.0) is None
+
+
 def test_eth_rpc_missing_result_is_clean_error(monkeypatch):
     # A non-conformant node may answer with neither `result` nor `error`. _rpc
     # must raise a descriptive RuntimeError, not a bare KeyError on payload["result"].
