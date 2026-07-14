@@ -148,11 +148,29 @@ def _parse_expiration(stamp: str) -> int:
 def parse_cow_quote(
     payload: Mapping[str, Any], *, to_asset: str, buy_decimals: int
 ) -> CowQuote:
-    """Parse a ``/quote`` response; raises :class:`CowError` on an error body."""
+    """Parse a ``/quote`` response; raises :class:`CowError` on an error body.
+
+    Also on a *structurally* surprising body — a proxy or gateway error page
+    served as a 200, say. Only :class:`CowError` and HTTP errors are caught on
+    the execute path, so a bare ``KeyError`` from a missing field would come
+    out of ``swap --confirm`` as a traceback rather than a clean abort.
+    """
     if "errorType" in payload:
         raise CowError(
             f"{payload['errorType']}: {payload.get('description', '')}".strip(": ")
         )
+    try:
+        return _parse_cow_quote_fields(
+            payload, to_asset=to_asset, buy_decimals=buy_decimals
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CowError(f"malformed quote response: {exc!r}") from exc
+
+
+def _parse_cow_quote_fields(
+    payload: Mapping[str, Any], *, to_asset: str, buy_decimals: int
+) -> CowQuote:
+    """The field reads of :func:`parse_cow_quote`, which wraps what they raise."""
     quote = payload["quote"]
     sell_amount = int(quote["sellAmount"])
     fee_amount = int(quote["feeAmount"])
@@ -333,6 +351,49 @@ class CowClient(HttpClient):
         return self._json_or_error(resp)
 
 
+def sell_units(amount: int, sell_decimals: int) -> int:
+    """Scale a wallet-wide 1e8 ``amount`` to the sell token's native units.
+
+    The one place this conversion lives: the CLI binds the verify gate and the
+    ERC-20 approval to it (against the *requested* amount, not the quote's own
+    total), and :func:`quote_pair` sends it to the API — they must agree or the
+    gate compares against the wrong number.
+    """
+    return amount * 10**sell_decimals // THORCHAIN_UNIT
+
+
+def quote_pair(
+    client: CowClient,
+    from_asset: str,
+    to_asset: str,
+    amount: int,
+    *,
+    from_address: str,
+    receiver: str,
+) -> CowQuote:
+    """The scale -> quote -> parse sequence shared by pricing and execution.
+
+    ``amount`` is in the wallet-wide 1e8 units; ``from_asset``/``to_asset`` must
+    be :data:`COW_ASSETS` keys (the caller's ``serves`` check guarantees it).
+    Raises :class:`CowError` (or an HTTP error) on failure —
+    :meth:`CowBackend.try_quote` wraps it to swallow those as ``None`` for price
+    comparison, while the CLI execute path reports them to the user.
+    """
+    sell_contract, sell_decimals = COW_ASSETS[from_asset]
+    buy_contract, buy_decimals = COW_ASSETS[to_asset]
+    sell_amount = sell_units(amount, sell_decimals)
+    if sell_amount <= 0:
+        raise CowError(f"{from_asset} amount too small to quote")
+    payload = client.quote(
+        sell_contract,
+        buy_contract,
+        sell_amount,
+        from_address=from_address,
+        receiver=receiver,
+    )
+    return parse_cow_quote(payload, to_asset=to_asset, buy_decimals=buy_decimals)
+
+
 @dataclasses.dataclass(frozen=True)
 class CowBackend:
     """The CoW orderbook as a swap backend next to thorchain/maya.
@@ -381,21 +442,14 @@ class CowBackend:
             return None
         if not self.serves(from_asset, to_asset):
             return None
-        sell_contract, sell_decimals = COW_ASSETS[from_asset]
-        buy_contract, buy_decimals = COW_ASSETS[to_asset]
-        sell_amount = amount * 10**sell_decimals // THORCHAIN_UNIT
-        if sell_amount <= 0:
-            return None
         try:
-            payload = self.client.quote(
-                sell_contract,
-                buy_contract,
-                sell_amount,
+            return quote_pair(
+                self.client,
+                from_asset,
+                to_asset,
+                amount,
                 from_address=destination,
                 receiver=destination,
-            )
-            return parse_cow_quote(
-                payload, to_asset=to_asset, buy_decimals=buy_decimals
             )
         except (CowError, KeyError, ValueError, TypeError, *HTTP_ERRORS):
             return None

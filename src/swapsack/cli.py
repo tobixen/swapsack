@@ -1329,7 +1329,8 @@ def _swap_via_cow(
         VAULT_RELAYER,
         CowError,
         build_order,
-        parse_cow_quote,
+        quote_pair,
+        sell_units,
     )
     from swapsack.verify import CowOrderPlan, verify_cow_order
 
@@ -1343,18 +1344,19 @@ def _swap_via_cow(
 
     sell_contract, sell_decimals = COW_ASSETS[from_asset]
     buy_contract, buy_decimals = COW_ASSETS[to_asset]
-    sell_amount = amount * 10**sell_decimals // THORCHAIN_UNIT
+    # Scale the *requested* amount ourselves: the verify gate and the approval
+    # below bind to this (not the quote's own total), so it must use the same
+    # conversion quote_pair sends to the API — hence the shared sell_units.
+    sell_amount = sell_units(amount, sell_decimals)
     with backend.client as client:
         try:
-            payload = client.quote(
-                sell_contract,
-                buy_contract,
-                sell_amount,
+            quote = quote_pair(
+                client,
+                from_asset,
+                to_asset,
+                amount,
                 from_address=from_address,
                 receiver=dest,
-            )
-            quote = parse_cow_quote(
-                payload, to_asset=to_asset, buy_decimals=buy_decimals
             )
         except (CowError, *HTTP_ERRORS) as exc:
             print(f"ABORTED: cow quote failed: {exc}", file=sys.stderr)

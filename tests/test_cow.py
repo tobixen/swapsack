@@ -333,6 +333,64 @@ def test_try_quote_swallows_malformed_200_payload():
     assert backend.try_quote(USDT_ASSET, USDC_ASSET, 10_000_000_000, RECEIVER) is None
 
 
+def test_sell_units_scales_1e8_to_native_decimals():
+    from swapsack.cow import sell_units
+
+    # 100 USDT (6 decimals) from the wallet-wide 1e8 units.
+    assert sell_units(10_000_000_000, 6) == 100_000_000
+    # Rounds down (floor); sub-unit dust scales to 0.
+    assert sell_units(1, 6) == 0
+
+
+def test_quote_pair_matches_try_quote_and_shares_the_scaling():
+    from swapsack.cow import quote_pair
+
+    client = FakeCowClient()
+    quote = quote_pair(
+        client,
+        USDT_ASSET,
+        USDC_ASSET,
+        10_000_000_000,
+        from_address=RECEIVER,
+        receiver=RECEIVER,
+    )
+    # Same parse result as the try_quote path, and the API is asked for the
+    # sell_units-scaled amount (the number the gate later binds to).
+    assert quote.expected_amount_out == 9_985_084_500
+    assert client.calls[0][2] == 100_000_000
+
+
+def test_quote_pair_raises_where_try_quote_would_swallow():
+    # The point of the split: quote_pair raises so the CLI execute path can
+    # report the failure, while try_quote wraps it into None for pricing.
+    from swapsack.cow import CowError, quote_pair
+
+    malformed = CowBackend(FakeCowClient(payload={"ok": True}))
+    assert malformed.try_quote(USDT_ASSET, USDC_ASSET, 10_000_000_000, RECEIVER) is None
+    # ...and it raises the *documented* CowError, not a bare KeyError escaping
+    # the parser: the CLI catches what the docstring promises, so a proxy error
+    # page served as a 200 must reach the user as "cow quote failed", not as a
+    # traceback out of a --confirm run.
+    with pytest.raises(CowError):
+        quote_pair(
+            FakeCowClient(payload={"ok": True}),
+            USDT_ASSET,
+            USDC_ASSET,
+            10_000_000_000,
+            from_address=RECEIVER,
+            receiver=RECEIVER,
+        )
+    with pytest.raises(CowError):
+        quote_pair(
+            FakeCowClient(),
+            USDT_ASSET,
+            USDC_ASSET,
+            1,  # scales to 0 native units
+            from_address=RECEIVER,
+            receiver=RECEIVER,
+        )
+
+
 def _thor_quote(out):
     return Quote(
         inbound_address="vault",
@@ -448,3 +506,29 @@ def test_verify_cow_order_accepts_case_insensitive_addresses():
     order = build_order(_quote(), tolerance_bps=50)
     order["sellToken"] = order["sellToken"].upper().replace("0X", "0x")
     assert verify_cow_order(order=order, plan=_plan(), now=NOW) == []
+
+
+def test_parse_cow_quote_wraps_a_structurally_surprising_body():
+    """Every malformed-200 shape must come out as CowError, not a raw builtin.
+
+    A proxy or gateway answering 200 with its own JSON is the realistic case;
+    the parser must not leak KeyError/TypeError/ValueError from the arithmetic
+    either, since only CowError is caught on the execute path.
+    """
+    from swapsack.cow import CowError, parse_cow_quote
+
+    GOOD_QUOTE = QUOTE_PAYLOAD["quote"]
+    for payload in (
+        {"ok": True},  # no 'quote' key at all
+        {"quote": {"sellAmount": "1"}},  # partial quote object
+        {"quote": {"sellAmount": "x", "feeAmount": "1", "buyAmount": "2"}},  # not int
+        {"quote": None},  # null quote
+        {"quote": {"sellAmount": None, "feeAmount": None, "buyAmount": None}},
+        # ...and the fields read further down the parser, not only the amounts.
+        {"quote": dict(GOOD_QUOTE, sellToken=None)},
+        {"quote": dict(GOOD_QUOTE, validTo="soon")},
+        {"quote": GOOD_QUOTE},  # no top-level 'expiration'
+        dict(QUOTE_PAYLOAD, expiration="not-a-timestamp"),
+    ):
+        with pytest.raises(CowError):
+            parse_cow_quote(payload, to_asset=USDC_ASSET, buy_decimals=6)
