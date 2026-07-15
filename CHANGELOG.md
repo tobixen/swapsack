@@ -17,7 +17,8 @@ automatically from git tags (PEP 440 / SemVer).
   gateable exactly like a `SendPlan` — every order field (tokens, amounts,
   receiver, validity, fill-or-kill, balance mode) is bound and checked before
   signing (`verify_cow_order`). Funds the CoW vault relayer's ERC-20 allowance
-  first when short (handling USDT's reset-to-zero quirk), and widens the
+  first when short (handling USDT's reset-to-zero quirk) and waits for the
+  approval to mine before submitting the order, and widens the
   `Backend` protocol (`serves()`/`try_quote()`/`executor`) so THORChain, Maya
   and CoW all price-compare under `--backend auto`. `status <order-uid>`
   tracks a submitted order. Live-signature-tested: a throwaway, unfunded key's
