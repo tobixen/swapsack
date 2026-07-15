@@ -29,8 +29,9 @@ from swapsack.chains.utxo import UtxoTxBuilder
 from swapsack.net import HttpClient
 
 DEFAULT_DASH_API = "https://insight.dash.org/insight-api"
-DEFAULT_DERIVATION = "m/44'/5'/0'/0/0"
+DEFAULT_DERIVATION = "m/44'/5'/0'/0/0"  # receive chain, first index
 ACCOUNT = "m/44'/5'/0'"
+CHANGE_PATH = "m/44'/5'/0'/1/0"  # internal (change) chain, first index
 PREFIX_P2PKH = b"\x4c"  # addresses start with "X"
 
 # Conservative flat fee rate (duffs/vB). Dash Core's min relay is 1 duff/B and
@@ -108,6 +109,8 @@ class DashAdapter(HttpClient, UtxoTxBuilder):
     witness_type = "legacy"
     script = P2PKH
     default_derivation = DEFAULT_DERIVATION
+    account = ACCOUNT
+    change_path = CHANGE_PATH
     network = "dash"
 
     def __init__(

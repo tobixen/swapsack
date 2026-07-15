@@ -45,13 +45,10 @@ except ImportError:  # not built yet (e.g. running from a fresh checkout)
     __version__ = "0+unknown"
 
 DEFAULT_KEYSTORE = "~/.config/swapsack/keystore.json"
-BTC_ACCOUNT = "m/84'/0'/0'"
+# Per-chain account/change derivation paths live on the adapter classes (see
+# the UTXO registry below); the CLI reads them off the built adapter so it can
+# never scan or send change on a path that drifts from the adapter's own.
 BTC_RECEIVE_PATH = "m/84'/0'/0'/0/0"
-BTC_CHANGE_PATH = "m/84'/0'/0'/1/0"
-DASH_ACCOUNT = "m/44'/5'/0'"
-DASH_CHANGE_PATH = "m/44'/5'/0'/1/0"
-ZEC_ACCOUNT = "m/44'/133'/0'"
-ZEC_CHANGE_PATH = "m/44'/133'/0'/1/0"
 ETH_MAX_FEE_WEI = 10**16  # 0.01 ETH sanity ceiling on inbound gas
 ASSET = {
     "BTC": "BTC.BTC",
@@ -150,6 +147,18 @@ def _zec_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN20
         or DEFAULT_ZEC_LWD
     )
     return ZecAdapter(url, bip39_passphrase=passphrase)
+
+
+# The UTXO chains dispatch identically (scan -> build -> gate -> broadcast),
+# differing only in their adapter; this one registry replaces what used to be
+# parallel BTC/DASH/ZEC if/elif chains in cmd_swap, cmd_send and _liquidity.
+# Account/change derivation paths ride on the adapter class, so nothing here
+# restates them.
+_UTXO_ADAPTERS = {
+    "BTC": _btc_adapter,
+    "DASH": _dash_adapter,
+    "ZEC": _zec_adapter,
+}
 
 
 def _maya_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
@@ -813,12 +822,9 @@ def cmd_quote(args: argparse.Namespace) -> int:
 
 def cmd_swap(args: argparse.Namespace) -> int:
     chain = ASSET[args.from_].split(".", 1)[0]
-    if chain == "BTC":
-        return _swap_from_utxo(args, _btc_adapter, BTC_ACCOUNT, BTC_CHANGE_PATH)
-    if chain == "DASH":  # Maya-only pool; _select_backend routes accordingly
-        return _swap_from_utxo(args, _dash_adapter, DASH_ACCOUNT, DASH_CHANGE_PATH)
-    if chain == "ZEC":  # Maya-only pool; bespoke v4/ZIP-243 signer
-        return _swap_from_utxo(args, _zec_adapter, ZEC_ACCOUNT, ZEC_CHANGE_PATH)
+    utxo = _UTXO_ADAPTERS.get(chain)  # BTC / DASH / ZEC (Maya-only pools route
+    if utxo is not None:  # via _select_backend; ZEC uses the bespoke v4 signer)
+        return _swap_from_utxo(args, utxo)
     if chain == "ETH":  # native ETH and ERC-20 tokens (e.g. USDT-ETH)
         return _swap_from_eth(args)
     if chain == "TRON":  # native TRX (TRC-20 tokens not yet a source)
@@ -839,12 +845,9 @@ def cmd_send(args: argparse.Namespace) -> int:
     if problem:
         print(f"recipient: {problem}", file=sys.stderr)
         return 2
-    if chain == "BTC":
-        return _send_utxo(args, _btc_adapter, BTC_ACCOUNT, BTC_CHANGE_PATH)
-    if chain == "DASH":
-        return _send_utxo(args, _dash_adapter, DASH_ACCOUNT, DASH_CHANGE_PATH)
-    if chain == "ZEC":  # bespoke v4/ZIP-243 signer, ZIP-317 fees (no fee rate)
-        return _send_utxo(args, _zec_adapter, ZEC_ACCOUNT, ZEC_CHANGE_PATH)
+    utxo = _UTXO_ADAPTERS.get(chain)  # BTC / DASH / ZEC (ZEC: v4/ZIP-243 signer)
+    if utxo is not None:
+        return _send_utxo(args, utxo)
     if chain == "ETH":  # native ETH and ERC-20 tokens (USDT-ETH / USDC-ETH)
         return _send_eth(args)
     if chain == "TRON":  # native TRX and TRC-20 tokens (USDT-TRON)
@@ -980,9 +983,7 @@ def _send_tron(args: argparse.Namespace) -> int:
 
 def _send_utxo(
     args: argparse.Namespace,
-    adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter])
-    account: str,
-    change_path: str,
+    adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter | ZecAdapter])
 ) -> int:
     """Plain send for a UTXO chain (BTC/DASH/ZEC): scan, select, gate, broadcast."""
     from swapsack.chains.coins import InsufficientFunds
@@ -995,7 +996,7 @@ def _send_utxo(
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(mnemonic, p),
             probe=adapter.address_info,
-            account=account,
+            account=adapter.account,
         )
         utxos = [
             dataclasses.replace(u, path=path)
@@ -1007,7 +1008,7 @@ def _send_utxo(
             print("no confirmed UTXOs found for this wallet", file=sys.stderr)
             return 1
 
-        change_address = adapter.derive_address(mnemonic, change_path)
+        change_address = adapter.derive_address(mnemonic, adapter.change_path)
         fee_rate = adapter.fetch_fee_rate()
         try:
             if sweep:
@@ -1068,11 +1069,9 @@ def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  #
 
 def _swap_from_utxo(
     args: argparse.Namespace,
-    adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter])
-    account: str,
-    change_path: str,
+    adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter | ZecAdapter])
 ) -> int:
-    """Swap from a UTXO chain (BTC/DASH): scan, quote, build, gate, broadcast."""
+    """Swap from a UTXO chain (BTC/DASH/ZEC): scan, quote, build, gate, broadcast."""
     from swapsack.chains.coins import InsufficientFunds
     from swapsack.chains.scan import scan_account
 
@@ -1087,7 +1086,7 @@ def _swap_from_utxo(
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(mnemonic, p),
             probe=adapter.address_info,
-            account=account,
+            account=adapter.account,
         )
         utxos = [
             dataclasses.replace(u, path=path)
@@ -1099,7 +1098,7 @@ def _swap_from_utxo(
             print("no confirmed UTXOs found for this wallet", file=sys.stderr)
             return 1
 
-        change_address = adapter.derive_address(mnemonic, change_path)
+        change_address = adapter.derive_address(mnemonic, adapter.change_path)
         fee_rate = adapter.fetch_fee_rate()
         if sweep:
             from swapsack.chains.coins import OP_RETURN_MAX_BYTES
@@ -1668,44 +1667,16 @@ def _liquidity(
         # no Maya pool; there's nowhere to provide it.
         print(f"token liquidity is only supported for ETH tokens, not {args.asset}")
         return 2
-    if chain == "BTC":
-        return _liquidity_utxo(
-            args,
-            _btc_adapter,
-            BTC_ACCOUNT,
-            BTC_CHANGE_PATH,
-            memo=memo,
-            amount=amount,
-            sweep=sweep,
-        )
-    if chain == "DASH":
-        from swapsack.chains.dash import DashAdapter
-
-        if _lp_backend_refused(args, DashAdapter):
+    utxo = _UTXO_ADAPTERS.get(chain)
+    if utxo is not None:
+        # Refuse a backend that can't host the pool up front, before any
+        # keystore/network work — uniformly for every UTXO chain. This was
+        # previously wired only into the DASH/ZEC branches, so an lp_backends
+        # restriction on any other adapter was silently ignored. The throwaway
+        # adapter does no I/O at construction; it only carries the class attrs.
+        if _lp_backend_refused(args, utxo(args)):
             return 2
-        return _liquidity_utxo(
-            args,
-            _dash_adapter,
-            DASH_ACCOUNT,
-            DASH_CHANGE_PATH,
-            memo=memo,
-            amount=amount,
-            sweep=sweep,
-        )
-    if chain == "ZEC":
-        from swapsack.chains.zcash import ZecAdapter
-
-        if _lp_backend_refused(args, ZecAdapter):
-            return 2
-        return _liquidity_utxo(
-            args,
-            _zec_adapter,
-            ZEC_ACCOUNT,
-            ZEC_CHANGE_PATH,
-            memo=memo,
-            amount=amount,
-            sweep=sweep,
-        )
+        return _liquidity_utxo(args, utxo, memo=memo, amount=amount, sweep=sweep)
     if chain == "ETH":
         return _liquidity_eth(args, memo=memo, amount=amount, sweep=sweep)
     if chain == "TRON":
@@ -1714,18 +1685,19 @@ def _liquidity(
     return 2
 
 
-def _lp_backend_refused(args: argparse.Namespace, adapter_cls: type) -> bool:
+def _lp_backend_refused(args: argparse.Namespace, adapter: object) -> bool:
     """Refuse an LP request against a backend that cannot host the pool.
 
     Checked up front, before any keystore/network work: LP has no 'auto'
     routing (it's a choice of network/pairing), so the user must name a
-    backend the chain's pools exist on (``adapter_cls.lp_backends``).
+    backend the chain's pools exist on (the adapter's ``lp_backends``).
+    ``adapter`` may be a class or an instance — only class attributes are read.
     """
-    allowed = getattr(adapter_cls, "lp_backends", None)
+    allowed = getattr(adapter, "lp_backends", None)
     if allowed is None or args.backend in allowed:
         return False
     print(
-        f"{adapter_cls.chain} liquidity exists only on {'/'.join(allowed)} — "
+        f"{adapter.chain} liquidity exists only on {'/'.join(allowed)} — "
         f"re-run with --backend {allowed[0]}",
         file=sys.stderr,
     )
@@ -1734,9 +1706,7 @@ def _lp_backend_refused(args: argparse.Namespace, adapter_cls: type) -> bool:
 
 def _liquidity_utxo(
     args: argparse.Namespace,
-    adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter])
-    account: str,
-    change_path: str,
+    adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter | ZecAdapter])
     *,
     memo: str,
     amount: int | None,
@@ -1751,7 +1721,7 @@ def _liquidity_utxo(
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(mnemonic, p),
             probe=adapter.address_info,
-            account=account,
+            account=adapter.account,
         )
         utxos = [
             dataclasses.replace(u, path=path)
@@ -1766,7 +1736,7 @@ def _liquidity_utxo(
                 file=sys.stderr,
             )
             return 1
-        change_address = adapter.derive_address(mnemonic, change_path)
+        change_address = adapter.derive_address(mnemonic, adapter.change_path)
         fee_rate = adapter.fetch_fee_rate()
         if sweep:
             total = sum(u.value for u in utxos)

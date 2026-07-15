@@ -1341,6 +1341,8 @@ def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
     class FakeBtc:
         chain = "BTC"
         asset = "BTC.BTC"
+        account = "m/84'/0'/0'"
+        change_path = "m/84'/0'/0'/1/0"
 
         def __enter__(self):
             return self
@@ -1389,9 +1391,7 @@ def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
     args = build_parser().parse_args(
         ["swap", "--from", "BTC", "--to", "ETH", "--amount", "0.5"]
     )
-    rc = cli._swap_from_utxo(
-        args, cli._btc_adapter, cli.BTC_ACCOUNT, cli.BTC_CHANGE_PATH
-    )
+    rc = cli._swap_from_utxo(args, cli._btc_adapter)
     assert rc == 1  # clean ABORTED, not a traceback
 
 
@@ -1400,8 +1400,8 @@ def test_swap_routes_dash_to_the_utxo_handler(monkeypatch):
 
     routed = {}
 
-    def fake_swap_from_utxo(args, adapter_factory, account, change_path):
-        routed.update(factory=adapter_factory, account=account)
+    def fake_swap_from_utxo(args, adapter_factory):
+        routed.update(factory=adapter_factory)
         return 0
 
     monkeypatch.setattr(cli, "_swap_from_utxo", fake_swap_from_utxo)
@@ -1410,7 +1410,45 @@ def test_swap_routes_dash_to_the_utxo_handler(monkeypatch):
     )
     assert cli.cmd_swap(args) == 0
     assert routed["factory"] is cli._dash_adapter
-    assert routed["account"] == cli.DASH_ACCOUNT
+
+
+def test_utxo_registry_carries_the_exact_derivation_paths():
+    # Finding 10: account/change paths live on the adapter classes (not restated
+    # in cli constants that could drift). Pin the exact BIP44/84 paths so a typo
+    # in a money-sensitive derivation path fails loudly here rather than sending
+    # change to — or scanning — the wrong address.
+    import swapsack.cli as cli
+    from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.dash import DashAdapter
+    from swapsack.chains.zcash import ZecAdapter
+
+    assert set(cli._UTXO_ADAPTERS) == {"BTC", "DASH", "ZEC"}
+    expected = {
+        BtcAdapter: ("m/84'/0'/0'", "m/84'/0'/0'/1/0"),
+        DashAdapter: ("m/44'/5'/0'", "m/44'/5'/0'/1/0"),
+        ZecAdapter: ("m/44'/133'/0'", "m/44'/133'/0'/1/0"),
+    }
+    for cls, (account, change_path) in expected.items():
+        assert cls.account == account
+        assert cls.change_path == change_path
+        # The change path is the account's internal chain; the receive default
+        # is its external chain — both under the same account.
+        assert cls.change_path.startswith(cls.account + "/1/")
+        assert cls.default_derivation.startswith(cls.account + "/0/")
+
+
+def test_add_liquidity_btc_not_refused_by_the_hoisted_lp_check(monkeypatch):
+    # The lp_backends check now runs for every UTXO chain (was DASH/ZEC only).
+    # BTC has no restriction, so the uniform check must still let it through.
+    import swapsack.cli as cli
+
+    called = []
+    monkeypatch.setattr(cli, "_liquidity_utxo", lambda *a, **kw: called.append(1) or 0)
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "BTC", "--amount", "1"]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    assert called
 
 
 def test_add_liquidity_dash_requires_maya_backend(monkeypatch, capsys):
@@ -1516,8 +1554,8 @@ def test_swap_routes_zec_to_the_utxo_handler(monkeypatch):
 
     routed = {}
 
-    def fake_swap_from_utxo(args, adapter_factory, account, change_path):
-        routed.update(factory=adapter_factory, account=account)
+    def fake_swap_from_utxo(args, adapter_factory):
+        routed.update(factory=adapter_factory)
         return 0
 
     monkeypatch.setattr(cli, "_swap_from_utxo", fake_swap_from_utxo)
@@ -1526,7 +1564,6 @@ def test_swap_routes_zec_to_the_utxo_handler(monkeypatch):
     )
     assert cli.cmd_swap(args) == 0
     assert routed["factory"] is cli._zec_adapter
-    assert routed["account"] == cli.ZEC_ACCOUNT
 
 
 def test_add_liquidity_zec_requires_maya_backend(monkeypatch, capsys):

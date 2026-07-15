@@ -15,8 +15,9 @@ from swapsack.chains.utxo import UtxoTxBuilder
 from swapsack.net import HttpClient
 
 DEFAULT_ESPLORA = "https://blockstream.info/api"
-DEFAULT_DERIVATION = "m/84'/0'/0'/0/0"
+DEFAULT_DERIVATION = "m/84'/0'/0'/0/0"  # receive chain, first index
 ACCOUNT = "m/84'/0'/0'"
+CHANGE_PATH = "m/84'/0'/0'/1/0"  # internal (change) chain, first index
 
 
 def generate_mnemonic(strength: int = 128) -> str:
@@ -42,6 +43,8 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
     # UtxoTxBuilder knobs (P2WPKH sizing is its default script)
     witness_type = "segwit"
     default_derivation = DEFAULT_DERIVATION
+    account = ACCOUNT
+    change_path = CHANGE_PATH
 
     def __init__(
         self,

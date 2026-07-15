@@ -62,8 +62,9 @@ from swapsack.chains.zcash_tx import (
 from swapsack.verify import TxOutput
 
 DEFAULT_ZEC_LWD = "zec.rocks:443"
-DEFAULT_DERIVATION = "m/44'/133'/0'/0/0"
+DEFAULT_DERIVATION = "m/44'/133'/0'/0/0"  # receive chain, first index
 ACCOUNT = "m/44'/133'/0'"
+CHANGE_PATH = "m/44'/133'/0'/1/0"  # internal (change) chain, first index
 PREFIX_P2PKH = b"\x1c\xb8"  # transparent P2PKH, addresses start with "t1"
 
 _RPC = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/"
@@ -166,6 +167,9 @@ class ZecAdapter(GatedTxBuilder):
 
     chain = "ZEC"
     asset = "ZEC.ZEC"
+    default_derivation = DEFAULT_DERIVATION
+    account = ACCOUNT
+    change_path = CHANGE_PATH
     # The ZEC.ZEC pool exists only on Maya — and THORChain answers an LP probe
     # for a pool it doesn't run with a 500, not a clean "no position" 404.
     lp_backends = ("maya",)
