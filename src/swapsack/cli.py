@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import getpass
 import json
 import os
@@ -79,7 +80,10 @@ def _keystore_path(args: argparse.Namespace) -> Path:
 
 def _passphrase(*, confirm: bool = False) -> str:
     pw = os.environ.get("SWAPSACK_PASSPHRASE")
-    if pw:
+    # An *unset* variable means "ask me"; a set-but-empty one means the keystore
+    # deliberately has no passphrase (a dedicated test/automation wallet), which
+    # must not silently fall through to a prompt there is no terminal for.
+    if pw is not None:
         return pw
     pw = getpass.getpass("Keystore passphrase: ")
     if confirm and getpass.getpass("Repeat passphrase: ") != pw:
@@ -731,6 +735,56 @@ def _market_comparison(
     return lines
 
 
+@functools.cache
+def _eur_price(asset_key: str) -> float | None:
+    """Best-effort EUR spot for one asset, or None. Cached for the process.
+
+    Advisory only, exactly like :mod:`swapsack.pricefeed`'s market line: a fee
+    is quoted and paid in the chain's own units, so an unreachable or wrong
+    price must never change what is built, signed or broadcast — nor make a
+    spend fail. Cached because a single command may price several fees, and a
+    hot wallet should not stall on a courtesy lookup.
+    """
+    from swapsack.pricefeed import COINGECKO_IDS, PriceFeed
+
+    coin_id = COINGECKO_IDS.get(asset_key)
+    if not coin_id:
+        return None
+    try:
+        with PriceFeed(timeout=5.0) as feed:
+            prices = feed.spot([coin_id], vs=("eur",))
+        price = prices[coin_id]["eur"]
+    # Deliberately broad: this is a courtesy line on a money path, so *nothing*
+    # from the feed (transport, DNS, a malformed body) may reach the caller.
+    except (*HTTP_ERRORS, OSError, KeyError, ValueError, TypeError):
+        return None
+    return price if price > 0 else None
+
+
+def _eur_suffix(amount_whole: float, asset_key: str, *, price_check: bool) -> str:
+    """``" (~€1.23)"`` for a fee of ``amount_whole`` units, or ``""`` if unpriceable.
+
+    ``asset_key`` is a wallet asset/chain key (``BTC``/``ETH``/``DASH``/…).
+    Amounts that would round to nothing are shown as ``<€0.01`` rather than
+    ``~€0.00``, which reads like "free".
+
+    ``price_check`` is ``--price-check/--no-price-check``, and is required
+    rather than defaulted: the lookup tells a third party that this IP is about
+    to spend this asset, so opting out has to suppress the *request*, and a
+    call site that forgets to pass the user's choice should fail loudly here
+    rather than quietly leak.
+    """
+    if not price_check:
+        return ""
+    price = _eur_price(asset_key)
+    if price is None:
+        return ""
+    eur = amount_whole * price
+    if 0 < eur < 0.01:
+        return " (<€0.01)"
+    return f" (~€{eur:.2f})"
+
+
 def _print_swap_costs(
     quote,  # noqa: ANN001
     from_key: str,
@@ -945,7 +999,11 @@ def _send_eth(args: argparse.Namespace) -> int:
             max_fee_wei=ETH_MAX_FEE_WEI,
         )
         print(f"send:    {amount / THORCHAIN_UNIT:.8f} {args.asset} to {recipient}")
-        print(f"max fee: {prepared.built.fee / 10**18:.6f} ETH")
+        eth_fee = prepared.built.fee / 10**18
+        print(
+            f"max fee: {eth_fee:.6f} ETH"
+            f"{_eur_suffix(eth_fee, 'ETH', price_check=args.price_check)}"
+        )
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1048,7 +1106,12 @@ def _send_utxo(
         label = adapter.chain.lower()
         print(f"send:    {amount} base units (1e-8 {adapter.chain}) to {recipient}")
         rate = f"@ {fee_rate}/vB" if fee_rate else "(ZIP-317 conventional fee)"
-        print(f"{label} fee: {prepared.built.fee} {rate}")
+        eur = _eur_suffix(
+            prepared.built.fee / THORCHAIN_UNIT,
+            adapter.chain,
+            price_check=args.price_check,
+        )
+        print(f"{label} fee: {prepared.built.fee} {rate}{eur}")
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1187,7 +1250,12 @@ def _swap_from_utxo(
                 price_check=args.price_check,
             )
             rate = f"@ {fee_rate}/vB" if fee_rate else "(ZIP-317 conventional fee)"
-            print(f"inbound: {prepared.built.fee} on {adapter.chain} {rate}")
+            eur = _eur_suffix(
+                prepared.built.fee / THORCHAIN_UNIT,
+                adapter.chain,
+                price_check=args.price_check,
+            )
+            print(f"inbound: {prepared.built.fee} on {adapter.chain} {rate}{eur}")
             return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1309,7 +1377,11 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
                 amount,
                 price_check=args.price_check,
             )
-            print(f"inbound: {max_fee_eth:.6f} ETH max ({len(prepared.built.txs)} tx)")
+            print(
+                f"inbound: {max_fee_eth:.6f} ETH max "
+                f"({len(prepared.built.txs)} tx)"
+                f"{_eur_suffix(max_fee_eth, 'ETH', price_check=args.price_check)}"
+            )
             return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1789,7 +1861,12 @@ def _liquidity_utxo(
         print(f"memo:    {memo}")
         label = adapter.chain.lower()
         rate = f"@ {fee_rate}/vB" if fee_rate else "(ZIP-317 conventional fee)"
-        print(f"{label} fee: {prepared.built.fee} {rate}")
+        eur = _eur_suffix(
+            prepared.built.fee / THORCHAIN_UNIT,
+            adapter.chain,
+            price_check=args.price_check,
+        )
+        print(f"{label} fee: {prepared.built.fee} {rate}{eur}")
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -1871,7 +1948,11 @@ def _liquidity_eth(
             eth_amt = prepared.plan.amount_wei / 10**18
             print(f"send:    {eth_amt:.8f} ETH to {prepared.plan.inbound_address}")
         print(f"memo:    {memo}")
-        print(f"max fee: {prepared.built.fee / 10**18:.6f} ETH")
+        eth_fee = prepared.built.fee / 10**18
+        print(
+            f"max fee: {eth_fee:.6f} ETH"
+            f"{_eur_suffix(eth_fee, 'ETH', price_check=args.price_check)}"
+        )
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -2048,6 +2129,30 @@ def _base_units(amount: Decimal, unit: int = THORCHAIN_UNIT) -> int:
     return int(product.to_integral_value(rounding=ROUND_HALF_EVEN))
 
 
+def _add_price_check_args(sub: argparse.ArgumentParser) -> None:
+    """The CoinGecko opt-out, shared by every command that prices anything.
+
+    Both the swap 'vs market' comparison and the EUR fee estimate go out to the
+    same public feed, so one flag governs both — and every command that can
+    trigger either has to offer it, or the opt-out is a lie somewhere.
+    """
+    sub.add_argument(
+        "--price-check",
+        dest="price_check",
+        action="store_true",
+        default=True,
+        help="consult a public spot price (CoinGecko) to show the quote vs "
+        "market and fees in EUR; default on",
+    )
+    sub.add_argument(
+        "--no-price-check",
+        dest="price_check",
+        action="store_false",
+        help="make no external price request at all (no market comparison, no "
+        "EUR fee estimate)",
+    )
+
+
 def _add_swap_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--from", dest="from_", default="BTC", choices=list(ASSET))
     sub.add_argument("--to", dest="to_", default="ETH", choices=list(ASSET))
@@ -2063,19 +2168,7 @@ def _add_swap_args(sub: argparse.ArgumentParser) -> None:
         help="swap backend (auto = lowest price across all; cow = same-chain "
         "ETH-token swaps via a signed intent order, no memo/vault)",
     )
-    sub.add_argument(
-        "--price-check",
-        dest="price_check",
-        action="store_true",
-        default=True,
-        help="compare the quote against a public spot price (CoinGecko); default on",
-    )
-    sub.add_argument(
-        "--no-price-check",
-        dest="price_check",
-        action="store_false",
-        help="skip the external spot-price comparison",
-    )
+    _add_price_check_args(sub)
     sub.add_argument(
         "--stream-interval",
         type=_pos_int,
@@ -2104,6 +2197,7 @@ def _add_broadcast_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
     sub.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     sub.add_argument("--eth-gas", type=int, default=60000, help="ETH gas limit")
+    _add_price_check_args(sub)
 
 
 def _add_liquidity_backend_arg(sub: argparse.ArgumentParser) -> None:
@@ -2259,6 +2353,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
     s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
+    _add_price_check_args(s)
     s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("status", help="track a swap by inbound txid")
@@ -2269,6 +2364,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="network to query (auto = try all, report where observed)",
     )
+    _add_price_check_args(s)
     s.set_defaults(func=cmd_status)
 
     return parser

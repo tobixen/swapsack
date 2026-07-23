@@ -8,6 +8,15 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Transaction fees are also shown in approximate EUR**, so "20000 sats" or
+  "0.000420 ETH" reads as a cost you can judge before confirming: `btc fee:
+  20000 @ 2.0/vB (~€11.43)`. Amounts under a cent show `<€0.01`. The rate comes
+  from the same keyless CoinGecko feed as the existing market line and is purely
+  advisory — if it is unreachable the estimate is simply omitted, never delaying
+  or blocking a spend. Because this puts a third-party lookup on paths that
+  previously made none, `--no-price-check` is now accepted by `send`,
+  `add-liquidity`, `withdraw-liquidity` and `status` as well as `quote`/`swap`,
+  and it suppresses the request itself rather than just the printed estimate.
 - **BIP21 payment URIs** are accepted wherever an address is: `swapsack send
   'bitcoin:bc1q…?amount=0.01&label=Alice'` and `--dest ethereum:0x…` now work,
   so an address copied from a wallet or scanned from a QR code can be pasted

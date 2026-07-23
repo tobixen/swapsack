@@ -35,6 +35,27 @@ def test_price_check_defaults_on_and_can_be_disabled():
     assert q.price_check is False
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["send", "--amount", "0.001", "bc1qrecipient"],
+        ["add-liquidity", "--asset", "BTC", "--amount", "0.001"],
+        ["withdraw-liquidity", "--asset", "BTC"],
+    ],
+)
+def test_price_check_can_be_disabled_on_every_command_that_prices(argv):
+    """Every command that consults the price feed must let you opt out.
+
+    The EUR fee estimate put a CoinGecko lookup on `send` and the liquidity
+    commands — paths that previously made no third-party price call at all — so
+    each needs the same opt-out `swap`/`quote` already had.
+    """
+    on = build_parser().parse_args(argv)
+    assert on.price_check is True
+    off = build_parser().parse_args([*argv, "--no-price-check"])
+    assert off.price_check is False
+
+
 def test_streaming_flags_parse_and_default_to_none():
     plain = build_parser().parse_args(["swap", "--amount", "0.1"])
     assert plain.stream_interval is None
@@ -2100,3 +2121,188 @@ def test_swap_dest_accepts_a_payment_uri():
         cli._resolve_destination(args, None)
         == "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
     )
+
+
+def test_empty_passphrase_env_is_honoured_not_prompted(monkeypatch):
+    """An intentionally passphrase-less keystore must work non-interactively.
+
+    A dedicated test/automation wallet is created with an empty passphrase; if
+    the empty string is treated as 'unset' the CLI drops to getpass and dies
+    with no TTY. Distinguish unset (prompt) from deliberately empty (use it).
+    """
+    import swapsack.cli as cli
+
+    def no_prompt(prompt=""):
+        raise AssertionError("should not prompt when the env var is set")
+
+    monkeypatch.setattr(cli.getpass, "getpass", no_prompt)
+    monkeypatch.setenv("SWAPSACK_PASSPHRASE", "")
+    assert cli._passphrase() == ""
+
+    monkeypatch.setenv("SWAPSACK_PASSPHRASE", "hunter2")
+    assert cli._passphrase() == "hunter2"
+
+
+def test_unset_passphrase_env_still_prompts(monkeypatch):
+    import swapsack.cli as cli
+
+    monkeypatch.delenv("SWAPSACK_PASSPHRASE", raising=False)
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": "typed")
+    assert cli._passphrase() == "typed"
+
+
+# --- fees shown in approximate EUR -------------------------------------------
+
+
+class _FakeFeed:
+    """Stand-in for PriceFeed returning a fixed EUR spot."""
+
+    prices = {"bitcoin": {"eur": 50_000.0}, "ethereum": {"eur": 2_000.0}}
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def spot(self, coin_ids, *, vs=("usd",)):
+        return {c: self.prices[c] for c in coin_ids if c in self.prices}
+
+
+@pytest.fixture
+def fake_feed(monkeypatch):
+    import swapsack.cli as cli
+    import swapsack.pricefeed as pricefeed
+
+    cli._eur_price.cache_clear()
+    monkeypatch.setattr(pricefeed, "PriceFeed", _FakeFeed)
+    yield
+    cli._eur_price.cache_clear()
+
+
+def test_eur_suffix_converts_a_fee(fake_feed):
+    import swapsack.cli as cli
+
+    # 20 000 sats of BTC at €50 000 -> €10.00
+    assert cli._eur_suffix(20_000 / 1e8, "BTC", price_check=True) == " (~€10.00)"
+    assert cli._eur_suffix(0.5, "ETH", price_check=True) == " (~€1000.00)"
+    # Sub-cent fees still say something useful rather than '~€0.00'.
+    assert cli._eur_suffix(1 / 1e8, "BTC", price_check=True) == " (<€0.01)"
+
+
+def test_eur_suffix_makes_no_lookup_when_price_check_is_off(monkeypatch):
+    """--no-price-check must mean *no* third-party request, not a discarded one.
+
+    The fee estimate is a courtesy line, but the request that produces it tells
+    CoinGecko that this IP is about to spend this asset. Opting out has to stop
+    the call itself.
+    """
+    import swapsack.cli as cli
+    import swapsack.pricefeed as pricefeed
+
+    cli._eur_price.cache_clear()
+
+    class Tripwire(_FakeFeed):
+        def spot(self, coin_ids, *, vs=("usd",)):
+            raise AssertionError("price feed consulted despite --no-price-check")
+
+    monkeypatch.setattr(pricefeed, "PriceFeed", Tripwire)
+    assert cli._eur_suffix(20_000 / 1e8, "BTC", price_check=False) == ""
+    cli._eur_price.cache_clear()
+
+
+def test_eur_suffix_is_best_effort(monkeypatch):
+    """A price-feed failure must never break or noisily disturb a spend."""
+    import swapsack.cli as cli
+    import swapsack.pricefeed as pricefeed
+
+    cli._eur_price.cache_clear()
+
+    class Boom(_FakeFeed):
+        def spot(self, coin_ids, *, vs=("usd",)):
+            raise OSError("feed down")
+
+    monkeypatch.setattr(pricefeed, "PriceFeed", Boom)
+    assert cli._eur_suffix(0.001, "BTC", price_check=True) == ""
+    cli._eur_price.cache_clear()
+    # An asset with no CoinGecko mapping (e.g. a synth) simply gets no estimate.
+    assert cli._eur_suffix(1.0, "NOSUCH", price_check=True) == ""
+
+
+def test_btc_send_fee_line_shows_eur(monkeypatch, capsys, fake_feed):
+    import swapsack.cli as cli
+    from swapsack.chains.coins import Utxo
+
+    class FakeBtc:
+        chain = "BTC"
+        asset = "BTC.BTC"
+        account = "m/84'/0'/0'"
+        change_path = "m/84'/0'/0'/1/0"
+        default_derivation = "m/84'/0'/0'/0/0"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def derive_address(self, mnemonic, path=None):
+            return "bc1qchange"
+
+        def address_info(self, address):
+            return None
+
+        def fetch_utxos(self, address):
+            return [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=address)]
+
+        def fetch_fee_rate(self):
+            return 2.0
+
+        def build_and_verify_send(self, **kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                problems=[],
+                built=SimpleNamespace(fee=20_000),
+                plan=None,
+            )
+
+    def fake_scan(*, derive_address, probe, account):
+        from types import SimpleNamespace
+
+        return [("m/84'/0'/0'/0/0", "bc1qowned", SimpleNamespace(confirmed=1_000_000))]
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": FakeBtc())
+    monkeypatch.setattr("swapsack.chains.scan.scan_account", fake_scan)
+    monkeypatch.setattr(cli, "_confirm_and_execute", lambda *a, **kw: 0)
+
+    args = build_parser().parse_args(
+        ["send", "--asset", "BTC", "--amount", "0.001", "bc1qrecipient"]
+    )
+    assert cli._send_utxo(args, cli._btc_adapter) == 0
+    out = capsys.readouterr().out
+    assert "btc fee: 20000" in out
+    assert "~€10.00" in out  # 20 000 sats at €50 000/BTC
+
+    # ...and --no-price-check makes the same send without touching the feed.
+    import swapsack.pricefeed as pricefeed
+
+    cli._eur_price.cache_clear()
+
+    class Tripwire(_FakeFeed):
+        def spot(self, coin_ids, *, vs=("usd",)):
+            raise AssertionError("price feed consulted despite --no-price-check")
+
+    monkeypatch.setattr(pricefeed, "PriceFeed", Tripwire)
+    quiet = build_parser().parse_args(
+        ["send", "--asset", "BTC", "--amount", "0.001", "--no-price-check", "bc1qrec"]
+    )
+    assert cli._send_utxo(quiet, cli._btc_adapter) == 0
+    out = capsys.readouterr().out
+    assert "btc fee: 20000" in out
+    assert "€" not in out
+    cli._eur_price.cache_clear()

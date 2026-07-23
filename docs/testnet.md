@@ -37,7 +37,8 @@ Dash and Zcash have no faucet-plus-explorer testnet path (see `docs/dash.md` /
   ~450 duffs (≈ €0.0002). Fund the `m/44'/5'/0'/0/0` address.
 - `test_zec_mainnet_send_broadcast`, gated on `SWAPSACK_ZEC_MNEMONIC`
   (optional: `SWAPSACK_ZEC_RECIPIENT`, `SWAPSACK_ZEC_LWD`). The ZIP-317 sweep
-  fee is 10,000 zat (≈ €0.004). Fund the `m/44'/133'/0'/0/0` (`t1…`) address.
+  fee is 10,000 zat (≈ €0.05 at a €455 ZEC). Fund the `m/44'/133'/0'/0/0`
+  (`t1…`) address.
   This is the one place the bespoke v4/ZIP-243 signer meets a real validator.
 
 Both self-sweep like the BTC test: the coins moved are real but stay in the
