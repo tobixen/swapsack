@@ -201,6 +201,110 @@ def test_btc_send_sweep_spends_all_no_change():
     assert len(non_data) == 1 and non_data[0].address == recipient
 
 
+def test_btc_send_change_returns_to_the_wallets_change_address():
+    """A partial (non-sweep) send must return the remainder to OUR change path.
+
+    The live BTC loop in ``test_integration_testnet.py`` only ever sweeps, so
+    the change output — which on a 10%-of-balance send carries the other 90% —
+    is exercised nowhere else. The verify gate cannot catch a wrong change
+    address on its own: ``GatedTxBuilder`` puts ``change_address`` into the
+    owned set by construction, so a bad path would be self-certifying. Pin it
+    against an independently derived address instead.
+    """
+    from swapsack.chains.btc import CHANGE_PATH
+
+    a = BtcAdapter()
+    addr = a.derive_address(MNEMONIC, PATH)
+    recipient = a.derive_address(MNEMONIC, "m/84'/0'/0'/0/9")
+    change_address = a.derive_address(MNEMONIC, CHANGE_PATH)
+    assert change_address != addr  # a real second address, not the receive one
+    utxos = [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=addr, path=PATH)]
+
+    prepared = a.build_and_verify_send(
+        recipient=recipient,
+        amount=100_000,  # 10% of the UTXO; 90% must come back as change
+        now=0,
+        mnemonic=MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=2,
+        change_address=change_address,
+        max_fee=50_000,  # the CLI default
+        sweep=False,
+    )
+    assert prepared.problems == []
+
+    outs = [o for o in prepared.built.outputs if o.op_return_data is None]
+    assert len(outs) == 2  # recipient + change, nothing else
+    change_outs = [o for o in outs if o.address != recipient]
+    assert len(change_outs) == 1
+    # Not merely "some owned address": exactly the derived change address.
+    assert change_outs[0].address == change_address
+    # And the full remainder, to the satoshi — no silent leak into the fee.
+    assert change_outs[0].value == 1_000_000 - 100_000 - prepared.built.fee
+    assert prepared.built.fee <= 50_000
+    a.sign(prepared.built)
+    assert prepared.built.tx.verify() is True
+
+
+def test_btc_swap_change_returns_to_the_wallets_change_address():
+    """Same guarantee on the swap path (vault + OP_RETURN + change)."""
+    from swapsack.chains.btc import CHANGE_PATH
+
+    a = BtcAdapter()
+    addr = a.derive_address(MNEMONIC, PATH)
+    change_address = a.derive_address(MNEMONIC, CHANGE_PATH)
+    utxos = [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=addr, path=PATH)]
+
+    built = a.build_unsigned_swap(
+        mnemonic=MNEMONIC,
+        utxos=utxos,
+        vault_address=VAULT,
+        amount=100_000,
+        memo=MEMO,
+        fee_rate=2,
+        change_address=change_address,
+    )
+    change_outs = [
+        o for o in built.outputs if o.op_return_data is None and o.address != VAULT
+    ]
+    assert len(change_outs) == 1
+    assert change_outs[0].address == change_address
+    assert change_outs[0].value == 1_000_000 - 100_000 - built.fee
+
+
+def test_btc_change_address_is_found_by_the_wallet_scan():
+    """Change must be *recoverable*, not just correctly addressed.
+
+    Change lands on the internal branch, so if the gap-limit scan only walked
+    the receive branch the remainder would be unspendable-in-practice: invisible
+    to ``balance`` and never selected as an input by a later send. Prove the
+    scan that feeds both actually reaches the change address.
+    """
+    from swapsack.chains.base import AddressInfo
+    from swapsack.chains.btc import ACCOUNT, CHANGE_PATH
+    from swapsack.chains.scan import scan_account
+
+    a = BtcAdapter()
+    change_address = a.derive_address(MNEMONIC, CHANGE_PATH)
+    assert CHANGE_PATH.startswith(f"{ACCOUNT}/1/")  # internal branch, per BIP44
+
+    def probe(address: str) -> AddressInfo:
+        # Only the change address has history: the wallet spent everything from
+        # the receive branch and holds the remainder as change.
+        hit = address == change_address
+        return AddressInfo(has_history=hit, confirmed=900_000 if hit else 0, pending=0)
+
+    records = scan_account(
+        derive_address=lambda p: a.derive_address(MNEMONIC, p),
+        probe=probe,
+        account=ACCOUNT,
+    )
+    assert [(path, address) for path, address, _ in records] == [
+        (CHANGE_PATH, change_address)
+    ]
+    assert sum(info.confirmed for _, _, info in records) == 900_000
+
+
 def test_parse_address_info_confirmed_and_pending():
     from swapsack.chains.btc import parse_address_info
 

@@ -37,6 +37,7 @@ pytest.importorskip("bitcoinlib")
 
 from swapsack.chains.btc import ACCOUNT, BtcAdapter  # noqa: E402
 from swapsack.chains.coins import (  # noqa: E402
+    P2WPKH,
     InsufficientFunds,
     sweep_amount,
 )
@@ -133,6 +134,96 @@ def test_btc_testnet_send_broadcast():
                 break
             time.sleep(3)
         assert seen, f"tx {txid} not seen by Esplora"
+
+
+@pytest.mark.skipif(
+    not BTC_TESTNET_MNEMONIC,
+    reason="set SWAPSACK_BTC_TESTNET_MNEMONIC (a funded testnet account) "
+    "to run the BTC partial-send (change output) loop",
+)
+def test_btc_testnet_partial_send_returns_change_on_chain():
+    """Spend a *fraction* and prove the remainder comes back to us, on-chain.
+
+    The sweep loop above leaves the change output — the one that carries
+    everything not being spent — unexercised against a real network. A wrong
+    change address there does not fail loudly: it is a silent, irreversible
+    loss of the remainder, and the verify gate cannot catch it because the
+    change address is what defines the owned set. So spend a tenth, then read
+    the broadcast transaction back from Esplora and assert the network really
+    credited the balance to the address our own scan derives.
+    """
+    receive_path = "m/84'/0'/0'/0/0"
+    change_path = "m/84'/0'/0'/1/0"
+    with BtcAdapter(
+        esplora_url=BTC_TESTNET_ESPLORA, network=BTC_TESTNET_NETWORK
+    ) as adapter:
+        derive = lambda p: adapter.derive_address(BTC_TESTNET_MNEMONIC, p)  # noqa: E731
+        recipient = os.environ.get("SWAPSACK_BTC_TESTNET_RECIPIENT") or derive(
+            receive_path
+        )
+        change_address = derive(change_path)
+        records = scan_account(
+            derive_address=derive, probe=adapter.address_info, account=ACCOUNT
+        )
+        utxos = [
+            dataclasses.replace(u, path=path)
+            for path, address, info in records
+            if info.confirmed > 0
+            for u in adapter.fetch_utxos(address)
+        ]
+        if not utxos:
+            pytest.skip("no confirmed testnet UTXOs — fund " + derive(receive_path))
+
+        fee_rate = adapter.fetch_fee_rate()
+        total = sum(u.value for u in utxos)
+        amount = total // 10  # a tenth out, nine tenths must return as change
+        # Leave room for the fee and keep the change above dust, else this
+        # degenerates into the sweep case the test above already covers.
+        if amount < P2WPKH.dust or total - amount < P2WPKH.dust + 50_000:
+            pytest.skip(f"testnet balance {total} too small for a partial send")
+
+        prepared = adapter.build_and_verify_send(
+            recipient=recipient,
+            amount=amount,
+            now=int(time.time()),
+            mnemonic=BTC_TESTNET_MNEMONIC,
+            scanned_utxos=utxos,
+            fee_rate=fee_rate,
+            change_address=change_address,
+            max_fee=100_000,
+            sweep=False,
+        )
+        assert prepared.safe, prepared.problems
+        change_outs = [o for o in prepared.built.outputs if o.address == change_address]
+        assert len(change_outs) == 1, "no change output on a partial send"
+        expected_change = total - amount - prepared.built.fee
+        assert change_outs[0].value == expected_change
+
+        txid = adapter.broadcast(adapter.sign(prepared.built))
+        assert txid
+
+        tx = None
+        for _ in range(20):
+            resp = adapter._get(f"{adapter.esplora_url}/tx/{txid}")
+            if resp.status_code == 200:
+                tx = resp.json()
+                break
+            time.sleep(3)
+        assert tx, f"tx {txid} not seen by Esplora"
+
+        # The network's own view: the change really went to our change address
+        # for the expected amount. This is the assertion the sweep loop cannot
+        # make, and the one that matters when spending a fraction of a balance.
+        credited = [
+            o["value"]
+            for o in tx["vout"]
+            if o.get("scriptpubkey_address") == change_address
+        ]
+        assert credited == [expected_change]
+
+        # ...and it is reachable by the same scan the wallet uses, so the
+        # remainder stays spendable rather than merely correctly addressed.
+        assert adapter.address_info(change_address).has_history
 
 
 @pytest.mark.skipif(

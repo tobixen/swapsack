@@ -1437,6 +1437,108 @@ def test_utxo_registry_carries_the_exact_derivation_paths():
         assert cls.default_derivation.startswith(cls.account + "/0/")
 
 
+def test_swap_and_send_pass_the_change_path_address_as_change(monkeypatch):
+    """The CLI must fund change from the adapter's *change* path.
+
+    Adapter-level tests prove the builder honours whatever ``change_address``
+    it is handed, and the gate puts that address into the owned set by
+    construction — so if the CLI handed over the wrong address, nothing
+    downstream would object. On a partial (non-sweep) spend the change output
+    carries the whole remainder of the wallet, so pin the wiring here.
+    """
+    import swapsack.cli as cli
+    from swapsack.chains.coins import Utxo
+
+    class FakeBtc:
+        chain = "BTC"
+        asset = "BTC.BTC"
+        account = "m/84'/0'/0'"
+        change_path = "m/84'/0'/0'/1/0"
+        default_derivation = "m/84'/0'/0'/0/0"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def derive_address(self, mnemonic, path=None):
+            return f"bc1q-addr-for-{path}"  # path-dependent, so a mix-up shows
+
+        def address_info(self, address):
+            return None  # unused: scan_account is stubbed
+
+        def fetch_utxos(self, address):
+            return [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=address)]
+
+        def fetch_fee_rate(self):
+            return 5.0
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class FakeBackend:
+        name = "thorchain"
+        client = FakeClient()
+
+    def fake_scan(*, derive_address, probe, account):
+        from types import SimpleNamespace
+
+        assert account == FakeBtc.account
+        return [
+            (
+                "m/84'/0'/0'/0/0",
+                "bc1q-addr-for-m/84'/0'/0'/0/0",
+                SimpleNamespace(confirmed=1_000_000),
+            )
+        ]
+
+    expected_change = f"bc1q-addr-for-{FakeBtc.change_path}"
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr(cli, "_resolve_destination", lambda args, m, p="": "bc1qdest")
+    monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": FakeBtc())
+    monkeypatch.setattr(cli, "_select_backend", lambda *a, **k: FakeBackend())
+    monkeypatch.setattr("swapsack.chains.scan.scan_account", fake_scan)
+
+    # --- swap --from BTC (non-sweep): capture what prepare_swap is handed ---
+    captured: dict = {}
+
+    def fake_prepare_swap(**kwargs):
+        captured.update(kwargs)
+        raise SystemExit(0)  # stop before quoting/printing
+
+    monkeypatch.setattr(cli, "prepare_swap", fake_prepare_swap)
+    args = build_parser().parse_args(
+        ["swap", "--from", "BTC", "--to", "ETH", "--amount", "0.001"]
+    )
+    with pytest.raises(SystemExit):
+        cli._swap_from_utxo(args, cli._btc_adapter)
+    assert captured["change_address"] == expected_change
+    assert captured["sweep"] is False
+
+    # --- send BTC (non-sweep): same guarantee on the plain-send path ---
+    sent: dict = {}
+
+    class SendingBtc(FakeBtc):
+        def build_and_verify_send(self, **kwargs):
+            sent.update(kwargs)
+            raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": SendingBtc())
+    args = build_parser().parse_args(
+        ["send", "--asset", "BTC", "--amount", "0.001", "bc1qrecipient"]
+    )
+    with pytest.raises(SystemExit):
+        cli._send_utxo(args, cli._btc_adapter)
+    assert sent["change_address"] == expected_change
+    assert sent["sweep"] is False
+
+
 def test_add_liquidity_btc_not_refused_by_the_hoisted_lp_check(monkeypatch):
     # The lp_backends check now runs for every UTXO chain (was DASH/ZEC only).
     # BTC has no restriction, so the uniform check must still let it through.
@@ -1876,3 +1978,97 @@ def test_status_accepts_cow_order_uid():
     assert not _is_cow_order_uid("ab" * 32)  # plain txid
     assert not _is_cow_order_uid("0x" + "ab" * 32)  # EVM txid
     assert not _is_cow_order_uid("0x" + "zz" * 56)  # not hex
+
+
+# --- BIP21 payment URIs reach the handlers as bare addresses -----------------
+
+
+def test_send_accepts_a_payment_uri_and_strips_it(monkeypatch):
+    """`send bitcoin:<addr>` must work AND pay the bare address.
+
+    Validating the URI but handing the raw `bitcoin:…` string to the builder
+    would be worse than rejecting it: bitcoinlib would refuse (or, on another
+    chain, encode a nonsense output).
+    """
+    import swapsack.cli as cli
+
+    seen = {}
+
+    def fake_send_utxo(args, factory):
+        seen["address"] = args.address
+        return 0
+
+    monkeypatch.setattr(cli, "_send_utxo", fake_send_utxo)
+    args = build_parser().parse_args(
+        [
+            "send",
+            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?label=Alice",
+            "--asset",
+            "BTC",
+            "--amount",
+            "0.01527",
+        ]
+    )
+    assert cli.cmd_send(args) == 0
+    assert seen["address"] == "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+
+
+def test_send_refuses_a_uri_amount_that_contradicts_the_flag(monkeypatch, capsys):
+    """A URI asking for 0.5 BTC while --amount says 0.01 is not a spend to guess at."""
+    import swapsack.cli as cli
+
+    called = []
+    monkeypatch.setattr(cli, "_send_utxo", lambda *a, **kw: called.append(1) or 0)
+    args = build_parser().parse_args(
+        [
+            "send",
+            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?amount=0.5",
+            "--asset",
+            "BTC",
+            "--amount",
+            "0.01527",
+        ]
+    )
+    assert cli.cmd_send(args) == 2
+    assert not called
+    err = capsys.readouterr().err
+    assert "0.5" in err and "0.01527" in err
+
+
+def test_send_accepts_a_uri_amount_that_agrees(monkeypatch):
+    import swapsack.cli as cli
+
+    monkeypatch.setattr(cli, "_send_utxo", lambda *a, **kw: 0)
+    args = build_parser().parse_args(
+        [
+            "send",
+            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?amount=0.01527",
+            "--asset",
+            "BTC",
+            "--amount",
+            "0.01527",
+        ]
+    )
+    assert cli.cmd_send(args) == 0
+
+
+def test_swap_dest_accepts_a_payment_uri():
+    import swapsack.cli as cli
+
+    args = build_parser().parse_args(
+        [
+            "swap",
+            "--from",
+            "BTC",
+            "--to",
+            "ETH",
+            "--amount",
+            "0.1",
+            "--dest",
+            "ethereum:0x9858EfFD232B4033E47d90003D41EC34EcaEda94@1",
+        ]
+    )
+    assert (
+        cli._resolve_destination(args, None)
+        == "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+    )

@@ -526,3 +526,50 @@ def test_built_deposit_carries_memo_and_signs(monkeypatch):
         reparsed, 0, prepared.built.spent[0][0], 500_000, REAL_BRANCH_ID
     )
     assert PublicKey(pub).verify(der, digest, hasher=None)
+
+
+def test_zec_send_change_returns_to_the_wallets_change_address(monkeypatch):
+    """The change output must land on the caller's change path, not the receive one.
+
+    The gate cannot catch this by itself: it puts ``change_address`` into the
+    owned set by construction, and the receive address is owned too — so change
+    misrouted to the receive branch certifies itself as safe. BTC pins this
+    (test_btc_send_change_returns_to_the_wallets_change_address); ZEC did not,
+    and every other ZEC test happens to pass the receive address as
+    ``change_address``, so the two were indistinguishable.
+    """
+    from swapsack.chains.coins import Utxo
+    from swapsack.chains.zcash import CHANGE_PATH
+
+    a = ZecAdapter()
+    monkeypatch.setattr(a, "latest_height", lambda: 3_407_167)
+    monkeypatch.setattr(a, "branch_id", lambda: REAL_BRANCH_ID)
+
+    path0 = "m/44'/133'/0'/0/0"
+    receive = GOLDEN[path0]
+    change = a.derive_address(TEST_MNEMONIC, CHANGE_PATH)
+    # Independently derived, and genuinely a different address — otherwise this
+    # test would pass against the very mutation it exists to catch.
+    assert change != receive
+
+    prepared = a.build_and_verify_send(
+        recipient="t1evBud5G5F4HFUPRBpt7sz5s66PeVUYBur",
+        amount=100_000,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=[
+            Utxo(txid="cc" * 32, vout=1, value=150_000, address=receive, path=path0)
+        ],
+        fee_rate=0.0,
+        change_address=change,
+        max_fee=50_000,
+    )
+    assert prepared.problems == []
+    # built.outputs is decoded back out of the serialized tx, so this reads the
+    # bytes that would be broadcast rather than the builder's intent.
+    change_outs = [o for o in prepared.built.outputs if o.address == change]
+    assert len(change_outs) == 1
+    # inputs - recipient - fee, all of it, to the change path.
+    assert change_outs[0].value == 150_000 - 100_000 - prepared.built.fee
+    # Explicitly NOT the receive address.
+    assert all(o.address != receive for o in prepared.built.outputs)
