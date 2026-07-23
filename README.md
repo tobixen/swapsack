@@ -124,7 +124,15 @@ swapsack send  bc1q...recipient --amount max --confirm         # sweep + send
 swapsack send  0x...recipient --asset ETH --amount 0.01        # native ETH
 swapsack send  0x...recipient --asset USDT-ETH --amount max    # sweep tokens
 swapsack send  T...recipient --asset USDT-TRON --amount 25     # TRC-20
+swapsack send  bitcoin:bc1q...?label=Alice --amount 0.001      # BIP21 URI / QR code
 ```
+
+Recipients and `--dest` also accept BIP21-style payment URIs (`bitcoin:…`,
+`litecoin:…`, `ethereum:…`, …) as pasted from a wallet or QR code. The scheme
+must name the chain being spent — a `litecoin:` URI in a BTC send is refused —
+and on `send`, an `amount=` in the URI that contradicts `--amount` aborts rather
+than picking one. A `--dest` URI's other parameters are ignored: on a swap the
+URI cannot know the output amount, so only the address is taken from it.
 
 Defaults are `--from BTC --to ETH`. `--confirm` prints the freshly-quoted swap
 and asks before broadcasting (`--yes` skips the prompt for automation).

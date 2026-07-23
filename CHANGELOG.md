@@ -8,6 +8,13 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **BIP21 payment URIs** are accepted wherever an address is: `swapsack send
+  'bitcoin:bc1q…?amount=0.01&label=Alice'` and `--dest ethereum:0x…` now work,
+  so an address copied from a wallet or scanned from a QR code can be pasted
+  as-is instead of being hand-trimmed. The scheme must match the chain being
+  spent (a `litecoin:` URI in a BTC send is refused, catching a cross-chain
+  paste), and a URI `amount=` that contradicts `--amount` aborts rather than
+  silently preferring one of them.
 - **CoW Protocol backend (same-chain ETH-token swaps):** `--backend cow`
   (and `auto`) for `quote`/`swap` between USDT-ETH/USDC-ETH/ETH — a keyless
   intent API (`api.cow.fi`) that settles a solver auction instead of routing

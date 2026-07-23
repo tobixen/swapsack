@@ -21,7 +21,7 @@ from collections.abc import Callable
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
 
-from swapsack.addresses import validate_destination_address
+from swapsack.addresses import parse_payment_uri, validate_destination_address
 from swapsack.cow import DEFAULT_COW_TOLERANCE_BPS
 from swapsack.keystore import HdKey, Keystore
 from swapsack.net import HTTP_ERRORS
@@ -561,7 +561,8 @@ def _resolve_destination(
         problem = validate_destination_address(_derivable_chain(args.to_), args.dest)
         if problem:
             raise SystemExit(f"--dest: {problem}")
-        return args.dest
+        # Pay the address itself, not the URI wrapper it arrived in.
+        return parse_payment_uri(args.dest)[0]
     if mnemonic is None:
         return None
     # The destination address depends on the target *chain*, so a token like
@@ -844,6 +845,19 @@ def cmd_send(args: argparse.Namespace) -> int:
     problem = validate_destination_address(chain, args.address)
     if problem:
         print(f"recipient: {problem}", file=sys.stderr)
+        return 2
+    # Accept a BIP21-style payment URI (what wallets and QR codes hand out) and
+    # spend to the address inside it. A URI amount that contradicts --amount is
+    # refused rather than silently resolved either way: one of the two is what
+    # the payee expects, and guessing wrong is irreversible.
+    args.address, uri_params = parse_payment_uri(args.address)
+    uri_amount = uri_params.get("amount")
+    if uri_amount is not None and _amount_differs(uri_amount, args.amount):
+        print(
+            f"recipient: the payment URI asks for {uri_amount} {args.asset}, "
+            f"but --amount is {args.amount}",
+            file=sys.stderr,
+        )
         return 2
     utxo = _UTXO_ADAPTERS.get(chain)  # BTC / DASH / ZEC (ZEC: v4/ZIP-243 signer)
     if utxo is not None:
@@ -1941,6 +1955,20 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 # --- parser -----------------------------------------------------------------
+
+
+def _amount_differs(uri_amount: str, requested: Decimal | str) -> bool:
+    """True if a payment URI's ``amount=`` disagrees with the parsed ``--amount``.
+
+    An unparseable URI amount is not treated as a disagreement — the URI is a
+    hint from a third party, and ``--amount`` is what the user actually typed.
+    ``max`` (sweep) never matches a fixed URI amount.
+    """
+    try:
+        wanted = Decimal(uri_amount)
+    except (ArithmeticError, ValueError):
+        return False
+    return wanted != requested if isinstance(requested, Decimal) else True
 
 
 def _amount(value: str) -> Decimal | str:

@@ -11,6 +11,7 @@ permissive so a valid address is never rejected; when in doubt we accept.
 from __future__ import annotations
 
 import re
+from urllib.parse import parse_qsl, unquote
 
 # Base58 alphabet (no 0, O, I, l) shared by legacy BTC-family and TRON addresses.
 _B58 = r"[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]"
@@ -37,13 +38,68 @@ _RULES: dict[str, re.Pattern[str]] = {
 }
 
 
+# BIP21-style payment URI schemes, mapped to the chain they name. Wallets and
+# QR codes hand out `bitcoin:<address>?amount=…` rather than a bare address, so
+# accept that spelling everywhere an address is taken.
+_URI_SCHEMES: dict[str, str] = {
+    "bitcoin": "BTC",
+    "litecoin": "LTC",
+    "dogecoin": "DOGE",
+    "dash": "DASH",
+    "zcash": "ZEC",
+    "bitcoincash": "BCH",
+    "ethereum": "ETH",  # EIP-681
+    "tron": "TRON",
+}
+# 'bitcoincash:' doubles as the canonical cashaddr prefix, so the address is
+# kept in its prefixed form; every other scheme is stripped.
+_KEEP_SCHEME = {"bitcoincash"}
+
+
+def parse_payment_uri(text: str) -> tuple[str, dict[str, str]]:
+    """Split a payment URI into ``(address, query params)``.
+
+    A bare address is returned unchanged with empty params, so callers can run
+    everything through here. Unknown schemes are left alone rather than
+    mangled — ``validate_destination_address`` then judges the result.
+    """
+    text = text.strip()
+    scheme, sep, rest = text.partition(":")
+    if not sep or scheme.lower() not in _URI_SCHEMES:
+        return text, {}
+
+    body, _, query = rest.partition("?")
+    # EIP-681 chain-id / function suffixes (ethereum:0x…@1, …/transfer) are not
+    # part of the address itself.
+    body = body.split("@", 1)[0].split("/", 1)[0]
+    address = unquote(body).strip()
+    if scheme.lower() in _KEEP_SCHEME:
+        address = f"{scheme.lower()}:{address}"
+    return address, dict(parse_qsl(query))
+
+
+def uri_chain(text: str) -> str | None:
+    """The chain a payment URI names, or None if ``text`` carries no known scheme."""
+    scheme = text.strip().partition(":")[0].lower()
+    return _URI_SCHEMES.get(scheme)
+
+
 def validate_destination_address(chain: str, address: str) -> str | None:
     """Return a problem string if ``address`` is implausible for ``chain``, else None.
 
     ``chain`` is the THORChain chain prefix (``BTC``/``ETH``/``LTC``/…). An
     unknown chain yields no opinion (returns None) so new chains are not blocked
-    before a rule exists.
+    before a rule exists. A BIP21-style payment URI is accepted for its own
+    chain and rejected for any other — the scheme states which network the payee
+    meant, and honouring that catches a cross-chain paste before it is spent.
     """
+    if not address:
+        return "destination address is empty"
+    named = uri_chain(address)
+    if named is not None and named != chain:
+        scheme = address.partition(":")[0]
+        return f"{scheme!r} URI is a {named} address, but this is a {chain} spend"
+    address, _ = parse_payment_uri(address)
     if not address:
         return "destination address is empty"
     rule = _RULES.get(chain)

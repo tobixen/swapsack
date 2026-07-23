@@ -75,3 +75,96 @@ def test_truncated_rejected():
 
 def test_unknown_chain_has_no_opinion():
     assert validate_destination_address("XRP", "rno_rule_yet") is None
+
+
+# --- BIP21-style payment URIs -----------------------------------------------
+#
+# Wallets and QR codes hand out `bitcoin:<address>?amount=…`, not a bare
+# address, so pasting one into `send`/`--dest` must work rather than be
+# rejected as malformed.
+
+
+def test_parse_payment_uri_strips_the_scheme():
+    from swapsack.addresses import parse_payment_uri
+
+    address, params = parse_payment_uri("bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
+    assert address == "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    assert params == {}
+
+
+def test_parse_payment_uri_keeps_a_bare_address_untouched():
+    from swapsack.addresses import parse_payment_uri
+
+    for chain, addresses in VALID.items():
+        for address in addresses:
+            assert parse_payment_uri(address) == (address, {}), chain
+
+
+def test_parse_payment_uri_extracts_query_parameters():
+    from swapsack.addresses import parse_payment_uri
+
+    address, params = parse_payment_uri(
+        "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        "?amount=0.015&label=Coffee%20Shop&message=hi"
+    )
+    assert address == "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    assert params["amount"] == "0.015"
+    assert params["label"] == "Coffee Shop"
+
+
+def test_parse_payment_uri_accepts_the_other_chain_schemes():
+    from swapsack.addresses import parse_payment_uri
+
+    assert parse_payment_uri("litecoin:LdP8Qox1VAhCzLJNqrr74YovaWYyNBUWvL")[0] == (
+        "LdP8Qox1VAhCzLJNqrr74YovaWYyNBUWvL"
+    )
+    assert parse_payment_uri("dash:Xwm4fpRLuvyQY4wgcbffLTMkVFAJKrxs8k")[0] == (
+        "Xwm4fpRLuvyQY4wgcbffLTMkVFAJKrxs8k"
+    )
+    assert parse_payment_uri("zcash:t1PZ6UUwARqz7pjkFbQh3M8bQ4rr5nHkPqM")[0] == (
+        "t1PZ6UUwARqz7pjkFbQh3M8bQ4rr5nHkPqM"
+    )
+    # EIP-681 may carry a chain id suffix: ethereum:0x…@1
+    assert parse_payment_uri("ethereum:0x9858EfFD232B4033E47d90003D41EC34EcaEda94@1")[
+        0
+    ] == ("0x9858EfFD232B4033E47d90003D41EC34EcaEda94")
+
+
+def test_parse_payment_uri_keeps_the_cashaddr_prefix():
+    # 'bitcoincash:' is the canonical cashaddr prefix, not merely a URI scheme:
+    # keep the address in the form the network expects, minus any query.
+    from swapsack.addresses import parse_payment_uri
+
+    address, params = parse_payment_uri(
+        "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a?amount=1"
+    )
+    assert address == "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a"
+    assert params["amount"] == "1"
+    assert validate_destination_address("BCH", address) is None
+
+
+def test_validate_accepts_a_payment_uri():
+    # The gross-mistake guard must see through the scheme, not reject it.
+    assert (
+        validate_destination_address(
+            "BTC", "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+        )
+        is None
+    )
+    assert (
+        validate_destination_address(
+            "BTC", "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4?amount=0.1"
+        )
+        is None
+    )
+
+
+def test_validate_rejects_a_uri_for_the_wrong_chain():
+    # Pasting a litecoin: URI into a BTC send is exactly the irreversible
+    # mistake this guard exists for — the scheme names the chain, so use it.
+    problem = validate_destination_address(
+        "BTC", "litecoin:LdP8Qox1VAhCzLJNqrr74YovaWYyNBUWvL"
+    )
+    assert problem is not None and "litecoin" in problem.lower()
+    # ...and the address inside a matching scheme still has to be plausible.
+    assert validate_destination_address("BTC", "bitcoin:0xdeadbeef") is not None

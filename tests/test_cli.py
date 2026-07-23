@@ -1127,6 +1127,34 @@ def test_resolve_destination_accepts_good_ltc_dest():
     assert _resolve_destination(args, mnemonic=None) == dest
 
 
+def test_resolve_destination_takes_only_the_address_from_a_uri():
+    """A `--dest` URI contributes its address and nothing else, deliberately.
+
+    `send` aborts when a URI `amount=` contradicts `--amount`, but on a swap the
+    two mean different things — `--amount` is what you sell, a URI amount would
+    be what the payee wants to receive — so there is nothing to reconcile and
+    the parameters are dropped. Pinned because the guard's absence here should
+    be a decision, not an oversight.
+    """
+    from swapsack.cli import _resolve_destination
+
+    dest = "ltc1qg9stkxrszkdqsuj92lm4c7akvk36zvhqw7p6ck"
+    args = build_parser().parse_args(
+        [
+            "swap",
+            "--to",
+            "LTC",
+            "--amount",
+            "0.01",
+            "--dest",
+            f"litecoin:{dest}?amount=99&label=Alice",
+        ]
+    )
+    assert _resolve_destination(args, mnemonic=None) == dest
+    # The sell amount is untouched by the URI's amount.
+    assert args.amount == Decimal("0.01")
+
+
 def test_resolve_destination_for_usdt_targets():
     pytest.importorskip("eth_account")
     from types import SimpleNamespace
