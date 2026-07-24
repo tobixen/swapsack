@@ -7,6 +7,8 @@ derivation and the Esplora-shaped UTXO / balance / fee / broadcast layer.
 
 from __future__ import annotations
 
+import dataclasses
+
 from bitcoinlib.mnemonic import Mnemonic
 
 from swapsack.chains.base import AddressInfo, BalanceReport
@@ -33,6 +35,80 @@ def parse_address_info(stats: dict) -> AddressInfo:
     pending = mem.get("funded_txo_sum", 0) - mem.get("spent_txo_sum", 0)
     has_history = chain.get("tx_count", 0) > 0 or mem.get("tx_count", 0) > 0
     return AddressInfo(has_history=has_history, confirmed=confirmed, pending=pending)
+
+
+@dataclasses.dataclass(frozen=True)
+class TxEntry:
+    """One input or output of a broadcast transaction, in sats."""
+
+    value: int
+    address: str | None = None  # None for an OP_RETURN (or an unparsed script)
+    op_return: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class TxSummary:
+    """What a broadcast transaction actually did, as the chain reports it.
+
+    Built from an Esplora ``/tx`` body. ``inputs``/``outputs`` are in order, so
+    a partial send reads as "one recipient, one change" — the shape a user needs
+    to confirm their remainder came back.
+    """
+
+    txid: str
+    confirmed: bool
+    block_height: int | None
+    fee: int  # sats
+    vsize: int  # virtual bytes; fee/vsize is the fee rate
+    inputs: tuple[TxEntry, ...]
+    outputs: tuple[TxEntry, ...]
+
+    @property
+    def total_in(self) -> int:
+        return sum(i.value for i in self.inputs)
+
+    @property
+    def total_out(self) -> int:
+        return sum(o.value for o in self.outputs)
+
+    @property
+    def fee_rate(self) -> float:
+        return self.fee / self.vsize if self.vsize else 0.0
+
+    @property
+    def has_op_return(self) -> bool:
+        """True if the tx carries a memo — i.e. it is a swap deposit, not a send."""
+        return any(o.op_return for o in self.outputs)
+
+
+def parse_tx_summary(payload: dict) -> TxSummary:
+    """Parse an Esplora ``/tx/<txid>`` response into a :class:`TxSummary`.
+
+    Pure (no I/O) so it can be unit-tested against a recorded response, like
+    ``parse_address_info``.
+    """
+    status = payload.get("status", {})
+    # Esplora reports weight; vsize is weight/4 rounded up.
+    weight = payload.get("weight")
+    vsize = -(-weight // 4) if weight else payload.get("size", 0)
+
+    def entry(item: dict) -> TxEntry:
+        is_data = item.get("scriptpubkey_type") == "op_return"
+        return TxEntry(
+            value=item.get("value", 0),
+            address=item.get("scriptpubkey_address"),
+            op_return=is_data,
+        )
+
+    return TxSummary(
+        txid=payload.get("txid", ""),
+        confirmed=bool(status.get("confirmed")),
+        block_height=status.get("block_height"),
+        fee=payload.get("fee", 0),
+        vsize=vsize,
+        inputs=tuple(entry(i.get("prevout") or {}) for i in payload.get("vin", [])),
+        outputs=tuple(entry(o) for o in payload.get("vout", [])),
+    )
 
 
 class BtcAdapter(HttpClient, UtxoTxBuilder):
@@ -85,6 +161,14 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
 
     def fetch_balance(self, address: str) -> int:
         return self.address_info(address).confirmed
+
+    def fetch_tx(self, txid: str) -> TxSummary | None:
+        """What a broadcast tx did, or None if this chain has never seen it."""
+        resp = self._get(f"{self.esplora_url}/tx/{txid}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return parse_tx_summary(resp.json())
 
     def wallet_balance(self, mnemonic: str, account: str = ACCOUNT) -> BalanceReport:
         from swapsack.chains.scan import wallet_balance_from_scan

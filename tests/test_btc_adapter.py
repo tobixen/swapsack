@@ -413,3 +413,46 @@ def test_btc_derivation_honors_bip39_passphrase():
     assert withpw != base
     # Empty passphrase == no passphrase: a v1 wallet keeps its addresses.
     assert BtcAdapter(bip39_passphrase="").derive_address(MNEMONIC) == base
+
+
+# --- on-chain transaction summary (what `status` reports for a txid) ---------
+
+
+def test_parse_tx_summary_reads_a_partial_send(esplora_tx_partial_send):
+    from swapsack.chains.btc import parse_tx_summary
+
+    tx = parse_tx_summary(esplora_tx_partial_send)
+    assert tx.confirmed is True
+    assert tx.block_height == 959260
+    assert tx.fee == 160
+    assert tx.total_in == 2_010_000
+    assert tx.total_out == 2_009_840
+    # Inputs + outputs + fee must balance, or we are misreporting a spend.
+    assert tx.total_in == tx.total_out + tx.fee
+    assert [(o.address, o.value) for o in tx.outputs] == [
+        ("1Recipient", 1_527_000),
+        ("bc1qchange", 482_840),
+    ]
+    assert [(i.address, i.value) for i in tx.inputs] == [("bc1qspender", 2_010_000)]
+    # vsize drives the fee rate: weight 561 -> ceil(561/4) = 141 vB.
+    assert tx.vsize == 141
+    assert round(tx.fee_rate, 2) == round(160 / 141, 2)
+
+
+def test_parse_tx_summary_handles_unconfirmed_and_op_return(esplora_tx_partial_send):
+    from swapsack.chains.btc import parse_tx_summary
+
+    payload = {
+        **esplora_tx_partial_send,
+        "status": {"confirmed": False},
+        "vout": [
+            *esplora_tx_partial_send["vout"],
+            {"scriptpubkey_type": "op_return", "value": 0},
+        ],
+    }
+    tx = parse_tx_summary(payload)
+    assert tx.confirmed is False and tx.block_height is None
+    # An OP_RETURN (a swap memo) carries no address but must not be dropped:
+    # its presence is what distinguishes a swap deposit from a plain send.
+    assert tx.outputs[-1].address is None
+    assert tx.outputs[-1].op_return is True

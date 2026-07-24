@@ -2011,6 +2011,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     # swap_backends()): CoW has no tx_status concept, only order_status above.
     from swapsack.backends import default_backends
 
+    # A bare 64-hex hash could be a BTC (or DASH/ZEC) txid; show what the tx
+    # itself did (inputs, outputs, change, fee) before, and independently of,
+    # the swap-observation view — that is the useful part for a plain send.
+    _print_onchain_tx(args)
+
     if args.backend == "auto":
         backends = default_backends()
     else:
@@ -2025,14 +2030,58 @@ def cmd_status(args: argparse.Namespace) -> int:
         except HTTP_ERRORS:
             continue
         observed = status.get("stages", {}).get("inbound_observed", {}).get("started")
-        if observed or len(backends) == 1:
+        if observed:
             if len(backends) > 1:
                 print(f"// observed on {backend.name}", file=sys.stderr)
             print(json.dumps(status, indent=2))
             return 0
-    # Not observed on any backend yet (genuinely pending, or unknown hash).
+    # Not observed on any backend. The bare "started": false body is the correct
+    # answer but reads like a broken command, so say what it actually means —
+    # the common case is a hash that was never a swap at all.
+    names = "/".join(b.name for b in backends)
     print(json.dumps(status, indent=2))
+    print(
+        f"// not observed by {names}. Either it is not a swap inbound at all "
+        "(a plain 'send' never is — only a deposit to a vault with a swap memo "
+        "gets observed), or the vaults have not seen it yet (usually within a "
+        "block or two of confirmation).",
+        file=sys.stderr,
+    )
     return 0
+
+
+def _print_onchain_tx(args: argparse.Namespace) -> None:
+    """Print what a BTC transaction actually did, if the hash is one. Best-effort.
+
+    Queries Esplora directly (no keystore — a txid is public), so it works for a
+    hash the wallet did not create. A miss (not a BTC tx / not yet propagated /
+    Esplora down) prints nothing and never raises: the swap-stage view below is
+    the fallback.
+    """
+    try:
+        with _btc_adapter(args) as adapter:
+            tx = adapter.fetch_tx(args.txid)
+    except (*HTTP_ERRORS, ValueError):
+        return
+    if tx is None:
+        return
+
+    where = (
+        f"confirmed in block {tx.block_height}"
+        if tx.confirmed
+        else "unconfirmed (in mempool)"
+    )
+    print(f"on-chain (BTC): {where}")
+    print(f"  in:  {tx.total_in} sats over {len(tx.inputs)} input(s)")
+    for o in tx.outputs:
+        if o.op_return:
+            print("  out: OP_RETURN (swap/LP memo)")
+            continue
+        print(f"  out: {o.value} sats -> {o.address}")
+    fee_eur = _eur_suffix(tx.fee / THORCHAIN_UNIT, "BTC", price_check=args.price_check)
+    print(f"  fee: {tx.fee} sats @ {tx.fee_rate:.2f} sats/vB ({tx.vsize} vB){fee_eur}")
+    if not tx.has_op_return:
+        print("  note: no OP_RETURN — a plain send, not a swap (no vault to track)")
 
 
 # --- parser -----------------------------------------------------------------

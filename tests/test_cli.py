@@ -41,14 +41,16 @@ def test_price_check_defaults_on_and_can_be_disabled():
         ["send", "--amount", "0.001", "bc1qrecipient"],
         ["add-liquidity", "--asset", "BTC", "--amount", "0.001"],
         ["withdraw-liquidity", "--asset", "BTC"],
+        # status prices the on-chain fee line too, so it needs the opt-out.
+        ["status", "ab" * 32],
     ],
 )
 def test_price_check_can_be_disabled_on_every_command_that_prices(argv):
     """Every command that consults the price feed must let you opt out.
 
-    The EUR fee estimate put a CoinGecko lookup on `send` and the liquidity
-    commands — paths that previously made no third-party price call at all — so
-    each needs the same opt-out `swap`/`quote` already had.
+    The EUR fee estimate put a CoinGecko lookup on `send`, the liquidity
+    commands and `status` — paths that previously made no third-party price call
+    at all — so each needs the same opt-out `swap`/`quote` already had.
     """
     on = build_parser().parse_args(argv)
     assert on.price_check is True
@@ -2306,3 +2308,118 @@ def test_btc_send_fee_line_shows_eur(monkeypatch, capsys, fake_feed):
     assert "btc fee: 20000" in out
     assert "€" not in out
     cli._eur_price.cache_clear()
+
+
+# --- status explains an unobserved txid instead of dumping an empty body ------
+
+
+class _StubBackend:
+    def __init__(self, name, body):
+        self.name = name
+        self._body = body
+        self.client = self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def close(self):
+        pass
+
+    def tx_status(self, txid):
+        return self._body
+
+
+NOT_OBSERVED = {"stages": {"inbound_observed": {"started": False, "completed": False}}}
+
+
+def test_status_explains_an_unobserved_txid(monkeypatch, capsys):
+    """A hash no vault has seen must say what that means, not print a stub body.
+
+    A plain `send` is never observed by THORChain/Maya — only swap inbounds
+    are — so the bare `"started": false` JSON reads as a broken command rather
+    than the correct answer it is.
+    """
+    import swapsack.cli as cli
+
+    monkeypatch.setattr(
+        "swapsack.backends.default_backends",
+        lambda: [_StubBackend("thorchain", NOT_OBSERVED)],
+    )
+    args = build_parser().parse_args(["status", "ab" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "not observed" in combined.lower()
+    # Name the most likely cause: it simply isn't a swap.
+    assert "send" in combined.lower()
+    # The machine-readable body is still there for scripts.
+    assert '"stages"' in captured.out
+
+
+def test_status_reports_the_backend_that_observed_it(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    observed = {
+        "stages": {
+            "inbound_observed": {"started": True, "completed": True},
+            "swap_finalised": {"completed": True},
+            "outbound_signed": {"completed": False},
+        }
+    }
+    monkeypatch.setattr(
+        "swapsack.backends.default_backends",
+        lambda: [
+            _StubBackend("thorchain", NOT_OBSERVED),
+            _StubBackend("maya", observed),
+        ],
+    )
+    args = build_parser().parse_args(["status", "ab" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert "maya" in (captured.out + captured.err)
+    assert "not observed" not in (captured.out + captured.err).lower()
+
+
+def test_status_prints_the_on_chain_summary(
+    monkeypatch, capsys, fake_feed, esplora_tx_partial_send
+):
+    """`status <txid>` should say what the transaction actually did.
+
+    The swap stages alone are useless for a plain send: the interesting facts
+    are where the money went, how much came back as change, and what it cost.
+    """
+    import swapsack.cli as cli
+    from swapsack.chains.btc import parse_tx_summary
+
+    class FakeBtc:
+        chain = "BTC"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def fetch_tx(self, txid):
+            return parse_tx_summary(esplora_tx_partial_send)
+
+    monkeypatch.setattr(
+        "swapsack.backends.default_backends",
+        lambda: [_StubBackend("thorchain", NOT_OBSERVED)],
+    )
+    monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": FakeBtc())
+    args = build_parser().parse_args(["status", "cc" * 32])
+    assert cli.cmd_status(args) == 0
+    out = capsys.readouterr().out
+
+    assert "confirmed" in out and "959260" in out
+    assert "1Recipient" in out and "1527000" in out  # where the money went
+    assert "bc1qchange" in out and "482840" in out  # what came back
+    assert "160" in out  # the fee, in sats
+    assert "~€" in out or "<€0.01" in out  # ...and in EUR
+    # A plain send has no memo, so say so rather than leaving the user guessing
+    # why the swap stages are empty.
+    assert "no OP_RETURN" in out or "not a swap" in out.lower()

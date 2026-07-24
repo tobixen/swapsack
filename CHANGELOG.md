@@ -8,6 +8,13 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **`status <txid>` now shows what a BTC transaction did on-chain** — inputs,
+  each output with its address, the change coming back to you, and the fee in
+  both sats and EUR — queried straight from Esplora (no keystore needed). A
+  plain `send` is never observed by a THORChain/Maya vault, so previously
+  `status` returned only an empty `inbound_observed: false` stage that read like
+  a failure; it now explains that (no OP_RETURN memo = not a swap) instead of
+  leaving you guessing.
 - **Transaction fees are also shown in approximate EUR**, so "20000 sats" or
   "0.000420 ETH" reads as a cost you can judge before confirming: `btc fee:
   20000 @ 2.0/vB (~€11.43)`. Amounts under a cent show `<€0.01`. The rate comes

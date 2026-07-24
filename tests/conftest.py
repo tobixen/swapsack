@@ -49,3 +49,42 @@ def _drain_keepalive_sockets(request: pytest.FixtureRequest):
     yield
     if request.node.get_closest_marker("network"):
         gc.collect()
+
+
+# Shaped like a real Esplora /tx response, with synthetic addresses: a partial
+# send (one recipient + one change output), the case a sweep never produces.
+# Lives here rather than in a test module because two suites use it — and
+# ``import tests.…`` collides with the ``tests`` package bitcoinlib installs.
+ESPLORA_TX_PARTIAL_SEND = {
+    "txid": "cc" * 32,
+    "size": 226,
+    "weight": 561,
+    "fee": 160,
+    "status": {"confirmed": True, "block_height": 959260},
+    "vin": [
+        {
+            "prevout": {
+                "scriptpubkey_type": "v0_p2wpkh",
+                "scriptpubkey_address": "bc1qspender",
+                "value": 2_010_000,
+            }
+        }
+    ],
+    "vout": [
+        {
+            "scriptpubkey_type": "p2pkh",
+            "scriptpubkey_address": "1Recipient",
+            "value": 1_527_000,
+        },
+        {
+            "scriptpubkey_type": "v0_p2wpkh",
+            "scriptpubkey_address": "bc1qchange",
+            "value": 482_840,
+        },
+    ],
+}
+
+
+@pytest.fixture
+def esplora_tx_partial_send() -> dict:
+    return ESPLORA_TX_PARTIAL_SEND
