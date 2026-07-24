@@ -55,7 +55,7 @@ The wallet is still under rapid development as of 2026-07-10.  Missing features 
 Other features:
 
 * `quote` — read-only price preview for any supported asset
-* `status` — track a swap by its inbound txid
+* `status` — track a swap by its inbound txid. For a BTC hash it also prints what the transaction did on-chain (inputs, each output, change, fee in sats and EUR) — so a plain `send`, which no swap vault ever observes, still shows something useful instead of an empty stage list.
 * `--backend auto` — compares **THORChain + Maya + CoW** (CoW only quotes same-chain ETH-token pairs) and routes to the best price (`quote`, `swap`). `--backend cow` forces it: a same-chain USDT-ETH/USDC-ETH/ETH swap settles via a signed EIP-712 order (no vault, no memo) instead of THORChain/Maya's two-pool-leg route — see [docs/backends.md](docs/backends.md). `status <order-uid>` tracks a submitted CoW order (auto-detected by its 56-byte uid shape, vs. a chain txid).
 * `swap --tolerance-bps N` — raise the slippage/fee tolerance (default 300 = 3%). Small or thinly-traded swaps whose fees exceed the default are *refused* by THORChain; the wallet aborts with a clear message instead of a traceback, and you can opt into a wider tolerance here.
 * **cost breakdown** — `quote` and `swap` itemise what you lose: the slip/swap (liquidity) fee, the flat outbound fee, and the quoted total (with `bps`), plus the inbound (source-chain) tx fee shown separately. On THORChain the *liquidity fee is the slippage* — the two are one number, not two.
@@ -297,3 +297,20 @@ The fixtures in `tests/` are trimmed real responses from the THORChain REST API:
 curl -s "https://thornode.thorchain.network/thorchain/quote/swap?from_asset=BTC.BTC&to_asset=ETH.ETH&amount=178100"
 curl -s "https://thornode.thorchain.network/thorchain/inbound_addresses"
 ```
+
+## Documentation
+
+Deeper topic notes live in [`docs/`](docs/). Most are also linked inline above
+where they're relevant; this is the full index:
+
+- [docs/TODO.md](docs/TODO.md) — the running backlog and roadmap (the live source of "what's next")
+- [docs/backends.md](docs/backends.md) — swap backends (THORChain, Maya, CoW, and the scoped-but-unbuilt Chainflip)
+- [docs/chainflip.md](docs/chainflip.md) — Chainflip execution notes (deposit channels, broker decision)
+- [docs/streaming.md](docs/streaming.md) — streaming swaps and the streaming-vs-tolerance interaction
+- [docs/liquidity-symmetric.md](docs/liquidity-symmetric.md) — two-sided (symmetric) liquidity mechanics + the two-leg safety protocol
+- [docs/dash.md](docs/dash.md) · [docs/zcash.md](docs/zcash.md) — the Maya-only legacy-UTXO chains (their bespoke signing/fee specifics)
+- [docs/cacao.md](docs/cacao.md) — Maya CACAO and the shared Cosmos-SDK adapter (also covers RUNE)
+- [docs/monero.md](docs/monero.md) — why XMR doesn't fit the model yet, and the open custody choices
+- [docs/testnet.md](docs/testnet.md) — funded testnet/mainnet broadcast tests: addresses to fund and faucets
+
+(`docs/code-review-*.md` are dated review snapshots, not reference docs.)

@@ -224,6 +224,34 @@ EIP-712 domain/signing matches the live API exactly.
   works (Maya pairs with CACAO, different pools, no TRON). No `auto` for LP —
   it's a network/pairing choice, not price-routed.
 
+## Extend `status <txid>` to every chain (not just BTC)
+
+`status` now prints an on-chain transaction summary (inputs, outputs, change,
+fee in sats + EUR, and whether it carries a swap memo) — but **only for BTC**,
+via `BtcAdapter.fetch_tx` / `parse_tx_summary` (`chains/btc.py`). A plain `send`
+is never observed by a swap vault, so this on-chain view is the *only* useful
+thing `status` can say about a non-swap tx, and it's missing for every other
+chain.
+
+To generalize:
+- DASH/ZEC are the cheapest wins — DASH has the same Esplora-ish Insight `/tx`
+  shape (a `parse_tx_summary`-alike over Insight's fields); ZEC needs the tx read
+  back from lightwalletd (transparent in/out only).
+- ETH/BSC: an `eth_getTransactionByHash` + receipt summary (to/from/value, gas
+  used × price = fee) — different shape (account model, no UTXO change output),
+  so `TxSummary` needs a chain-agnostic form or a per-model variant.
+- TRON: `gettransactionbyid` + `gettransactioninfobyid` for the energy/bandwidth
+  fee.
+- CACAO/RUNE: the Cosmos tx query (`/cosmos/tx/v1beta1/txs/{hash}`), decoding the
+  `MsgSend`/`MsgDeposit` and the fee.
+- Route in `cli._print_onchain_tx` by the same chain-dispatch the rest of the CLI
+  uses (`_UTXO_ADAPTERS` + the account-model adapters) instead of hardcoding BTC.
+
+Consider whether the README feature matrix should gain a **Track** (or **Status**)
+column for this — it's a distinct capability from Send/Sweep, currently ✅ for BTC
+and blank everywhere else. (Remember the duplicated matrix further down the
+README — both copies would need the column.)
+
 ## Other known gaps
 
 - **Live integration is unproven** for the spending path (real Esplora UTXO
