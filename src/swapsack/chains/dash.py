@@ -154,7 +154,7 @@ class DashAdapter(HttpClient, UtxoTxBuilder):
     def fetch_balance(self, address: str) -> int:
         return self.address_info(address).confirmed
 
-    def fetch_fee_rate(self, target_blocks: int = 6) -> float:  # noqa: ARG002
+    def fetch_fee_rate(self, target_blocks: int = 2) -> float:  # noqa: ARG002
         """A conservative flat duffs/vB rate (see DEFAULT_FEE_RATE)."""
         return DEFAULT_FEE_RATE
 

@@ -1410,7 +1410,7 @@ def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
         def fetch_utxos(self, address):
             return [Utxo(txid="aa" * 32, vout=0, value=100_000, address=address)]
 
-        def fetch_fee_rate(self):
+        def fetch_fee_rate(self, target_blocks=2):
             return 5.0
 
     class FakeClient:
@@ -1522,7 +1522,7 @@ def test_swap_and_send_pass_the_change_path_address_as_change(monkeypatch):
         def fetch_utxos(self, address):
             return [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=address)]
 
-        def fetch_fee_rate(self):
+        def fetch_fee_rate(self, target_blocks=2):
             return 5.0
 
     class FakeClient:
@@ -2260,7 +2260,7 @@ def test_btc_send_fee_line_shows_eur(monkeypatch, capsys, fake_feed):
         def fetch_utxos(self, address):
             return [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=address)]
 
-        def fetch_fee_rate(self):
+        def fetch_fee_rate(self, target_blocks=2):
             return 2.0
 
         def build_and_verify_send(self, **kwargs):
@@ -2423,3 +2423,138 @@ def test_status_prints_the_on_chain_summary(
     # A plain send has no memo, so say so rather than leaving the user guessing
     # why the swap stages are empty.
     assert "no OP_RETURN" in out or "not a swap" in out.lower()
+
+
+# --- configurable UTXO fee target (--fee-blocks / env / config.toml) ---------
+
+
+@pytest.fixture
+def _clear_config_cache():
+    import swapsack.cli as cli
+
+    cli._config.cache_clear()
+    yield
+    cli._config.cache_clear()
+
+
+def _ns(**kw):
+    from types import SimpleNamespace
+
+    kw.setdefault("fee_blocks", None)
+    return SimpleNamespace(**kw)
+
+
+def test_fee_blocks_precedence_flag_over_env_over_config(
+    monkeypatch, tmp_path, _clear_config_cache
+):
+    import swapsack.cli as cli
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[fees]\ntarget_blocks = 7\n")
+    monkeypatch.setenv("SWAPSACK_CONFIG", str(cfg))
+
+    # config only
+    monkeypatch.delenv("SWAPSACK_FEE_BLOCKS", raising=False)
+    assert cli._fee_blocks(_ns()) == 7
+    # env beats config
+    cli._config.cache_clear()
+    monkeypatch.setenv("SWAPSACK_FEE_BLOCKS", "5")
+    assert cli._fee_blocks(_ns()) == 5
+    # flag beats env + config
+    assert cli._fee_blocks(_ns(fee_blocks=3)) == 3
+
+
+def test_fee_blocks_defaults_when_nothing_set(monkeypatch, _clear_config_cache):
+    import swapsack.cli as cli
+
+    monkeypatch.setenv("SWAPSACK_CONFIG", "/nonexistent/swapsack.toml")
+    monkeypatch.delenv("SWAPSACK_FEE_BLOCKS", raising=False)
+    assert cli._fee_blocks(_ns()) == cli.DEFAULT_FEE_BLOCKS
+
+
+def test_fee_blocks_ignores_junk_and_nonpositive(
+    monkeypatch, tmp_path, _clear_config_cache
+):
+    import swapsack.cli as cli
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[fees]\ntarget_blocks = "nope"\n')  # unparseable -> fall through
+    monkeypatch.setenv("SWAPSACK_CONFIG", str(cfg))
+    monkeypatch.setenv("SWAPSACK_FEE_BLOCKS", "0")  # non-positive -> fall through
+    assert cli._fee_blocks(_ns()) == cli.DEFAULT_FEE_BLOCKS
+
+
+def test_config_returns_empty_on_missing_or_malformed(
+    monkeypatch, tmp_path, _clear_config_cache
+):
+    import swapsack.cli as cli
+
+    monkeypatch.setenv("SWAPSACK_CONFIG", str(tmp_path / "absent.toml"))
+    assert cli._config() == {}
+    cli._config.cache_clear()
+    bad = tmp_path / "bad.toml"
+    bad.write_text("this is = not valid = toml")
+    monkeypatch.setenv("SWAPSACK_CONFIG", str(bad))
+    assert cli._config() == {}
+
+
+def test_malformed_config_warns_instead_of_silently_reverting(
+    monkeypatch, tmp_path, capsys, _clear_config_cache
+):
+    """Failing soft is right; failing *silently* costs money.
+
+    A typo anywhere in the file discards the whole thing, so a user who set
+    `target_blocks = 4` is quietly moved back to the faster, pricier default.
+    Say so once on stderr — the spend still proceeds.
+    """
+    import swapsack.cli as cli
+
+    bad = tmp_path / "bad.toml"
+    bad.write_text("this is = not valid = toml")
+    monkeypatch.setenv("SWAPSACK_CONFIG", str(bad))
+    monkeypatch.delenv("SWAPSACK_FEE_BLOCKS", raising=False)
+
+    assert cli._config() == {}
+    err = capsys.readouterr().err
+    assert str(bad) in err
+    assert "ignor" in err.lower()
+    # ...and the spend is not blocked by it.
+    assert cli._fee_blocks(_ns()) == cli.DEFAULT_FEE_BLOCKS
+
+
+def test_config_tolerates_a_scalar_where_a_table_belongs(
+    monkeypatch, tmp_path, _clear_config_cache
+):
+    """`fees = "fast"` must fall through to the default, not AttributeError."""
+    import swapsack.cli as cli
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('fees = "fast"\n')
+    monkeypatch.setenv("SWAPSACK_CONFIG", str(cfg))
+    monkeypatch.delenv("SWAPSACK_FEE_BLOCKS", raising=False)
+    assert cli._fee_blocks(_ns()) == cli.DEFAULT_FEE_BLOCKS
+
+
+def test_valid_config_is_silent(monkeypatch, tmp_path, capsys, _clear_config_cache):
+    """No warning on the happy path — a wallet must not cry wolf before a spend."""
+    import swapsack.cli as cli
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[fees]\ntarget_blocks = 4\n")
+    monkeypatch.setenv("SWAPSACK_CONFIG", str(cfg))
+    monkeypatch.delenv("SWAPSACK_FEE_BLOCKS", raising=False)
+    assert cli._fee_blocks(_ns()) == 4
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    # An absent file is the default state, not a misconfiguration: also silent.
+    cli._config.cache_clear()
+    monkeypatch.setenv("SWAPSACK_CONFIG", str(tmp_path / "absent.toml"))
+    assert cli._config() == {}
+    assert capsys.readouterr().err == ""
+
+
+def test_default_fee_blocks_is_a_fast_target():
+    # The default must be a nearer target than the old surprising 6-block one.
+    import swapsack.cli as cli
+
+    assert 1 <= cli.DEFAULT_FEE_BLOCKS <= 3

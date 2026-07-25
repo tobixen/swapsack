@@ -8,6 +8,14 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Configurable UTXO fee target, with a faster default.** BTC/DASH spends
+  previously always targeted 6-block confirmation, which could leave a spend
+  stuck for ~30+ minutes and surprise an impatient user. The default is now
+  next-block-ish (2 blocks), and it's configurable: `--fee-blocks N` per run,
+  `$SWAPSACK_FEE_BLOCKS`, or a new config file at
+  `~/.config/swapsack/config.toml` (`[fees] target_blocks`), in that precedence.
+  Lower N is faster and pricier. Adds the first support for a config file
+  (`$SWAPSACK_CONFIG` relocates it).
 - **Spends now signal opt-in RBF (BIP125).** Every BTC/DASH transaction sets
   `nSequence 0xfffffffd`, so a **BTC** spend that gets stuck in the mempool can
   be fee-replaced rather than only waited out. Nothing bumps yet — the `bump`

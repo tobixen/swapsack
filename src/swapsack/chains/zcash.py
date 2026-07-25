@@ -276,7 +276,7 @@ class ZecAdapter(GatedTxBuilder):
         """The ACTIVE consensus branch id, fetched live (never hardcoded)."""
         return decode_branch_id(self._unary("GetLightdInfo", b""))
 
-    def fetch_fee_rate(self, target_blocks: int = 6) -> float:  # noqa: ARG002
+    def fetch_fee_rate(self, target_blocks: int = 2) -> float:  # noqa: ARG002
         """Zcash fees are ZIP-317 action-based, not rate-based; 0 = no rate."""
         return 0.0
 

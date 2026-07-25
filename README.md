@@ -148,7 +148,21 @@ Config via flags or env: keystore `$SWAPSACK_KEYSTORE`
 `$SWAPSACK_PASSPHRASE`, Esplora `$SWAPSACK_ESPLORA`, Ethereum
 RPC `$SWAPSACK_ETH_RPC`, TRON API `$SWAPSACK_TRON_API`, BSC RPC
 `$SWAPSACK_BSC_RPC`, Dash Insight API `$SWAPSACK_DASH_API`, Zcash
-lightwalletd `$SWAPSACK_ZEC_LWD` (gRPC `host:port`).
+lightwalletd `$SWAPSACK_ZEC_LWD` (gRPC `host:port`), THORChain REST
+`$SWAPSACK_THORNODE`.
+
+**UTXO fee target.** BTC/DASH spends aim for confirmation within N
+blocks (lower N = faster & pricier). Default is next-block-ish (2);
+override per run with `--fee-blocks N`, or set a personal default via
+`$SWAPSACK_FEE_BLOCKS` or a config file at
+`~/.config/swapsack/config.toml` (`$SWAPSACK_CONFIG` to relocate):
+
+```toml
+[fees]
+target_blocks = 4   # cheaper/slower; --fee-blocks and $SWAPSACK_FEE_BLOCKS win
+```
+
+Precedence: `--fee-blocks` › `$SWAPSACK_FEE_BLOCKS` › config file › default.
 
 **Shell tab-completion** (via argcomplete) — enable for the current shell, e.g. bash:
 

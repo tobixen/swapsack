@@ -180,7 +180,7 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
             symbol="BTC",
         )
 
-    def fetch_fee_rate(self, target_blocks: int = 6) -> float:
+    def fetch_fee_rate(self, target_blocks: int = 2) -> float:
         resp = self._get(f"{self.esplora_url}/fee-estimates")
         resp.raise_for_status()
         estimates = resp.json()

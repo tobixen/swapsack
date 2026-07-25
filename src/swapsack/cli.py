@@ -46,6 +46,13 @@ except ImportError:  # not built yet (e.g. running from a fresh checkout)
     __version__ = "0+unknown"
 
 DEFAULT_KEYSTORE = "~/.config/swapsack/keystore.json"
+DEFAULT_CONFIG = "~/.config/swapsack/config.toml"
+# UTXO fee target when nothing overrides it: the cheaper end of near-next-block
+# inclusion (block 1 is the priciest tier; 2 usually matches it but never costs
+# more). Deliberately fast — a 6-block target surprised an impatient user with a
+# ~30-min-stuck swap. Override per-run with --fee-blocks, or set a personal
+# default in config.toml ([fees] target_blocks). Higher = cheaper & slower.
+DEFAULT_FEE_BLOCKS = 2
 # Per-chain account/change derivation paths live on the adapter classes (see
 # the UTXO registry below); the CLI reads them off the built adapter so it can
 # never scan or send change on a path that drifts from the adapter's own.
@@ -76,6 +83,64 @@ def _keystore_path(args: argparse.Namespace) -> Path:
     return Path(
         args.keystore or os.environ.get("SWAPSACK_KEYSTORE") or DEFAULT_KEYSTORE
     ).expanduser()
+
+
+@functools.cache
+def _config() -> dict:
+    """Load the TOML config file once, or ``{}`` if it is absent or unreadable.
+
+    Best-effort like the rest of the CLI's config: a missing or malformed file
+    yields defaults rather than an error, so the wallet still works out of the
+    box. Path is ``$SWAPSACK_CONFIG`` or ``~/.config/swapsack/config.toml``.
+
+    A file that exists but cannot be parsed is *warned* about, though. Failing
+    soft is right — a config typo should not stand between you and a spend —
+    but failing silently would quietly revert settings the user believes are in
+    force, and for ``[fees] target_blocks`` that means paying the faster,
+    pricier default without being told. An absent file is the normal state and
+    says nothing.
+    """
+    import tomllib
+
+    path = Path(os.environ.get("SWAPSACK_CONFIG") or DEFAULT_CONFIG).expanduser()
+    try:
+        with path.open("rb") as fh:
+            return tomllib.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        print(
+            f"warning: ignoring config {path}: {exc}; using defaults",
+            file=sys.stderr,
+        )
+        return {}
+
+
+def _fee_blocks(args: argparse.Namespace) -> int:
+    """UTXO fee target in blocks: ``--fee-blocks`` > ``$SWAPSACK_FEE_BLOCKS`` >
+    config ``[fees] target_blocks`` > :data:`DEFAULT_FEE_BLOCKS`.
+
+    Lower targets a nearer block (faster, pricier). A non-positive or
+    unparseable value anywhere falls through to the next source rather than
+    building a zero-fee (unrelayable) tx — including a ``[fees]`` that is not a
+    table at all, which is a config typo rather than a reason to crash.
+    """
+    fees = _config().get("fees")
+    candidates = (
+        getattr(args, "fee_blocks", None),
+        os.environ.get("SWAPSACK_FEE_BLOCKS"),
+        fees.get("target_blocks") if isinstance(fees, dict) else None,
+    )
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            blocks = int(value)
+        except (TypeError, ValueError):
+            continue
+        if blocks > 0:
+            return blocks
+    return DEFAULT_FEE_BLOCKS
 
 
 def _passphrase(*, confirm: bool = False) -> str:
@@ -1081,7 +1146,7 @@ def _send_utxo(
             return 1
 
         change_address = adapter.derive_address(mnemonic, adapter.change_path)
-        fee_rate = adapter.fetch_fee_rate()
+        fee_rate = adapter.fetch_fee_rate(_fee_blocks(args))
         try:
             if sweep:
                 total = sum(u.value for u in utxos)
@@ -1176,7 +1241,7 @@ def _swap_from_utxo(
             return 1
 
         change_address = adapter.derive_address(mnemonic, adapter.change_path)
-        fee_rate = adapter.fetch_fee_rate()
+        fee_rate = adapter.fetch_fee_rate(_fee_blocks(args))
         if sweep:
             from swapsack.chains.coins import OP_RETURN_MAX_BYTES
 
@@ -1823,7 +1888,7 @@ def _liquidity_utxo(
             )
             return 1
         change_address = adapter.derive_address(mnemonic, adapter.change_path)
-        fee_rate = adapter.fetch_fee_rate()
+        fee_rate = adapter.fetch_fee_rate(_fee_blocks(args))
         if sweep:
             total = sum(u.value for u in utxos)
             try:
@@ -2246,6 +2311,12 @@ def _add_broadcast_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
     sub.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     sub.add_argument("--eth-gas", type=int, default=60000, help="ETH gas limit")
+    sub.add_argument(
+        "--fee-blocks",
+        type=int,
+        help="UTXO fee target in blocks (lower = faster & pricier); "
+        "overrides config.toml [fees] target_blocks and $SWAPSACK_FEE_BLOCKS",
+    )
     _add_price_check_args(sub)
 
 
@@ -2330,6 +2401,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument(
+        "--fee-blocks",
+        type=int,
+        help="UTXO fee target in blocks (lower = faster & pricier); "
+        "overrides config.toml [fees] target_blocks and $SWAPSACK_FEE_BLOCKS",
+    )
+    s.add_argument(
         "--eth-gas", type=int, default=60000, help="gas limit for ETH deposit"
     )
     s.add_argument(
@@ -2396,6 +2473,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=50_000,
         help="max UTXO-chain fee in base units (BTC sats / DASH duffs)",
+    )
+    s.add_argument(
+        "--fee-blocks",
+        type=int,
+        help="UTXO fee target in blocks (lower = faster & pricier); "
+        "overrides config.toml [fees] target_blocks and $SWAPSACK_FEE_BLOCKS",
     )
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
