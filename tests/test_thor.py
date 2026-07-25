@@ -80,3 +80,13 @@ def test_rune_unit_agrees_with_thorchain_asset_units():
 
     assert ThorAdapter.decimals == RUNE_DECIMALS
     assert 10**ThorAdapter.decimals == asset_unit("THOR.RUNE")
+
+
+def test_default_node_is_not_a_retired_host():
+    # The RUNE Cosmos adapter has a single default (no fallback list), so a dead
+    # default silently breaks RUNE balance/send. Keep it off the retired hosts.
+    from swapsack.chains.thor import DEFAULT_THORNODE
+
+    assert "ninerealms.com" not in DEFAULT_THORNODE
+    assert DEFAULT_THORNODE != "https://thornode.thorchain.network"
+    assert DEFAULT_THORNODE.startswith("https://")

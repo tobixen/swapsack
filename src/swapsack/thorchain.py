@@ -23,15 +23,17 @@ if TYPE_CHECKING:
 
 THORCHAIN_UNIT = 100_000_000
 # thornode.thorchain.liquify.com's TLS cert expired 2024-02-07 (never renewed),
-# the ninerealms gateways were retired (no A record), and thornode.thorchain.network
-# itself went dark to DNS on 2026-07-12 — so ThorchainClient tries a short list of
-# independently-operated nodes in order rather than trusting a single default.
-# Override with SWAPSACK_THORNODE (a single URL) if this list degrades too.
-DEFAULT_BASE_URL = "https://thornode.thorchain.network"
-DEFAULT_BASE_URLS: tuple[str, ...] = (
-    DEFAULT_BASE_URL,
-    "https://gateway.liquify.com/chain/thorchain_api",
-)
+# Public THORNode REST endpoints, tried in order (ThorchainClient pins the first
+# that answers). Nine Realms wound down: thornode.ninerealms.com and its
+# thornode.thorchain.network gateway were permanently retired (no A record since
+# 2026-07-12) and are removed — a dead node isn't free, the client pays its
+# DNS/connection-timeout before falling through. thornode.thorswap.net sits
+# behind a Cloudflare bot-challenge (403 to a CLI), so it's unusable here too.
+# The Liquify gateway is the one reliably CLI-reachable public node; add more as
+# they appear, or override with SWAPSACK_THORNODE (a single URL) to point at your
+# own node.
+DEFAULT_BASE_URL = "https://gateway.liquify.com/chain/thorchain_api"
+DEFAULT_BASE_URLS: tuple[str, ...] = (DEFAULT_BASE_URL,)
 # Default price tolerance for a quote, in basis points. Defined here (not in
 # swap.py) so the client default matches the ThorchainLike protocol default
 # without a circular import.

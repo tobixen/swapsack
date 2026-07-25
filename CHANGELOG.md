@@ -84,12 +84,17 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Fixed
 
-- **THORChain node outage resilience:** `ThorchainClient` (and the `thorchain`
-  swap backend) now tries an ordered list of nodes rather than a single
-  hardcoded default, falling through on connection failure and pinning the
-  first that answers. Prompted by `thornode.thorchain.network` going dark to
-  DNS on 2026-07-12; the default list now also includes Liquify's public
-  gateway. Override with `$SWAPSACK_THORNODE` as before (a single URL).
+- **Working default THORChain endpoint (the old one is dead):** the previous
+  default, `thornode.thorchain.network`, was a Nine Realms host, and Nine Realms
+  wound down — it (and `thornode.ninerealms.com`) stopped resolving on
+  2026-07-12, so `quote`/`swap --backend thorchain`/`auto` and RUNE
+  balance/send no longer worked out of the box. The default is now Liquify's
+  public gateway (reachable from a CLI; `thornode.thorswap.net` is behind a
+  Cloudflare bot-challenge and unusable here). The dead hosts are **removed**,
+  not just deprioritised — `ThorchainClient` still tries its node list in order
+  and pins the first that answers, but a permanently-dead entry only cost a
+  connection timeout on every call. Override with `$SWAPSACK_THORNODE` (a single
+  URL) to use your own node.
 
 ## [0.1.0] - 2026-07-08
 

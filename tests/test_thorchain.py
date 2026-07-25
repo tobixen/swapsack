@@ -470,3 +470,18 @@ def test_parse_pool_depth_maya_uses_cacao_balance():
 def test_pool_depth_empty_pool_has_zero_price():
     depth = parse_pool_depth({"balance_asset": "0", "balance_rune": "0"})
     assert depth.asset_per_protocol == 0.0
+
+
+def test_default_nodes_exclude_the_retired_ninerealms_hosts():
+    """Nine Realms wound down: thornode.ninerealms.com and its
+    thornode.thorchain.network gateway no longer resolve. A permanently-dead
+    entry isn't harmless — the fallback pays its DNS/connection-timeout on
+    every call before moving on — so it must be removed, not just ordered last.
+    """
+    from swapsack.thorchain import DEFAULT_BASE_URLS
+
+    assert DEFAULT_BASE_URLS, "need at least one default node"
+    joined = " ".join(DEFAULT_BASE_URLS)
+    assert "ninerealms.com" not in joined
+    assert "thornode.thorchain.network" not in joined
+    assert all(u.startswith("https://") for u in DEFAULT_BASE_URLS)

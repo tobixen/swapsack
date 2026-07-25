@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from swapsack.chains.cosmos import CosmosAdapter
 
-DEFAULT_THORNODE = "https://thornode.thorchain.network"
+# See thorchain.DEFAULT_BASE_URLS: the ninerealms hosts were permanently retired.
+# The Liquify gateway proxies the Cosmos REST paths this adapter needs
+# (/cosmos/bank, /cosmos/auth, /cosmos/tx) as well as /thorchain. Override with
+# --thornode / $SWAPSACK_THORNODE.
+DEFAULT_THORNODE = "https://gateway.liquify.com/chain/thorchain_api"
 RUNE_DECIMALS = 8
 
 
