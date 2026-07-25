@@ -20,12 +20,33 @@ A full end-to-end run over real funds, exercising every user-facing path:
 | 6 | **`swap USDC→USDT`** `--backend cow` | ✅ approve→**wait-for-mine**→submit; order **fulfilled** → 34.977 USDT (13 bps, solver beat market) | order `0x8e981432…651cea` |
 | 7 | `status <cow-order-uid>` | auto-detected uid → `fulfilled` | — |
 
-**End balance:** 0.00032487 BTC · 0.00733343 ETH · 34.977 USDT · 2.174 USDC.
-Total cost across all swaps/sends: well under €2 (fees + slip + spread).
+**Balance after step 7** (before the consolidation below): 0.00032487 BTC ·
+0.00733343 ETH · 34.977 USDT · 2.174 USDC. For the final position and the full
+cost of the session, see the accounting table in the next section — the swaps
+below moved most of this back to BTC.
 
 Validated live: the node-list fix (THORChain reachable), the configurable fee
 target, BIP21 URIs, RBF signalling, EUR fee display, the on-chain `status` view
 for both plain sends and swaps, and the CoW approve-then-submit ordering.
+
+### Consolidation back to BTC + accounting
+
+Swept the holdings back toward BTC (USDT→BTC clean; 0.006 ETH→BTC forced past
+the 300 bps tolerance guard at 876 bps — the flat BTC outbound fee dominates a
+small swap; USDC ~€2 and the ETH gas-remainder left as dust, not economical to
+move). Of the **132,840 sats funded**:
+
+| Bucket | sats | % |
+|--------|-----:|--:|
+| Returned to funding wallet (recovered) | 20,000 | 15.1% |
+| Recovered as BTC in the test wallet (swaps in-flight, expected) | 101,431 | 76.4% |
+| Stuck as dust — ETH ~$2.47 + USDC ~$2.17, at spot | 7,218 | 5.4% |
+| **Lost to fees/slippage** (4 swaps + 2 sends) | 4,191 | **3.2%** |
+
+Excluding the deliberate 20k return, of the round-tripped capital: 89.9% back to
+BTC, 6.4% dust, 3.7% lost. Dust (5.4%) slightly exceeds actual loss (3.2%) —
+small-balance consolidation is gated by flat outbound fees, which is exactly
+what the tolerance guard blocked on the ETH leg.
 
 ---
 
@@ -589,3 +610,83 @@ RUNE: 0.00000000  (thor1865fhauj9kuyneph5p745cn9rqt9e9mfe9ng0l)
 ```
 
 - **exit:** 0 after 33s
+## `swapsack swap --from USDT-ETH --to BTC --amount max --backend auto --confirm --yes`
+
+- **when:** 2026-07-25T22:31:57+02:00
+- **build:** swapsack 0.1.1.dev31+gcbafbaab7 (commit `a3a561b`)
+
+```console
+$ swapsack swap --from USDT-ETH --to BTC --amount max --backend auto --confirm --yes
+token source — 2 transactions (approve + deposit/order):
+  - if the deposit/order fails after the approve, an exact-amount allowance to the router/relayer remains
+routing via thorchain (best of 2)
+via:     thorchain
+send:    34.97694800 USDT-ETH to 0x03545a905ff162b46bea4b9388a14554702f3393
+expect:  0.00053152 BTC -> bc1q5grvnfh8a6n828m5pg8ftasa2zfc6hsvexa20l
+memo:    =:b:bc1q5grvnfh8a6n828m5pg8ftasa2zfc6hsvexa20l:52725
+stream:  ~1 sub-swaps over 1 blocks (~0 min) to cut slippage
+cost: (100 bps = 1%)
+  slip/swap fee  0.00000108 BTC  (19 bps)
+  outbound fee   0.00001094 BTC  (flat)
+  quoted total   0.00001202 BTC  (216 bps of input)
+Market: (CoinGecko)
+  ~0.00054340 BTC at spot  ->  ~219 bps total vs market (fees+slip+spread)
+  est. total loss ~€0.67 (fees+slip+spread)
+inbound: 0.000035 ETH max (2 tx) (~€0.06)
+
+BROADCAST txid: 0x6f4e3486094c0c48dd077451b8d1cfb7f1d1a4dba7235deb0fa42dbfc082e041
+track: swapsack status 0x6f4e3486094c0c48dd077451b8d1cfb7f1d1a4dba7235deb0fa42dbfc082e041
+```
+
+- **exit:** 0 after 9s
+
+## `swapsack swap --from ETH --to BTC --amount max --backend auto --confirm --yes`
+
+- **when:** 2026-07-25T22:35:12+02:00
+- **build:** swapsack 0.1.1.dev31+gcbafbaab7 (commit `a3a561b-dirty`)
+
+```console
+$ swapsack swap --from ETH --to BTC --amount max --backend auto --confirm --yes
+ABORTED: no swap backend can serve this pair/amount
+```
+
+- **exit:** 1 after 12s
+
+## `swapsack swap --from ETH --to BTC --amount 0.007 --backend auto --confirm --yes`
+
+- **when:** 2026-07-25T22:47:31+02:00
+- **build:** swapsack 0.1.1.dev31+gcbafbaab7 (commit `a3a561b-dirty`)
+
+```console
+$ swapsack swap --from ETH --to BTC --amount 0.007 --backend auto --confirm --yes
+ABORTED: no swap backend can serve this pair/amount
+```
+
+- **exit:** 1 after 11s
+
+## `swapsack swap --from ETH --to BTC --amount 0.006 --tolerance-bps 1200 --backend auto --confirm --yes`
+
+- **when:** 2026-07-25T22:49:52+02:00
+- **build:** swapsack 0.1.1.dev31+gcbafbaab7 (commit `a3a561b-dirty`)
+
+```console
+$ swapsack swap --from ETH --to BTC --amount 0.006 --tolerance-bps 1200 --backend auto --confirm --yes
+via:     thorchain
+send:    0.00600000 ETH to 0x03545a905ff162b46bea4b9388a14554702f3393
+expect:  0.00015792 BTC -> bc1q5grvnfh8a6n828m5pg8ftasa2zfc6hsvexa20l
+memo:    =:b:bc1q5grvnfh8a6n828m5pg8ftasa2zfc6hsvexa20l:15370
+stream:  ~1 sub-swaps over 1 blocks (~0 min) to cut slippage
+cost: (100 bps = 1%)
+  slip/swap fee  0.00000034 BTC  (19 bps)
+  outbound fee   0.00001639 BTC  (flat)
+  quoted total   0.00001673 BTC  (875 bps of input)
+Market: (CoinGecko)
+  ~0.00017456 BTC at spot  ->  ~953 bps total vs market (fees+slip+spread)
+  est. total loss ~€0.94 (fees+slip+spread)
+inbound: 0.000008 ETH max (1 tx) (~€0.01)
+
+BROADCAST txid: 0xa8fcabe36e781da438a1311a2cfc1ac08aeb87b1d224946fa91daa74d9d46554
+track: swapsack status 0xa8fcabe36e781da438a1311a2cfc1ac08aeb87b1d224946fa91daa74d9d46554
+```
+
+- **exit:** 0 after 14s
