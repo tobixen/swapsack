@@ -8,6 +8,14 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Spends now signal opt-in RBF (BIP125).** Every BTC/DASH transaction sets
+  `nSequence 0xfffffffd`, so a **BTC** spend that gets stuck in the mempool can
+  be fee-replaced rather than only waited out. Nothing bumps yet — the `bump`
+  command is still to come (see `docs/TODO.md`) — but signalling has to be in
+  place *before* a tx is broadcast for a replacement to be accepted, so it ships
+  now. No effect on how a tx is mined today. DASH transactions get the same
+  signal from the shared builder, but Dash Core implements no mempool
+  replacement (a deliberate choice, for InstantSend), so there it is inert.
 - **`status <txid>` now shows what a BTC transaction did on-chain** — inputs,
   each output with its address, the change coming back to you, and the fee in
   both sats and EUR — queried straight from Esplora (no keystore needed). A
@@ -29,8 +37,9 @@ automatically from git tags (PEP 440 / SemVer).
   so an address copied from a wallet or scanned from a QR code can be pasted
   as-is instead of being hand-trimmed. The scheme must match the chain being
   spent (a `litecoin:` URI in a BTC send is refused, catching a cross-chain
-  paste), and a URI `amount=` that contradicts `--amount` aborts rather than
-  silently preferring one of them.
+  paste), and on `send` a URI `amount=` that contradicts `--amount` aborts rather
+  than silently preferring one of them. For `--dest` only the address is used —
+  a swap's URI cannot state the output amount meaningfully.
 - **CoW Protocol backend (same-chain ETH-token swaps):** `--backend cow`
   (and `auto`) for `quote`/`swap` between USDT-ETH/USDC-ETH/ETH — a keyless
   intent API (`api.cow.fi`) that settles a solver auction instead of routing

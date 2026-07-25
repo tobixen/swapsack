@@ -86,6 +86,35 @@ Still to do:
 - Wire the testnet secrets into the CI **Integration (network)** workflow so the
   broadcast loops run there, not just locally.
 
+## Full RBF support — a `bump` command to unstick a low-fee tx
+
+Every spend now **signals** BIP125 opt-in RBF (`nSequence 0xfffffffd`, set in
+`chains/utxo.py`), so a stuck **BTC** transaction *can* be fee-replaced — but
+nothing yet *does* the replacing. Build the other half:
+
+- `swapsack bump <txid> [--fee-rate N | --fee-blocks N]` that rebuilds the same
+  transaction (same inputs, same recipient/vault output, same OP_RETURN memo —
+  all byte-identical) with a higher fee taken out of the change output, re-runs
+  the **verify gate** (this is the whole point — never hand-roll a replacement
+  outside the gate), signs and rebroadcasts.
+- BIP125 rules the replacement must satisfy: pays a higher absolute fee *and* a
+  higher feerate than the original; the original's inputs are all still
+  available. Reducing only the change output keeps the vault output/memo exact,
+  which a THORChain/Maya swap deposit **requires** (the memo carries a min-out
+  limit; a changed vault amount would fail or refund).
+- Edge: if change was folded into the fee (no change output), there's nothing to
+  take the bump from without adding an input — either pull in another confirmed
+  UTXO or refuse with a clear message.
+- The ZEC bespoke signer (`chains/zcash_tx.py`) still hardcodes
+  `sequence 0xffffffff`; Zcash has no standard mempool RBF, so leave it unless a
+  concrete need appears — but note it here so it isn't forgotten.
+- DASH inherits the signal from the shared builder but cannot use it: Dash Core
+  implements no mempool replacement (deliberate, for InstantSend). So `bump`
+  should be BTC-only and say so, rather than building a replacement no Dash node
+  will accept. Dash's own answer to a stuck tx is InstantSend, not RBF.
+- Pairs naturally with the CPFP work below (the other way to rescue a stuck tx —
+  child-pays-for-parent — for when *we* don't control the parent).
+
 ## Spend unconfirmed inbound via CPFP (`--allow-unconfirmed`)
 
 Currently `fetch_utxos` is confirmed-only and the fee model is a flat

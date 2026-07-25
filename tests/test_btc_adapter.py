@@ -456,3 +456,45 @@ def test_parse_tx_summary_handles_unconfirmed_and_op_return(esplora_tx_partial_s
     # its presence is what distinguishes a swap deposit from a plain send.
     assert tx.outputs[-1].address is None
     assert tx.outputs[-1].op_return is True
+
+
+def test_built_tx_signals_bip125_rbf():
+    """Every input must opt in to Replace-By-Fee (nSequence 0xfffffffd).
+
+    Without it a stuck low-fee tx cannot be fee-bumped (the wallet targets a
+    handful of blocks by default, so this is a real risk), and standard-policy
+    nodes reject a replacement outright. Signalling is harmless today and
+    unlocks a future `bump` command.
+    """
+    a = BtcAdapter()
+    p0, p1 = "m/84'/0'/0'/0/0", "m/84'/0'/0'/0/1"
+    a0, a1 = a.derive_address(MNEMONIC, p0), a.derive_address(MNEMONIC, p1)
+    utxos = [
+        Utxo(txid="aa" * 32, vout=0, value=120000, address=a0, path=p0),
+        Utxo(txid="bb" * 32, vout=0, value=120000, address=a1, path=p1),
+    ]
+    built = a.build_unsigned_swap(
+        mnemonic=MNEMONIC,
+        utxos=utxos,
+        vault_address=VAULT,
+        amount=178100,
+        memo=MEMO,
+        fee_rate=2,
+    )
+    assert built.tx.inputs, "expected at least one input"
+    for inp in built.tx.inputs:
+        assert inp.sequence == 0xFFFFFFFD
+        assert inp.sequence < 0xFFFFFFFE  # BIP125 opt-in threshold
+    # RBF signalling must not break signing/verification.
+    (raw_hex,) = a.sign(built)
+    assert built.tx.verify() is True
+    # What actually relays is the serialization, not the attribute above, so
+    # read the sequence back out of the signed bytes. nLockTime must still be 0:
+    # 0xfffffffd is chosen precisely to signal RBF while leaving locktime usable.
+    from bitcoinlib.transactions import Transaction
+
+    reparsed = Transaction.parse_hex(raw_hex, strict=False)
+    assert len(reparsed.inputs) == len(built.tx.inputs)
+    for inp in reparsed.inputs:
+        assert inp.sequence == 0xFFFFFFFD
+    assert reparsed.locktime == 0

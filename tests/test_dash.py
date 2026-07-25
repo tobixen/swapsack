@@ -212,6 +212,9 @@ def test_built_send_passes_verify_gate_and_signs():
     raws = a.sign(prepared.built)
     assert len(raws) == 1
     assert all(inp.signatures for inp in prepared.built.tx.inputs)
+    # Inputs opt in to RBF (shared utxo.py builder) so a stuck DASH spend can
+    # be bumped by a future release.
+    assert all(inp.sequence == 0xFFFFFFFD for inp in prepared.built.tx.inputs)
     # value is conserved: inputs = recipient + change + fee
     outputs_total = sum(o.value for o in prepared.built.outputs)
     assert outputs_total + prepared.built.fee == 240000

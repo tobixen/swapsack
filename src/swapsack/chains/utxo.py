@@ -33,6 +33,19 @@ from swapsack.chains.coins import (
 from swapsack.chains.gated import GatedTxBuilder
 from swapsack.verify import TxOutput
 
+# Signal BIP125 opt-in Replace-By-Fee on every input. 0xfffffffd is the largest
+# nSequence that still signals RBF (< 0xfffffffe) while leaving locktime enabled.
+# The wallet fee-targets only a few blocks, so a low-fee spend can get stuck;
+# signalling lets a future `bump` command fee-replace it (standard-policy nodes
+# reject replacing a non-signalling tx). Harmless today — miners treat a
+# signalling tx identically. See docs/TODO.md for the planned bump/RBF command.
+#
+# This builder is shared with DASH, where the signal is inert: Dash Core
+# implements no mempool replacement (deliberately, for InstantSend). Setting it
+# anyway keeps one builder rather than a per-chain sequence, and a non-final
+# nSequence with nLockTime 0 is standard and relays normally on both chains.
+RBF_SEQUENCE = 0xFFFFFFFD
+
 
 @dataclasses.dataclass
 class BuiltSwap:
@@ -138,6 +151,7 @@ class UtxoTxBuilder(GatedTxBuilder):
                 value=utxo.value,
                 keys=key,
                 witness_type=self.witness_type,
+                sequence=RBF_SEQUENCE,
             )
             keys.append(key)
         tx.add_output(amount, address=vault_address)
