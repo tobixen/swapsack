@@ -1,5 +1,10 @@
 """Command-line interface for swapsack.
 
+PYTHON_ARGCOMPLETE_OK — argcomplete's global completion hook only completes a
+console script whose entry-point module carries this marker in its first 1024
+bytes, so keep it near the top. (Completion also works without that hook, via
+the files hatch_build.py ships; see README.)
+
 Commands: init / add-hd / add-raw / list / address / balance / quote / swap /
 send / status. Swaps and sends default to a dry run that builds + verifies +
 prints without broadcasting; ``--confirm`` is required to actually send funds.

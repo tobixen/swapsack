@@ -1,5 +1,7 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+# argcomplete is a runtime dependency too, but the build needs it as well:
+# hatch_build.py generates the shell completion files from it (see that file).
+requires = ["hatchling", "hatch-vcs", "argcomplete>=3"]
 build-backend = "hatchling.build"
 
 [project]
@@ -40,7 +42,9 @@ Repository = "https://github.com/tobixen/swapsack"
 Issues = "https://github.com/tobixen/swapsack/issues"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.15", "pre-commit>=4"]
+# hatchling is a build backend, not a runtime dep — it's here so the tests can
+# import and exercise hatch_build.py's completion hook.
+dev = ["pytest>=8", "ruff>=0.15", "pre-commit>=4", "hatchling"]
 
 [tool.uv]
 # On Python 3.13/3.14 there is no prebuilt coincurve wheel (pulled in transitively
@@ -56,6 +60,10 @@ source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/swapsack/_version.py"
+
+# hatch_build.py: generates the bash/zsh completion files into the wheel's
+# shared-data, so tab-completion works with no shell rc editing.
+[tool.hatch.build.hooks.custom]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swapsack"]

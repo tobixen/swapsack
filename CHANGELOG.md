@@ -99,6 +99,12 @@ automatically from git tags (PEP 440 / SemVer).
   mainnet** (Dash has no testnet path) — an opt-in mainnet self-sweep test is
   gated on `SWAPSACK_DASH_MNEMONIC`; test with a tiny amount first.
 
+- **Tab-completion for commands, subcommands and options now works out of the
+  box** — no `eval "$(register-python-argcomplete swapsack)"` line to add to
+  `~/.bashrc` first. Installing swapsack now also installs a completion file
+  that bash and zsh find on their own; start a new shell and press Tab. Doing
+  it by hand still works, and is still needed for fish (see README).
+
 ### Fixed
 
 - **Working default THORChain endpoint (the old one is dead):** the previous

@@ -164,13 +164,34 @@ target_blocks = 4   # cheaper/slower; --fee-blocks and $SWAPSACK_FEE_BLOCKS win
 
 Precedence: `--fee-blocks` › `$SWAPSACK_FEE_BLOCKS` › config file › default.
 
-**Shell tab-completion** (via argcomplete) — enable for the current shell, e.g. bash:
+**Shell tab-completion** (via argcomplete) for commands, subcommands and
+options should need no setup at all: the install ships a completion file into
+`<prefix>/share/bash-completion/completions/swapsack` (and
+`share/zsh/site-functions/_swapsack`), which bash-completion and zsh find on
+their own — including from a venv, `pipx` or `uv tool` tree. Start a new shell
+after installing and press Tab.
 
-```sh
-eval "$(register-python-argcomplete swapsack)"   # add to ~/.bashrc to persist
-```
+If nothing happens, your setup is one of the cases that needs a nudge:
 
-zsh and fish work too; see the [argcomplete docs](https://github.com/kislyuk/argcomplete#activating-global-completion).
+- **bash without the bash-completion package.** Install it (`pacman -S
+  bash-completion`, `apt install bash-completion`) — its dynamic loader is what
+  picks the shipped file up.
+- **fish**, which has no such lookup:
+
+  ```sh
+  register-python-argcomplete --shell fish swapsack > ~/.config/fish/completions/swapsack.fish
+  ```
+
+- **anything else** — register it by hand for the current shell:
+
+  ```sh
+  eval "$(register-python-argcomplete swapsack)"   # add to ~/.bashrc to persist
+  ```
+
+argcomplete's [global completion](https://github.com/kislyuk/argcomplete#activating-global-completion)
+(`activate-global-python-argcomplete`, one hook for every argcomplete-enabled
+command) also works: `swapsack` carries the `PYTHON_ARGCOMPLETE_OK` marker that
+hook requires.
 
 ## Related projects
 
