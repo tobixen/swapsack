@@ -283,6 +283,19 @@ README — both copies would need the column.)
 
 ## Other known gaps
 
+- **A bad address checksum tracebacks instead of aborting cleanly.** Confirmed
+  on ZEC: `validate_destination_address` is regex-only (prefix/charset/length,
+  no checksum), so a one-character typo in a `t1…` recipient passes the sanity
+  check and then dies deep in the builder with `ValueError: Invalid checksum`
+  from `base58` — neither a `ZcashTxError` nor caught by `_send_utxo`. The user
+  sees a traceback where they should see "that is not a valid address".
+  Pre-broadcast, so no funds are at risk; it is a UX defect, not a money one.
+  The proper fix is the checksum-aware validator (bech32 / base58check /
+  cashaddr) already noted under *Next up* item 3 — that would close this and
+  harden `--dest` across every chain at once, rather than a per-chain stopgap.
+  Deliberately deferred twice (the "easy stopgap" of finding 2 in
+  `docs/code-review-2026-07-13.md`, and finding #10 of the 2026-08-14 pre-push
+  review); recorded here because it was tracked nowhere.
 - **Live integration is unproven** for the spending path (real Esplora UTXO
   scan + broadcast); only `quote` and the empty-wallet scan have run live.
 - **BIP49/44 scanning**: real wiring scans BIP84 only (Trust Wallet's scheme).
