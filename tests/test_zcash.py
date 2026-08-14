@@ -115,6 +115,10 @@ def test_wallet_balance_scans_and_sums(monkeypatch):
         return AddressInfo(has_history=False, confirmed=0, pending=0)
 
     monkeypatch.setattr(a, "address_info", fake_info)
+    # wallet_balance pins one chain tip for the whole scan; without this the
+    # "unit" suite reaches out to a live lightwalletd and fails wherever there
+    # is no network (or the public node is down).
+    monkeypatch.setattr(a, "latest_height", lambda: 3_407_167)
     report = a.wallet_balance(TEST_MNEMONIC)
     assert report.symbol == "ZEC"
     assert report.decimals == 8
