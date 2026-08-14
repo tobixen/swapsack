@@ -1,74 +1,43 @@
 # TODO
 
+Only open work. Completed items live in `CHANGELOG.md` and the code; caveats that
+outlived the work that created them are kept below as open risk.
+
 ## Next up (priority order)
 
 Owner's requested order; two-sided liquidity comes *after* these.
 
-1. ~~**`send` to an external address.**~~ **DONE for BTC, ETH, USDT-ETH, TRX,
-   USDT-TRON** (USDC-ETH shares the ERC-20 path). Plain on-chain transfer (no
-   swap, no memo) via `swapsack send <addr> --asset <A> --amount
-   <n|max>`, each with a dedicated memo-less verify gate (`verify_{btc,eth,
-   eth_token,tron,tron_token}_send`) that binds recipient + amount and rejects
-   any memo/router/extra calldata. ERC-20/TRC-20 sends are a routerless,
-   approveless `transfer(recipient, amount)`. `max` is exact for tokens, leaves a
-   gas reserve for ETH, and is refused for native TRX (can't be exact). Broadcast
-   remains unproven on mainnet — see the testnet test work below.
+1. **More swap *destinations* via external `--dest` addresses.** LTC, DOGE, BCH
+   and DASH are done. Remaining candidates: ATOM, XRP, SOL (XRP needs care re:
+   destination tag), plus the Maya-only ADA/ARB under *Swap backends*.
+   The per-chain `--dest` check in `addresses.py` is a permissive sanity check
+   (prefix/charset/length, **not** checksum — THORChain/Maya validates the
+   checksum). **A full checksum validator** (bech32 / base58check / cashaddr)
+   would be a stronger guard, and would also fix the bad-checksum traceback under
+   *Other known gaps*.
 
-2. ~~**TRX liquidity.**~~ **DONE.** TRON source signing landed (native
-   `TransferContract` + memo via tronpy, keyless public node), unblocking both
-   TRX swaps-from and `add/withdraw-liquidity` on TRON. Pre-broadcast
-   `verify_tron_swap` gate checks vault/amount/memo. Pool `TRON.TRX` is
-   `Available`. Broadcast remains unproven against mainnet (no funds spent in
-   testing) — same caveat as the BTC/ETH spending paths.
-
-3. **More swap *destinations* via external `--dest` addresses.** **DONE for
-   LTC, DOGE, BCH, DASH** — added as `ASSET` entries (destination-only) with a
-   permissive per-chain `--dest` sanity check (`addresses.py`; prefix/charset/
-   length, not checksum — THORChain/Maya validates the checksum). Live quote
-   tests confirm the pools and that the memo pays the dest. DASH is **Maya-only**
-   (no THORChain pool), so it needs `--backend maya`/`auto`; its full wallet side
-   is a separate legacy-UTXO effort — see `docs/dash.md`. Remaining candidates:
-   ATOM, XRP, SOL (XRP needs care re: destination tag), plus the Maya-only
-   ZEC/ADA/ARB under *Swap backends*. A full checksum validator (bech32/
-   base58check/cashaddr) would be a stronger guard than the current sanity check.
-
-4. **Two-sided (symmetric) liquidity — gated behind a RUNE/THORChain backend.**
+2. **Two-sided (symmetric) liquidity — the two-leg CLI orchestration.**
    A symmetric add is two *linked* deposits: the asset leg (`+:POOL:<thor1addr>`
-   to the inbound vault) and a RUNE leg (a Cosmos `MsgDeposit` carrying RUNE with
-   memo `+:POOL:<assetaddr>`), paired by the protocol via the cross-referenced
-   addresses within a time window. The wallet has none of the RUNE side today, so
-   this requires:
-   - `thor1…` address derivation (bech32, secp256k1, Cosmos HD path
-     `m/44'/931'/0'/0/0`);
-   - build + sign + broadcast a Cosmos SDK `MsgDeposit` (protobuf tx, account
-     number/sequence from a THORNode, gas) — a new signing stack and dependency
-     (e.g. `cosmpy`);
-   - two-leg coordination + partial-failure handling (one leg lands, the other
-     doesn't → lopsided/stuck position) — material risk on an experimental,
-     loss-prone feature.
+   to the inbound vault) and a RUNE/CACAO leg (a Cosmos `MsgDeposit` with memo
+   `+:POOL:<assetaddr>`), paired by the protocol via the cross-referenced
+   addresses within a time window.
 
-   The same backend also unlocks RUNE as a swap asset (to/from), so it is not
-   wasted work. Note that one-sided LP already carries ~50% RUNE price exposure;
-   symmetric mainly buys *no entry slip* in exchange for sourcing and holding
-   RUNE. Sub-phasing: (a) `thor1` derivation + RUNE balance **DONE**;
-   (b) `MsgDeposit` sign/broadcast **DONE** (RUNE + CACAO); (c) symmetric
-   add/withdraw — **building blocks DONE + tested** (`symmetric_add_memo`,
-   `pair_amount`, `CosmosAdapter.build_and_verify_native_deposit`); the two-leg
-   CLI orchestration (prepare-both-then-broadcast, partial-failure handling,
-   asset-sender pairing) is the remaining step. See `docs/liquidity-symmetric.md`.
-   Note THORChain LP is currently paused (`PAUSELP`) — symmetric works on Maya
-   (asset + CACAO) today; RUNE when THORChain re-enables.
+   The building blocks are all in place and tested (`thor1` derivation, RUNE
+   balance, `MsgDeposit` sign/broadcast for RUNE + CACAO, `symmetric_add_memo`,
+   `pair_amount`, `CosmosAdapter.build_and_verify_native_deposit`). What remains
+   is the CLI orchestration: prepare-both-then-broadcast, partial-failure
+   handling, asset-sender pairing.
+
+   The risk that makes this worth doing carefully: if one leg lands and the other
+   does not, the position is lopsided or stuck — material on an experimental,
+   loss-prone feature. Note also that one-sided LP already carries ~50% RUNE
+   price exposure; symmetric mainly buys *no entry slip* in exchange for sourcing
+   and holding RUNE. THORChain LP is currently paused (`PAUSELP`), so symmetric
+   works on Maya (asset + CACAO) today, RUNE when THORChain re-enables. See
+   `docs/liquidity-symmetric.md`.
 
 ## Integration tests towards testnet / stagenet
 
-Done: opt-in full-loop **`send`** broadcast tests on **BTC signet** (default;
-testnet3/4 via env) and **ETH Sepolia** (`tests/test_integration_testnet.py`),
-gated on funded testnet accounts via env / CI secrets (skip otherwise),
-mirroring the Nile TRC-20 loop. The BTC and ETH adapters are network-
-parameterized (`BtcAdapter(network=...)`, `EthAdapter(chain_id=...)`) so mainnet
-stays the default. This proves the account + UTXO spending path end to end.
-
-Still to do:
 - **Verify the funded broadcast loop actually RUNS in CI** (not just skips). A
   fresh signet seed + Sepolia account are set as CI secrets and are being funded
   (signetfaucet queued a payout on 2026-07-02; addresses in `docs/testnet.md`).
@@ -137,130 +106,67 @@ Notes / caveats (see the chat that prompted this):
   never happens, no funds lost) — warn the user.
 - Mind Bitcoin mempool ancestor/descendant limits.
 
-## From core review 2 (docs/core-review-2.md)
+## Carried over from the early core reviews
 
-Done: T0 (`to_checksum_address` handles `0X`/`0x`; real-ASSET token build test),
-T1/T2 (ABI-decode the approve+deposit calldata positionally and bind amount /
-vault / token / memo to intent, with selector checks), T3 (CLI warns about the
-residual router allowance if a token deposit fails after approve), T5
-(`KNOWN_TOKEN_DECIMALS` + `token_decimals()`), N4 (case-sensitive
-`memo_pays_destination` with hex-only fallback), R1 (ruff clean). L-1
-documented (LP vault is self-referential — see `prepare_liquidity` docstring).
+The review documents themselves were removed once obsolete (`f90d329`), so these
+descriptions are now the only record — the letter/number codes are historical
+labels, not lookups.
 
-Still open: N5 (BTC→token-destination memo vs 80-byte OP_RETURN limit — becomes
-live once USDT destinations from BTC are exercised); carried-forward
-A2/A3/A5/A7, M3, L2 below.
-
-## From the core review (docs/core-review.md)
-
-Done: A1 (shared niquests `HttpClient`), M2 (fee fallback → max), L1 (fail-closed
-UTXOs), H1 (atomic keystore write), M1 (memo-pays-destination check), A4 (one
-`prepare_swap`; adapters own `build_and_verify`; single `SwapSource` protocol).
-
-Done (continued): **M3** — `BtcAdapter.sign` now refuses a half-signed tx
-(asserts every input carries a signature and `tx.verify()` passes) instead of
-relying on broadcast rejection. **L2** — `_amount` rejects `<= 0` (and nan/inf)
-at parse time, so no handler re-checks and a typo fails fast at the CLI.
-
-Still open:
-
+- **N5** — BTC→token-destination memo vs the 80-byte OP_RETURN limit.
+  Becomes live once USDT destinations from BTC are exercised.
 - **A2/A3** — share the EVM key derivation + `to_checksum`/keccak helpers between
-  ETH and TRON; default `wallet_balance` on an account-model base.
+  ETH and TRON; default `wallet_balance` on an account-model base. Several other
+  items below want this first (BSC swaps, USDC on cheaper chains, Sepolia token
+  tests), so it is the highest-leverage refactor here.
 - **A5** — table-drive the CLI per-chain factories / `_resolve_destination` /
   `cmd_address` / `_swap_from_*`.
 - **A7** — split `base.ChainAdapter` into `WalletChain` vs `SourceChain` (Tron is
   destination-only). The `swap.SwapSource` protocol already exists from A4.
 - **C-list** — one `ThreadPoolExecutor` per scan; `quote` memo row alignment;
   note ETH/TRON balance only inspects index 0.
-  Done: keystore envelope `length` is now honoured on load (was written but
-  ignored — `load` hardcoded `KEY_LEN`); `--tolerance-bps` flag (wired through
-  every swap path, `cli.py`).
 
 ## Swap backends
-
-Done: Maya backend (THORChain fork, same API/memo) + `--backend auto`
-lowest-price routing across backends.
-
-Done: **CoW Protocol backend** (`src/swapsack/cow.py`, scoped 2026-07-11 in
-`docs/backends.md`, landed 2026-07-12). `--backend cow`/`auto` for same-chain
-USDT-ETH/USDC-ETH/ETH swaps via a keyless intent API — sign a structured
-EIP-712 order (no vault, no memo), gated field-by-field by
-`verify.verify_cow_order` before signing. Funds the CoW vault relayer's ERC-20
-allowance first when short (`EthAdapter.build_and_verify_approvals`, handling
-USDT's reset-to-zero quirk). Widened `Backend` into a `SwapBackend` protocol
-(`serves()`/`try_quote()`/`executor`) so `gather_quotes`/`best_quote` and
-`cli._select_backend` treat thornode-style and signed-order backends
-uniformly; `cli._swap_via_cow` is the executor for the latter.
-`status <order-uid>` auto-detects and tracks a submitted order. Live-tested
-(`tests/test_integration_cow.py`): a throwaway, unfunded key's signed order
-clears every orderbook check up to `InsufficientBalance`, proving the
-EIP-712 domain/signing matches the live API exactly.
 
 - **Chainflip** — the remaining non-thornode backend from the
   `docs/backends.md` scoping: a second independent cross-chain venue; adds
   SOL/DOT. Deposits are plain sends to a per-swap channel, so the existing
   send builders/gates get reused — but executing needs a broker/deposit-
-  channel decision first (see `docs/backends.md`'s Chainflip execution
-  notes). Calldata-style aggregators (ParaSwap/1inch/0x/LiFi) and custodial
-  instant exchangers: not planned (gating problem / custody).
-
-- **Maya-only assets**: expose DASH, ZEC, ADA (Cardano), ARB (Arbitrum), and the
-  Maya-native CACAO — Maya has pools THORChain lacks. **Destination-only is just
-  an `ASSET` entry + a `--dest` rule** (DASH **DONE**, live `DASH.DASH` pool
-  `Available`; ZEC **DONE**, live `ZEC.ZEC` pool `Available`; CACAO **DONE**,
-  checked 2026-07-03 — but CACAO needed a `thorchain.asset_unit` fix because it
-  is 1e10, not 1e8; see `docs/cacao.md`). CACAO's full wallet side is a
-  Cosmos-SDK chain effort (protobuf `MsgSend`/`MsgDeposit`) that overlaps TODO
-  #4's RUNE leg.
-  The **full wallet side** is *not* that cheap for the UTXO ones: DASH/ZEC are
-  legacy (non-segwit) UTXO chains with no Blockstream Esplora and no easy
-  testnet. **Hold + Balance (Phase 1) is DONE for both** (2026-07-10: DASH via
-  a configurable Insight API, ZEC via lightwalletd gRPC). **DASH send/sweep
-  (Phase 2) is DONE too** (shared `chains/utxo.py` builder + `ScriptParams`
-  legacy fee maths; ships mainnet-unproven — the opt-in broadcast test needs a
-  funded `SWAPSACK_DASH_MNEMONIC`), **and so is DASH Phase 3** (swap-from +
-  Maya-only single-sided LP, same mainnet-unproven caveat). **ZEC send/sweep
-  (Phase 2) is DONE too**, via the bespoke v4/ZIP-243 signer in
-  `chains/zcash_tx.py` (bitcoinlib can't sign Zcash; the sighash is anchored
-  to a real mainnet tx's signature; ZIP-317 fees; same mainnet-unproven
-  caveat — `SWAPSACK_ZEC_MNEMONIC` gates the broadcast test), **and so is ZEC
-  Phase 3** (swap-from + Maya-only LP; the v4 builder carries OP_RETURN memos
-  and ZIP-317 prices them). DASH and ZEC are now feature-complete; what
-  remains for both is **proving the broadcasts on mainnet** (fund the seeds in
-  `docs/testnet.md` and run the opt-in loops). See `docs/zcash.md`.
-- **USDC on cheaper chains**: ETH.USDC is done (mirrors USDT-ETH). THORChain also
-  pools USDC on AVAX/BASE and Maya on ARB — all far cheaper to use than ETH
-  mainnet. Each needs a new EVM chain adapter (RPC, chain-id, native coin, dest
-  validation), so this is the moment to do A2/A3 (generalize `EthAdapter` into a
-  shared EVM code path) rather than copy it per chain.
-- **BSC (BNB Smart Chain)** — Hold + Balance **DONE** (`chains/bsc.py`, a thin
-  EVM subclass of `EthAdapter`: native BNB + BEP-20 USDC/USDT at 18 decimals,
-  wired into `cmd_address`/`balance` with `--bsc-rpc`/`$SWAPSACK_BSC_RPC`).
-  Swaps are still **blocked, do not implement yet**: THORChain has BSC
-  `chain_trading_paused`/`halted` (a live `BTC->BSC.BNB` quote returns "trading is
-  halted, can't process swap") and Maya has no BSC pools, so To/From/Sweep/Liq are
-  unusable and untestable. `BscAdapter.build_and_verify` raises by design (the
-  inherited builders bake in ETH's chain id 1, wrong for BSC's 56). Revisit when
-  `inbound_addresses` shows BSC `chain_trading_paused: false`; a swap source will
-  also need the EVM chain id parameterized (currently the module-level
-  `CHAIN_ID` in `eth.py`) — fold into the A2/A3 EVM generalization.
-- **`send` to external address**: see *Next up* item 1 (BTC first).
+  channel decision first (see `docs/backends.md`'s Chainflip execution notes,
+  and `docs/chainflip.md` for the feasibility assessment). Calldata-style
+  aggregators (ParaSwap/1inch/0x/LiFi) and custodial instant exchangers: not
+  planned (gating problem / custody).
+- **Maya-only assets still to expose**: ADA (Cardano) and ARB (Arbitrum) —
+  destination-only is just an `ASSET` entry + a `--dest` rule. CACAO is exposed
+  as a destination, but its **full wallet side** is a Cosmos-SDK chain effort
+  (protobuf `MsgSend`/`MsgDeposit`) that overlaps *Next up* item 2's RUNE leg.
+  (CACAO needs `thorchain.asset_unit` to stay 1e10, not 1e8 — see
+  `docs/cacao.md`.)
+- **USDC on cheaper chains**: ETH.USDC is done. THORChain also pools USDC on
+  AVAX/BASE and Maya on ARB — all far cheaper to use than ETH mainnet. Each
+  needs a new EVM chain adapter (RPC, chain-id, native coin, dest validation),
+  so do A2/A3 (generalize `EthAdapter` into a shared EVM code path) rather than
+  copy it per chain.
+- **BSC swaps are blocked — do not implement yet.** Hold + Balance work
+  (`chains/bsc.py`), but THORChain has BSC `chain_trading_paused`/`halted` (a
+  live `BTC->BSC.BNB` quote returns "trading is halted, can't process swap") and
+  Maya has no BSC pools, so To/From/Sweep/Liq are unusable and untestable.
+  `BscAdapter.build_and_verify` raises by design (the inherited builders bake in
+  ETH's chain id 1, wrong for BSC's 56). Revisit when `inbound_addresses` shows
+  BSC `chain_trading_paused: false`; a swap source will also need the EVM chain
+  id parameterized (currently the module-level `CHAIN_ID` in `eth.py`) — fold
+  into A2/A3.
 - **BasicSwap backend** (trustless P2P / privacy / XMR): orchestrate its daemon
   via API; needs full nodes (heavy) and a different custody seam. Future.
 - **Monero (XMR) hold/balance/send**: blocked on a custody/architecture
   decision — see `docs/monero.md` for the analysis and the open choices.
-- **liquidity backend**: `add/withdraw-liquidity --backend {thorchain,maya}` now
-  works (Maya pairs with CACAO, different pools, no TRON). No `auto` for LP —
-  it's a network/pairing choice, not price-routed.
 
 ## Extend `status <txid>` to every chain (not just BTC)
 
-`status` now prints an on-chain transaction summary (inputs, outputs, change,
-fee in sats + EUR, and whether it carries a swap memo) — but **only for BTC**,
-via `BtcAdapter.fetch_tx` / `parse_tx_summary` (`chains/btc.py`). A plain `send`
-is never observed by a swap vault, so this on-chain view is the *only* useful
-thing `status` can say about a non-swap tx, and it's missing for every other
-chain.
+`status` prints an on-chain transaction summary (inputs, outputs, change, fee in
+sats + EUR, and whether it carries a swap memo) — but **only for BTC**, via
+`BtcAdapter.fetch_tx` / `parse_tx_summary` (`chains/btc.py`). A plain `send` is
+never observed by a swap vault, so this on-chain view is the *only* useful thing
+`status` can say about a non-swap tx, and it's missing for every other chain.
 
 To generalize:
 - DASH/ZEC are the cheapest wins — DASH has the same Esplora-ish Insight `/tx`
@@ -283,6 +189,16 @@ README — both copies would need the column.)
 
 ## Other known gaps
 
+- **Broadcast is still unproven on mainnet for DASH, ZEC and TRON.** The
+  2026-07-24 run-through (`docs/live-session-2026-07-24.md`) spent real funds and
+  proved the BTC send + BTC/ETH/ERC-20 swap paths (THORChain, Maya and CoW), but
+  DASH and ZEC ship mainnet-unproven — their opt-in broadcast loops are gated on
+  a funded `SWAPSACK_DASH_MNEMONIC` / `SWAPSACK_ZEC_MNEMONIC` (seeds in
+  `docs/testnet.md`) — and no TRX/USDT-TRON transaction has ever been broadcast.
+  A plain ETH `send` (as opposed to a swap) has also not been exercised live.
+  Both DASH and ZEC are otherwise feature-complete (hold/balance/send/sweep/
+  swap-from/LP); proving the broadcasts is all that remains. See `docs/dash.md`,
+  `docs/zcash.md`.
 - **A bad address checksum tracebacks instead of aborting cleanly.** Confirmed
   on ZEC: `validate_destination_address` is regex-only (prefix/charset/length,
   no checksum), so a one-character typo in a `t1…` recipient passes the sanity
@@ -290,27 +206,16 @@ README — both copies would need the column.)
   from `base58` — neither a `ZcashTxError` nor caught by `_send_utxo`. The user
   sees a traceback where they should see "that is not a valid address".
   Pre-broadcast, so no funds are at risk; it is a UX defect, not a money one.
-  The proper fix is the checksum-aware validator (bech32 / base58check /
-  cashaddr) already noted under *Next up* item 3 — that would close this and
-  harden `--dest` across every chain at once, rather than a per-chain stopgap.
-  Deliberately deferred twice (the "easy stopgap" of finding 2 in
-  `docs/code-review-2026-07-13.md`, and finding #10 of the 2026-08-14 pre-push
+  The proper fix is the checksum-aware validator under *Next up* item 1 — that
+  would close this and harden `--dest` across every chain at once, rather than a
+  per-chain stopgap. Deliberately deferred twice (the "easy stopgap" of finding 2
+  in `docs/code-review-2026-07-13.md`, and finding #10 of the 2026-08-14 pre-push
   review); recorded here because it was tracked nowhere.
-- **Live integration is unproven** for the spending path (real Esplora UTXO
-  scan + broadcast); only `quote` and the empty-wallet scan have run live.
 - **BIP49/44 scanning**: real wiring scans BIP84 only (Trust Wallet's scheme).
   `scan_account` is generic enough to add `m/49'`/`m/44'` accounts + script
   types when needed.
 - **ETH gas estimation**: ETH source uses a fixed `--eth-gas` (default 60000);
   could call `eth_estimateGas` against the quote's vault/memo instead.
-- ~~**USDT-TRON as a source**~~ **DONE.** TRX (native) and the TRC-20 token
-  source both land: a `TriggerSmartContract` `transfer(vault, amount)` with the
-  swap memo in the tx data (no router on TRON), gated by `verify_tron_token_swap`
-  which decodes the transfer calldata and binds recipient/amount/memo. See
-  `tron.py` (`build_unsigned_trc20_transfer`, `_build_and_verify_token`).
-- ~~**Token balances in `balance`**~~ **DONE.** `balance` now reports USDT
-  (TRC-20/ERC-20) holdings alongside native BTC/ETH/TRX, via each adapter's
-  `token_balances` and `cli._report_token_balances`.
 - **Cache LP provider addresses (balance-report speed-up)**: reporting added
   liquidity queries the backend's `pool/{POOL}/liquidity_provider/{ADDRESS}`
   endpoint. ETH/TRON have a single derived address; BTC's LP is keyed by the
