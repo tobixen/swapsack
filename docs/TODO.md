@@ -7,9 +7,9 @@ outlived the work that created them are kept below as open risk.
 
 Owner's requested order; two-sided liquidity comes *after* these.
 
-1. **More swap *destinations* via external `--dest` addresses.** LTC, DOGE, BCH
-   and DASH are done. Remaining candidates: ATOM, XRP, SOL (XRP needs care re:
-   destination tag), plus the Maya-only ADA/ARB under *Swap backends*.
+1. **More swap *destinations* via external `--dest` addresses.** Remaining
+   candidates: ATOM, XRP, SOL (XRP needs care re: destination tag), plus the
+   Maya-only ADA/ARB under *Swap backends*.
    The per-chain `--dest` check in `addresses.py` is a permissive sanity check
    (prefix/charset/length, **not** checksum — THORChain/Maya validates the
    checksum). **A full checksum validator** (bech32 / base58check / cashaddr)
@@ -22,11 +22,11 @@ Owner's requested order; two-sided liquidity comes *after* these.
    `+:POOL:<assetaddr>`), paired by the protocol via the cross-referenced
    addresses within a time window.
 
-   The building blocks are all in place and tested (`thor1` derivation, RUNE
-   balance, `MsgDeposit` sign/broadcast for RUNE + CACAO, `symmetric_add_memo`,
-   `pair_amount`, `CosmosAdapter.build_and_verify_native_deposit`). What remains
-   is the CLI orchestration: prepare-both-then-broadcast, partial-failure
-   handling, asset-sender pairing.
+   Build on the existing pieces — `thor1` derivation, RUNE balance, `MsgDeposit`
+   sign/broadcast for RUNE + CACAO, `symmetric_add_memo`, `pair_amount`,
+   `CosmosAdapter.build_and_verify_native_deposit`. What remains is the CLI
+   orchestration: prepare-both-then-broadcast, partial-failure handling,
+   asset-sender pairing.
 
    The risk that makes this worth doing carefully: if one leg lands and the other
    does not, the position is lopsided or stuck — material on an experimental,
@@ -141,8 +141,9 @@ labels, not lookups.
   (protobuf `MsgSend`/`MsgDeposit`) that overlaps *Next up* item 2's RUNE leg.
   (CACAO needs `thorchain.asset_unit` to stay 1e10, not 1e8 — see
   `docs/cacao.md`.)
-- **USDC on cheaper chains**: ETH.USDC is done. THORChain also pools USDC on
-  AVAX/BASE and Maya on ARB — all far cheaper to use than ETH mainnet. Each
+- **USDC on cheaper chains**: THORChain also pools USDC on AVAX/BASE and Maya on
+  ARB — all far cheaper to use than ETH mainnet (where the only current pool is).
+  Each
   needs a new EVM chain adapter (RPC, chain-id, native coin, dest validation),
   so do A2/A3 (generalize `EthAdapter` into a shared EVM code path) rather than
   copy it per chain.
