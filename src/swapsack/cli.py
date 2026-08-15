@@ -27,7 +27,11 @@ from collections.abc import Callable
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
 
-from swapsack.addresses import parse_payment_uri, validate_destination_address
+from swapsack.addresses import (
+    is_evm_chain,
+    parse_payment_uri,
+    validate_destination_address,
+)
 from swapsack.cow import DEFAULT_COW_TOLERANCE_BPS
 from swapsack.keystore import HdKey, Keystore
 from swapsack.net import HTTP_ERRORS
@@ -81,6 +85,10 @@ ASSET = {
     "XRP": "XRP.XRP",  # classic r… addresses only — no destination tag, see below
     "ADA": "ADA.ADA",  # Maya-only; unreachable from a UTXO source (memo length)
     "ETH-ARB": "ARB.ETH",  # Maya-only: native ETH on Arbitrum, not the ARB token
+    # The same dollar, somewhere cheaper to use than ETH mainnet. Each chain
+    # has its own USDC contract, so these are not interchangeable strings.
+    "USDC-AVAX": "AVAX.USDC-0XB97EF9EF8734C71904D8002F8B6BC66DD9C48A6E",
+    "USDC-ARB": "ARB.USDC-0XAF88D065E77C8CC2239327C5EDB3A432268E5831",  # Maya-only
     "CACAO": "MAYA.CACAO",  # Maya native asset; 1e10 decimals; see docs/cacao.md
     "RUNE": "THOR.RUNE",  # THORChain native asset (Cosmos MsgSend/MsgDeposit)
 }
@@ -654,6 +662,19 @@ def _dest_chain_caveats(args: argparse.Namespace, dest: str) -> None:
             "do NOT use an exchange deposit address that requires a tag; "
             "such a deposit is usually unrecoverable",
             "pay a self-custodial XRP address instead",
+        )
+    if is_evm_chain(chain) and chain != "ETH":
+        # Every EVM chain shares one 20-byte address space, so a `0x…` address
+        # is silent about which chain it is for — and the payout is final. A
+        # self-custodial address usually works on all of them (same key), but
+        # an exchange deposit address is per-chain, and crediting is manual at
+        # best when funds arrive over the wrong bridge.
+        _warn(
+            f"this pays out on {chain}, not Ethereum mainnet:",
+            "every EVM chain uses the same address format, so the address "
+            "itself cannot tell you which chain it belongs to",
+            f"make sure the recipient accepts {args.to_} on {chain} — an "
+            "exchange deposit address for Ethereum mainnet will not credit it",
         )
     from_chain = ASSET[args.from_].split(".", 1)[0]
     if from_chain not in _UTXO_ADAPTERS:

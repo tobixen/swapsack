@@ -60,6 +60,9 @@ def test_loss_vs_market_bps_guards_zero_market():
 def test_tokens_map_to_the_underlying_asset_regardless_of_chain():
     assert COINGECKO_IDS["USDT-ETH"] == COINGECKO_IDS["USDT-TRON"] == "tether"
     assert COINGECKO_IDS["USDC-ETH"] == "usd-coin"
+    # Same token on cheaper chains — same price, so the market line works there
+    # too rather than silently dropping out.
+    assert COINGECKO_IDS["USDC-AVAX"] == COINGECKO_IDS["USDC-ARB"] == "usd-coin"
     assert COINGECKO_IDS["DASH"] == "dash"
     assert COINGECKO_IDS["ZEC"] == "zcash"
     assert COINGECKO_IDS["CACAO"] == "cacao"

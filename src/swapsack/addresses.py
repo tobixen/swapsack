@@ -46,6 +46,10 @@ _RULES: dict[str, re.Pattern[str]] = {
     "ETH": re.compile(r"^0x[0-9a-fA-F]{40}$"),
     # Arbitrum is an EVM L2 — same 20-byte address space and EIP-55 as ETH.
     "ARB": re.compile(r"^0x[0-9a-fA-F]{40}$"),
+    # Avalanche has three chains and only the C-Chain is EVM (and pooled). The
+    # X-/P-Chain's own 'X-avax1…'/'P-avax1…' bech32 form is therefore excluded
+    # deliberately: a valid Avalanche address that a payout could never credit.
+    "AVAX": re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "TRON": re.compile(rf"^T{_B58}{{33}}$"),
     # Maya native chain (Cosmos-SDK bech32, 'maya' HRP) — for a CACAO payout.
     "MAYA": re.compile(rf"^maya1{_B32}{{37,58}}$"),
@@ -132,8 +136,10 @@ _PLAIN_BECH32_HRP: dict[str, str] = {
     "GAIA": "cosmos",
     "ADA": "addr",
 }
-# EVM chains: one address space, one EIP-55 casing rule.
-_EVM_CHAINS = frozenset({"ETH", "ARB"})
+# EVM chains: one address space, one EIP-55 casing rule. Which is also the
+# hazard — an address alone never says which of these it is meant for, so the
+# CLI warns when a payout lands anywhere but Ethereum mainnet.
+_EVM_CHAINS = frozenset({"ETH", "ARB", "AVAX"})
 
 # Chains whose addresses are base58check, mapped to the alphabet they use —
 # the XRPL permutes the same 58 characters, so only decoding tells them apart.
@@ -167,6 +173,16 @@ _CASHADDR_GENERATOR = (
     0xAE2EABE2A8,
     0x1E4F43E470,
 )
+
+
+def is_evm_chain(chain: str) -> bool:
+    """Whether ``chain`` uses the EVM 20-byte address space.
+
+    Public because the *sharing* of that address space is a user-facing hazard,
+    not just a checksum detail: an address cannot say which EVM chain it is
+    meant for, so the CLI warns before paying one that is not Ethereum mainnet.
+    """
+    return chain in _EVM_CHAINS
 
 
 def _cashaddr_ok(address: str) -> bool:

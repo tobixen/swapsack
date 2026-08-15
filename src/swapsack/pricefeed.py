@@ -43,6 +43,9 @@ COINGECKO_IDS: dict[str, str] = {
     "USDT-ETH": "tether",
     "USDT-TRON": "tether",
     "USDC-ETH": "usd-coin",
+    # Same dollar, cheaper chain — one price for all three.
+    "USDC-AVAX": "usd-coin",
+    "USDC-ARB": "usd-coin",
 }
 
 

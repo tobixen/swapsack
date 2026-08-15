@@ -170,18 +170,30 @@ labels, not lookups.
   (protobuf `MsgSend`/`MsgDeposit`) that overlaps *Next up* item 2's RUNE leg.
   (CACAO needs `thorchain.asset_unit` to stay 1e10, not 1e8 — see
   `docs/cacao.md`.)
-- **USDC on cheaper chains**: THORChain also pools USDC on AVAX/BASE and Maya on
-  ARB — all far cheaper to use than ETH mainnet (where the only current pool is).
-  Each needs a new EVM chain adapter (RPC, chain-id, native coin, dest
-  validation), so do A2/A3 (generalize `EthAdapter` into a shared EVM code path)
-  rather than copy it per chain.
-  **But note the split**: that adapter is only needed to *hold, spend or source*
-  those assets. Exposing them as `--dest` **destinations** is now nearly free —
-  the `ARB` shape rule and its EIP-55 check already exist (added with ETH-ARB),
-  so `USDC-ARB` is one `ASSET` entry plus a CoinGecko id. AVAX/BASE need one
-  `_RULES` line each (identical EVM pattern) and an `_EVM_CHAINS` entry. Worth
-  doing ahead of the adapter work if the aim is just to *receive* USDC somewhere
-  cheaper than ETH mainnet.
+- **USDC on cheaper chains — the *destination* half is done** (`USDC-AVAX` via
+  THORChain, `USDC-ARB` via Maya). What remains is **holding, spending or
+  sourcing** them, which does need a new EVM chain adapter (RPC, chain-id,
+  native coin) — so do A2/A3 (generalize `EthAdapter` into a shared EVM code
+  path) rather than copy it per chain. Native AVAX is likewise not exposed;
+  it is one `ASSET` line away now that the `AVAX` shape rule exists.
+
+  Three findings from doing it, worth having before the adapter work:
+  - **The premise "far cheaper than ETH mainnet" did not survive measurement.**
+    On 2026-08-16 the flat outbound fee was ~0.25 USDC to ETH, ~0.25 to AVAX
+    and ~0.12 to ARB, and total cost vs spot on a 0.001 BTC swap was 68/73/139
+    bps respectively — i.e. the *swap* is not the expensive part. The real
+    saving is what you do with the USDC afterwards (a transfer on ARB/AVAX
+    costs cents), which only matters once we can spend there — the adapter
+    work, not this. Do not re-justify the adapter with the swap-cost argument.
+  - **Maya's `ARB.USDC` pool is thin** — ~8.9k USDC of depth, so a 0.01 BTC
+    swap lost ~1269 bps against spot vs ~35 bps for the same swap to
+    `USDC-ETH`. Nothing to fix in the code (the `Market:` line surfaces it),
+    but it caps how useful `USDC-ARB` is at size, and is worth re-measuring
+    rather than assumed stable.
+  - **BASE is blocked, not merely unimplemented**: `BASE.USDC` *and* `BASE.ETH`
+    are `Available` but `trading_halted: true` on THORChain (checked
+    2026-08-16), same shape as the BSC and SOL blocks. One `_RULES` line and an
+    `_EVM_CHAINS` entry is still all it needs whenever the halt lifts.
 - **BSC swaps are blocked — do not implement yet.** Hold + Balance work
   (`chains/bsc.py`), but THORChain has BSC `chain_trading_paused`/`halted` (a
   live `BTC->BSC.BNB` quote returns "trading is halted, can't process swap") and

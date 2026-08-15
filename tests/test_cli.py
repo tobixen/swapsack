@@ -1211,6 +1211,55 @@ def test_atom_dest_is_accepted_without_a_warning(capsys):
     assert capsys.readouterr().err == ""
 
 
+EVM_DEST = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+
+
+@pytest.mark.parametrize(
+    ("key", "asset"),
+    [
+        ("USDC-AVAX", "AVAX.USDC-0XB97EF9EF8734C71904D8002F8B6BC66DD9C48A6E"),
+        ("USDC-ARB", "ARB.USDC-0XAF88D065E77C8CC2239327C5EDB3A432268E5831"),
+    ],
+)
+def test_usdc_on_a_cheaper_chain_names_that_chains_own_contract(key, asset):
+    """The contract is what decides which token lands — it is not interchangeable.
+
+    USDC has a different contract address on every chain, and a swap memo that
+    named the wrong one would either fail to route or pay out a different token
+    entirely. Pinned against the live pool listing rather than trusted to a
+    careful paste.
+    """
+    from swapsack.cli import ASSET, _derivable_chain
+
+    assert ASSET[key] == asset
+    assert _derivable_chain(key) == asset.split(".", 1)[0]
+
+
+@pytest.mark.parametrize("key", ["USDC-AVAX", "USDC-ARB", "ETH-ARB"])
+def test_a_non_mainnet_evm_dest_warns_which_chain_it_pays_on(key, capsys):
+    """Every EVM chain shares one address space, so the address cannot tell you
+    which chain a payout lands on — and an exchange deposit address that only
+    credits Ethereum mainnet will swallow an Arbitrum or Avalanche payout."""
+    from swapsack.cli import _resolve_destination
+
+    assert _resolve_destination(_swap_args("BTC", key, EVM_DEST), None) == EVM_DEST
+    warning = capsys.readouterr().err
+    assert "exchange deposit address" in warning
+    # Name the chain the funds actually land on, not just "not mainnet".
+    assert key.rsplit("-", 1)[1].lower() in warning.lower()
+
+
+def test_an_ethereum_mainnet_dest_gets_no_chain_warning(capsys):
+    # The warning has to stay rare to stay read: mainnet USDC is the ordinary
+    # case and the address means exactly what it looks like.
+    from swapsack.cli import _resolve_destination
+
+    assert _resolve_destination(_swap_args("BTC", "USDC-ETH", EVM_DEST), None) == (
+        EVM_DEST
+    )
+    assert capsys.readouterr().err == ""
+
+
 def test_resolve_destination_takes_only_the_address_from_a_uri():
     """A `--dest` URI contributes its address and nothing else, deliberately.
 

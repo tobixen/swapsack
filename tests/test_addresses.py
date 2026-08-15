@@ -41,6 +41,10 @@ VALID = {
     "TRON": ["TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"],
     # Arbitrum is EVM — the same address space and EIP-55 rule as ETH.
     "ARB": ["0x9858EfFD232B4033E47d90003D41EC34EcaEda94"],
+    # Avalanche: THORChain pools live on the *C-Chain*, which is EVM — same
+    # address space and EIP-55 rule again. (X-/P-Chain addresses look nothing
+    # like this; see the test below.)
+    "AVAX": ["0x9858EfFD232B4033E47d90003D41EC34EcaEda94"],
     # Maya native chain (Cosmos-SDK bech32), for a CACAO destination.
     "MAYA": ["maya10sy79jhw9hw9sqwdgu0k4mw4qawzl7czewzs47"],
     # THORChain native chain (Cosmos-SDK bech32), for a RUNE destination.
@@ -122,6 +126,20 @@ def test_ada_byron_addresses_are_rejected():
         "wRWnbhBhqGGKvLDgHm7HKQMhcqRhqEqbLRQLKzKQzc",
     ]:
         assert validate_destination_address("ADA", byron) is not None
+
+
+def test_avalanche_x_chain_addresses_are_rejected():
+    """Avalanche has three chains; only the C-Chain is EVM and only it is pooled.
+
+    An `X-avax1…` address is a perfectly valid Avalanche address — for the
+    X-Chain, which a THORChain payout can never credit. Refusing it here is the
+    difference between a clear "wrong address" and an irrecoverable payout.
+    """
+    for x_chain in [
+        "X-avax1x459sj0ssujguq723cljfty4jlae28evjzt7xz",
+        "P-avax1x459sj0ssujguq723cljfty4jlae28evjzt7xz",
+    ]:
+        assert validate_destination_address("AVAX", x_chain) is not None
 
 
 def test_a_cosmos_hub_address_is_not_a_thorchain_one():

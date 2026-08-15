@@ -8,6 +8,28 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **USDC as a swap destination on Avalanche and Arbitrum: `USDC-AVAX` and
+  `USDC-ARB`**, payable with `--dest` like the other destination-only assets
+  (AVAX via THORChain, ARB via Maya). Same dollar, on a chain where moving it
+  afterwards costs cents rather than dollars — the swap payout itself is priced
+  much the same on all three (the flat outbound fee was ~0.25 USDC on ETH and
+  AVAX, ~0.12 on ARB when checked on 2026-08-16), so the saving is in what you
+  do with the coins next, not in the swap.
+  - **Mind Arbitrum's depth.** Maya's `ARB.USDC` pool held ~8.9k USDC, so a
+    0.01 BTC swap lost ~12.7% against spot where the same swap to `USDC-ETH`
+    lost ~0.35%. The `Market:` line shows this before you confirm — read it.
+  - **A payout to a non-mainnet EVM chain now warns which chain it lands on.**
+    Every EVM chain shares one address format, so a `0x…` address cannot tell
+    you whether it is for Ethereum, Arbitrum or Avalanche. A self-custodial
+    address is usually fine on all of them, but an exchange deposit address is
+    not, and funds arriving over the wrong chain are a support ticket at best.
+    The warning covers the existing `ETH-ARB` destination too.
+  - Avalanche addresses are checked as **C-Chain** (`0x…`, EIP-55) only: an
+    X-/P-Chain `X-avax1…` address is a valid Avalanche address that a swap
+    payout could never credit, so it is refused rather than paid.
+  - **Base is not included** — THORChain's `BASE.USDC` pool is trading-halted
+    (as is BSC's), the same block that keeps SOL and BSC out.
+
 - **Four new swap destinations: `ATOM`, `XRP`, `ADA` and `ETH-ARB`** (Cosmos
   Hub, XRP Ledger, Cardano, and native ETH on Arbitrum), payable with `--dest`
   like LTC/DOGE/BCH. ATOM and XRP go via THORChain, ADA and ETH-ARB via Maya;

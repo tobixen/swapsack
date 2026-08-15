@@ -41,6 +41,8 @@ The wallet is still under rapid development as of 2026-07-10.  Missing features 
 | XRP       |      |     |  ✅ |      |      |      |     |
 | ADA       |      |     |  ◑  |      |      |      |     |
 | ETH-ARB   |      |     |  ✅ |      |      |      |     |
+| USDC-AVAX |      |     |  ✅ |      |      |      |     |
+| USDC-ARB  |      |     |  ✅ |      |      |      |     |
 | DASH      |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
 | ZEC       |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
 | CACAO     |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |      |     |
@@ -90,10 +92,10 @@ capability grid above for the per-feature detail.
 | USDT-TRON | Tether | TRC-20 token | partial | `send` done |
 | USDT-BSC | Tether | BEP-20 token | none | Blocked: halted on THORChain, not on Maya (Maya has no BSC pools) |
 | USDT-SOL | Tether | SPL token | none | Not currently available on THORChain/Maya |
-| AVAX | Avalanche C-Chain | EVM | none | |
-| BASE | Base (ETH L2) | EVM | none | |
-| ARB | Arbitrum (ETH L2) | EVM | partial | **Maya-only**. `ETH-ARB` (native ETH on Arbitrum) is a destination via `--dest`; the ARB *token* pool is `Staged`, not tradeable. Addresses are ordinary EVM ones, EIP-55 checked |
-| USDC | USD Coin (ETH/BSC/AVAX/BASE/ARB) | ERC-20 token | partial | ETH done (incl. `send`, via the shared ERC-20 path); AVAX/BASE/ARB need new EVM chain adapters; BSC additionally blocked by the THORChain halt |
+| AVAX | Avalanche C-Chain | EVM | partial | `USDC-AVAX` is a destination via `--dest`; native AVAX is not exposed yet. C-Chain (`0x…`, EIP-55 checked) only — an X-/P-Chain `X-avax1…` address is refused, since a payout could never credit it |
+| BASE | Base (ETH L2) | EVM | none | Blocked: THORChain's `BASE.USDC` and `BASE.ETH` pools are `Available` but **trading-halted** (checked 2026-08-16), the same shape as the BSC block. Revisit when the halt lifts |
+| ARB | Arbitrum (ETH L2) | EVM | partial | **Maya-only**. `ETH-ARB` (native ETH on Arbitrum) and `USDC-ARB` are destinations via `--dest`; the ARB *token* pool is `Staged`, not tradeable. Addresses are ordinary EVM ones, EIP-55 checked. Mind the depth: Maya's `ARB.USDC` pool held ~8.9k USDC on 2026-08-16, so anything above ~€100 slips hard — the `Market:` line shows it |
+| USDC | USD Coin (ETH/BSC/AVAX/BASE/ARB) | ERC-20 token | partial | ETH done (incl. `send`, via the shared ERC-20 path). AVAX and ARB are **destinations** (`--dest`) — receiving needs no adapter; *holding or spending* them still does. BASE and BSC are blocked by THORChain halts |
 | LTC | Litecoin | UTXO | partial | destination only (via `--dest`) |
 | DOGE | Dogecoin | UTXO | partial | destination only (via `--dest`) |
 | BCH | Bitcoin Cash | UTXO | partial | destination only (via `--dest`) |
