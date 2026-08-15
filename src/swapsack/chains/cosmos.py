@@ -23,6 +23,10 @@ from bitcoinlib.encoding import hash160
 from bitcoinlib.keys import HDKey
 from bitcoinlib.mnemonic import Mnemonic
 
+# Re-exported: the Cosmos address codec lives in swapsack.bech32 so the
+# destination-address validator can verify a maya1/thor1 checksum without
+# importing a chain adapter. Callers here keep importing it from this module.
+from swapsack.bech32 import bech32_decode, bech32_encode
 from swapsack.chains import cosmos_tx
 from swapsack.chains.base import BalanceReport
 from swapsack.net import HTTP_ERRORS, HttpClient
@@ -39,71 +43,6 @@ DEFAULT_DERIVATION = "m/44'/931'/0'/0/0"
 # Gas limit for a native tx. THORChain-family chains charge a fixed native-tx fee
 # themselves (deducted from the account), so the cosmos Fee carries no coins.
 DEFAULT_GAS_LIMIT = 2_000_000
-
-# --- bech32 (BIP173) --------------------------------------------------------
-# A minimal, self-contained implementation (no new dependency). Verified against
-# the reference test vectors and real on-chain addresses for both HRPs.
-_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-
-
-def _bech32_polymod(values: list[int]) -> int:
-    gen = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
-    chk = 1
-    for value in values:
-        top = chk >> 25
-        chk = ((chk & 0x1FFFFFF) << 5) ^ value
-        for i in range(5):
-            chk ^= gen[i] if (top >> i) & 1 else 0
-    return chk
-
-
-def _bech32_hrp_expand(hrp: str) -> list[int]:
-    return [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
-
-
-def _convertbits(data: bytes | list[int], frm: int, to: int, pad: bool) -> list[int]:
-    acc = bits = 0
-    ret: list[int] = []
-    maxv = (1 << to) - 1
-    for value in data:
-        if value < 0 or value >> frm:
-            raise ValueError("invalid value for bech32 base conversion")
-        acc = (acc << frm) | value
-        bits += frm
-        while bits >= to:
-            bits -= to
-            ret.append((acc >> bits) & maxv)
-    if pad:
-        if bits:
-            ret.append((acc << (to - bits)) & maxv)
-    elif bits >= frm or (acc << (to - bits)) & maxv:
-        raise ValueError("invalid padding in bech32 base conversion")
-    return ret
-
-
-def bech32_encode(hrp: str, data: bytes) -> str:
-    """Encode a byte string (e.g. a 20-byte account hash) as a bech32 address."""
-    values = _convertbits(data, 8, 5, pad=True)
-    checksum_input = _bech32_hrp_expand(hrp) + values + [0, 0, 0, 0, 0, 0]
-    polymod = _bech32_polymod(checksum_input) ^ 1
-    checksum = [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
-    return hrp + "1" + "".join(_BECH32_CHARSET[d] for d in values + checksum)
-
-
-def bech32_decode(address: str) -> tuple[str, bytes]:
-    """Inverse of :func:`bech32_encode`; raises :class:`ValueError` on bad checksum."""
-    pos = address.rfind("1")
-    if pos < 1 or pos + 7 > len(address):
-        raise ValueError(f"not a bech32 address: {address!r}")
-    hrp = address[:pos]
-    try:
-        values = [_BECH32_CHARSET.index(c) for c in address[pos + 1 :]]
-    except ValueError:
-        raise ValueError(f"invalid bech32 character in {address!r}") from None
-    if _bech32_polymod(_bech32_hrp_expand(hrp) + values) != 1:
-        raise ValueError(f"bad bech32 checksum in {address!r}")
-    return hrp, bytes(_convertbits(values[:-6], 5, 8, pad=False))
-
 
 # --- balance parsing --------------------------------------------------------
 

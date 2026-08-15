@@ -31,8 +31,9 @@ destination, so neither is rediscovered mid-money-path. It mirrors
   2026-07-03: a `BTC->MAYA.CACAO` quote returns a memo `=:c:maya1...` paying the
   dest; pool is deep).
 - **Destination (`--to CACAO`) is done** — a `MAYA.CACAO` `ASSET` entry, a
-  permissive `maya1` bech32 `--dest` rule (charset + length, **not** checksum —
-  Maya validates it), a CoinGecko id (`cacao`), **and** the decimals fix below.
+  `maya1` bech32 `--dest` rule (charset, length **and** — since the
+  checksum-aware validator landed — the bech32 checksum), a CoinGecko id
+  (`cacao`), **and** the decimals fix below.
 - **The full wallet side is a RUNE-class effort**, not a UTXO one — a Cosmos-SDK
   chain adapter with protobuf `MsgSend` / `MsgDeposit` signing. Tractable (no
   exotic-signature blocker like Zcash), but a meaningful chunk + a new

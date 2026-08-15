@@ -4,10 +4,18 @@ import pytest
 
 from swapsack.addresses import validate_destination_address
 
-# Real-format mainnet example addresses per chain.
+# Real-format mainnet example addresses per chain. Every one of these carries a
+# *valid* checksum — the validator now verifies them, so a made-up-looking
+# address is no longer an acceptable fixture. Where no published address was at
+# hand (DASH, ZEC) the vector is a synthetic hash160 encoded with the chain's
+# real version byte, which is exactly as valid as a wallet-derived one.
 VALID = {
     "BTC": [
         "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+        # Taproot (BIP-350 test vector) — bech32*m*, not bech32: a witness
+        # version >0 flips the checksum constant, so this is the case a
+        # bech32-only verifier would wrongly reject.
+        "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297",
         "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
         "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
     ],
@@ -17,12 +25,12 @@ VALID = {
     ],
     "DOGE": ["DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L"],
     "DASH": [
-        "Xwm4fpRLuvyQY4wgcbffLTMkVFAJKrxs8k",  # P2PKH ('X')
-        "7gnwGHt17heGpG9Crfeh4KGpYNFugPhJdh",  # P2SH ('7')
+        "XoRuP4dEMWNMY9ux4okvw6uZJ81axKDsgX",  # P2PKH ('X', version 0x4c)
+        "7m6AYGt2Mt3h9fp1RxPofcjjfmrTFxcYko",  # P2SH ('7', version 0x10)
     ],
     "ZEC": [
-        "t1PZ6UUwARqz7pjkFbQh3M8bQ4rr5nHkPqM",  # transparent P2PKH ('t1')
-        "t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd",  # transparent P2SH ('t3')
+        "t1VvJNmqYAPenpQanGwQzK68kutAnMCKHHW",  # transparent P2PKH ('t1', 0x1cb8)
+        "t3LgmRCFBxtvfHUoudscbabPu4yshejUw9c",  # transparent P2SH ('t3', 0x1cbd)
     ],
     "BCH": [
         "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a",
@@ -75,6 +83,62 @@ def test_truncated_rejected():
 
 def test_unknown_chain_has_no_opinion():
     assert validate_destination_address("XRP", "rno_rule_yet") is None
+
+
+# --- checksums ---------------------------------------------------------------
+#
+# The shape rules above catch a wrong network or a truncated paste, but not the
+# single-character typo — which is the mistake an address checksum exists to
+# catch, and the one that is irreversible if it reaches a vault.
+
+
+def _corrupt(address: str) -> str:
+    """Swap the last two differing characters.
+
+    Same alphabet, same length, same prefix — so the shape rules still pass and
+    only the checksum can tell the result apart from the real address.
+    """
+    chars = list(address)
+    for i in range(len(chars) - 1, 0, -1):
+        if chars[i] != chars[i - 1]:
+            chars[i], chars[i - 1] = chars[i - 1], chars[i]
+            return "".join(chars)
+    raise AssertionError(f"cannot corrupt {address!r}")
+
+
+@pytest.mark.parametrize("chain", sorted(VALID))
+def test_a_typo_that_keeps_the_shape_is_rejected(chain):
+    for addr in VALID[chain]:
+        typo = _corrupt(addr)
+        assert typo != addr
+        assert validate_destination_address(chain, typo) is not None, typo
+
+
+def test_zec_typo_is_caught_before_the_builder():
+    # Regression: a one-character typo in a t1… recipient passed the regex-only
+    # check and then died deep in the bespoke signer with base58's
+    # `ValueError: Invalid checksum` — a traceback where the user should have
+    # seen "that is not a valid address".
+    problem = validate_destination_address("ZEC", _corrupt(VALID["ZEC"][0]))
+    assert problem is not None and "checksum" in problem
+
+
+def test_a_typo_inside_a_payment_uri_is_rejected_too():
+    typo = _corrupt(VALID["BTC"][0])
+    assert validate_destination_address("BTC", f"bitcoin:{typo}?amount=0.1") is not None
+
+
+def test_eth_is_only_checksummed_when_the_casing_says_so():
+    # EIP-55 is carried in the letter casing, so an all-lowercase (or
+    # all-uppercase) address carries no checksum at all and must stay accepted —
+    # rejecting those would refuse addresses THORChain itself accepts.
+    addr = VALID["ETH"][0]
+    assert validate_destination_address("ETH", addr.lower()) is None
+    assert validate_destination_address("ETH", "0x" + addr[2:].upper()) is None
+    # A mixed-case address, though, claims a checksum: honour it.
+    flipped = addr.replace("Ef", "eF", 1)
+    assert flipped != addr
+    assert validate_destination_address("ETH", flipped) is not None
 
 
 # --- BIP21-style payment URIs -----------------------------------------------

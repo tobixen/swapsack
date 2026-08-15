@@ -104,7 +104,8 @@ gated on a funded account/secret, mirroring the Nile TRC-20 loop.
 - **Phase 0 — destination (`--to DASH`). DONE.** Add `DASH: "DASH.DASH"` to the CLI
   asset map and a `--dest` rule to `addresses.py`
   (`re.compile(rf"^[X7]{_B58}{{24,34}}$")` — Dash P2PKH `X` / P2SH `7`, charset
-  + length, **not** checksum; Maya validates the checksum). Confirm with a live
+  + length; the base58check checksum is verified too, since the checksum-aware
+  validator landed). Confirm with a live
   `--backend maya`/`auto` quote that a `DASH.DASH` pool is hit and the memo
   pays the dest. Fully doable and testable today.
 - **Phase 1 — Hold + Balance (read-only). DONE.** `chains/dash.py` with

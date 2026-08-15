@@ -1095,7 +1095,7 @@ def test_quote_pins_native_source_to_home_backend(monkeypatch):
             "--amount",
             "1",
             "--dest",
-            "bc1qexampledest",
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
         ]
     )
     assert cli.cmd_quote(args) == 1  # our stub returns no quotes
@@ -1117,7 +1117,7 @@ def test_quote_refuses_foreign_backend_for_native_source():
             "--amount",
             "1",
             "--dest",
-            "bc1qexampledest",
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
             "--backend",
             "maya",
         ]
@@ -1143,7 +1143,7 @@ def test_resolve_destination_rejects_bad_dest():
 def test_resolve_destination_accepts_good_ltc_dest():
     from swapsack.cli import _resolve_destination
 
-    dest = "ltc1qg9stkxrszkdqsuj92lm4c7akvk36zvhqw7p6ck"
+    dest = "ltc1qjmxnz78nmc8nq77wuxh25n2es7rzm5c2rkk4wh"
     args = build_parser().parse_args(
         ["swap", "--to", "LTC", "--amount", "0.01", "--dest", dest]
     )
@@ -1161,7 +1161,7 @@ def test_resolve_destination_takes_only_the_address_from_a_uri():
     """
     from swapsack.cli import _resolve_destination
 
-    dest = "ltc1qg9stkxrszkdqsuj92lm4c7akvk36zvhqw7p6ck"
+    dest = "ltc1qjmxnz78nmc8nq77wuxh25n2es7rzm5c2rkk4wh"
     args = build_parser().parse_args(
         [
             "swap",

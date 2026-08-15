@@ -8,6 +8,19 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Recipient and `--dest` addresses are now checksum-verified**, not just
+  shape-checked. Every chain's address carries a checksum precisely so that a
+  single mistyped or dropped character is catchable, and that is the mistake
+  worth catching: it is the one that still *looks* like a valid address.
+  `send` and `swap --dest` now verify base58check (BTC/LTC/DOGE/DASH/ZEC/TRON),
+  bech32 and bech32m (segwit incl. taproot, plus `thor1`/`maya1`), cashaddr
+  (BCH) and EIP-55 (ETH), before any keystore or network work happens. Where an
+  address carries no checksum to verify — an all-lowercase EVM address, a chain
+  with no rule yet — it is still accepted, so nothing valid is newly rejected.
+  This also fixes a **one-character typo in a ZEC `t1…` recipient printing a
+  `ValueError: Invalid checksum` traceback** from deep inside the signer instead
+  of a plain "that is not a valid address".
+
 - **Configurable UTXO fee target, with a faster default.** BTC/DASH spends
   previously always targeted 6-block confirmation, which could leave a spend
   stuck for ~30+ minutes and surprise an impatient user. The default is now

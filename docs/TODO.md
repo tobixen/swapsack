@@ -10,11 +10,14 @@ Owner's requested order; two-sided liquidity comes *after* these.
 1. **More swap *destinations* via external `--dest` addresses.** Remaining
    candidates: ATOM, XRP, SOL (XRP needs care re: destination tag), plus the
    Maya-only ADA/ARB under *Swap backends*.
-   The per-chain `--dest` check in `addresses.py` is a permissive sanity check
-   (prefix/charset/length, **not** checksum — THORChain/Maya validates the
-   checksum). **A full checksum validator** (bech32 / base58check / cashaddr)
-   would be a stronger guard, and would also fix the bad-checksum traceback under
-   *Other known gaps*.
+   A new chain needs two things in `addresses.py`: a shape rule in `_RULES`
+   *and*, if its address format is checksummed, a branch in `_checksum_problem`
+   — a shape rule alone silently opts the chain out of the checksum guard. ATOM
+   is free (Cosmos bech32, same as `thor1`/`maya1`); XRP is base58check with a
+   *non-standard alphabet* (`base58.XRP_ALPHABET`); SOL is base58 with **no**
+   checksum at all (a bare 32-byte ed25519 pubkey), so for SOL the shape rule is
+   genuinely all there is — say so in a comment rather than leaving it looking
+   like an omission.
 
 2. **Two-sided (symmetric) liquidity — the two-leg CLI orchestration.**
    A symmetric add is two *linked* deposits: the asset leg (`+:POOL:<thor1addr>`
@@ -200,18 +203,6 @@ README — both copies would need the column.)
   Both DASH and ZEC are otherwise feature-complete (hold/balance/send/sweep/
   swap-from/LP); proving the broadcasts is all that remains. See `docs/dash.md`,
   `docs/zcash.md`.
-- **A bad address checksum tracebacks instead of aborting cleanly.** Confirmed
-  on ZEC: `validate_destination_address` is regex-only (prefix/charset/length,
-  no checksum), so a one-character typo in a `t1…` recipient passes the sanity
-  check and then dies deep in the builder with `ValueError: Invalid checksum`
-  from `base58` — neither a `ZcashTxError` nor caught by `_send_utxo`. The user
-  sees a traceback where they should see "that is not a valid address".
-  Pre-broadcast, so no funds are at risk; it is a UX defect, not a money one.
-  The proper fix is the checksum-aware validator under *Next up* item 1 — that
-  would close this and harden `--dest` across every chain at once, rather than a
-  per-chain stopgap. Deliberately deferred twice (the "easy stopgap" of finding 2
-  in `docs/code-review-2026-07-13.md`, and finding #10 of the 2026-08-14 pre-push
-  review); recorded here because it was tracked nowhere.
 - **Nothing stops a unit test from reaching the network.** The default suite is
   meant to be fully offline (live I/O belongs behind `-m network`), but that is
   convention, not enforcement — and a test that leaks a real call does not look

@@ -19,9 +19,10 @@ legacy-UTXO issues.
   ZEC). Every Zcash swap therefore routes through the Maya backend
   (`--backend maya`, or `auto`).
 - **Destination (`--to ZEC`) is done** — it mirrors LTC/DOGE/BCH/DASH: a
-  `ZEC.ZEC` `ASSET` entry, a permissive `--dest` sanity rule (transparent
-  `t1`/`t3` base58, charset + length, **not** checksum — Maya validates the
-  checksum), and a CoinGecko id (`zcash`) for the market line. Maya's pool is
+  `ZEC.ZEC` `ASSET` entry, a `--dest` sanity rule (transparent `t1`/`t3`
+  base58, charset + length, plus the base58check checksum since the
+  checksum-aware validator landed), and a CoinGecko id (`zcash`) for the market
+  line. Maya's pool is
   transparent-only, so **only t-addresses** are accepted; shielded `zs1…`
   (Sapling) and unified `u1…` addresses are intentionally rejected.
 - **The full wallet side is a bigger, riskier job than Dash** for two reasons:
