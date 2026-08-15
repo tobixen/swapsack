@@ -15,7 +15,6 @@ import dataclasses
 import time
 from typing import Any
 
-from Crypto.Hash import keccak
 from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
 from eth_account import Account
@@ -23,6 +22,11 @@ from eth_account.signers.local import LocalAccount
 
 from swapsack.chains.base import BalanceReport
 from swapsack.chains.coins import InsufficientFunds
+
+# Re-exported: EIP-55 checksumming lives in the dependency-free swapsack.evm so
+# the address validator can use it without importing this module's chain stack.
+# Callers here keep importing it from this module.
+from swapsack.evm import to_checksum_address
 from swapsack.net import HTTP_ERRORS, HttpClient
 from swapsack.swap import BroadcastError, Prepared, SwapAborted, SwapRequest
 from swapsack.thorchain import Quote
@@ -96,12 +100,6 @@ def encode_deposit(vault: str, token: str, amount: int, memo: str, expiry: int) 
     return "0x" + DEPOSIT_SELECTOR + args.hex()
 
 
-def _keccak256(data: bytes) -> bytes:
-    h = keccak.new(digest_bits=256)
-    h.update(data)
-    return h.digest()
-
-
 def eth_sweep_amount(balance_wei: int, gas: int, max_fee_per_gas: int) -> int:
     """THORChain 1e8 amount sweeping the balance minus the worst-case gas reserve.
 
@@ -115,21 +113,6 @@ def eth_sweep_amount(balance_wei: int, gas: int, max_fee_per_gas: int) -> int:
             f"{gas * max_fee_per_gas}"
         )
     return sendable // WEI_PER_THORCHAIN_UNIT
-
-
-def to_checksum_address(addr: bytes | str) -> str:
-    """EIP-55 checksum encoding of a 20-byte address (bytes or hex string)."""
-    if isinstance(addr, str):
-        if addr[:2].lower() == "0x":  # accept 0x or 0X (THORChain uppercases)
-            addr = addr[2:]
-        addr = bytes.fromhex(addr)
-    lower = addr.hex()
-    digest = _keccak256(lower.encode()).hex()
-    encoded = "".join(
-        c.upper() if c.isalpha() and int(d, 16) >= 8 else c
-        for c, d in zip(lower, digest, strict=False)
-    )
-    return "0x" + encoded
 
 
 @dataclasses.dataclass

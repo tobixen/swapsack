@@ -1150,6 +1150,67 @@ def test_resolve_destination_accepts_good_ltc_dest():
     assert _resolve_destination(args, mnemonic=None) == dest
 
 
+# --- destination-chain caveats -----------------------------------------------
+
+ADA_DEST = (
+    "addr1qxf4ppedwy4pylzff47uxhjxkz7fuchz3q3ewz89s80u8g05et60l9tnrg37f8"
+    "9emhs5r6xxnq80tt6l0k5y0dlcqfcqtrftvm"
+)
+XRP_DEST = "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
+ATOM_DEST = "cosmos1tjjcfptfjmzm5zl9sr3r6n4dqmvqckl9a8nz3h"
+
+
+def _swap_args(from_, to_, dest):
+    return build_parser().parse_args(
+        ["swap", "--from", from_, "--to", to_, "--amount", "0.01", "--dest", dest]
+    )
+
+
+def test_ada_from_a_utxo_source_is_refused_up_front():
+    """A Cardano address is 103 chars, so the shortest possible memo is already
+    over the 80-byte OP_RETURN cap — the backend does refuse, but as "no
+    quotes", which reads like a missing pool rather than a permanent limit."""
+    from swapsack.cli import _resolve_destination
+
+    for source in ["BTC", "DASH", "ZEC"]:
+        with pytest.raises(SystemExit) as excinfo:
+            _resolve_destination(_swap_args(source, "ADA", ADA_DEST), mnemonic=None)
+        assert "OP_RETURN" in str(excinfo.value)
+
+
+def test_ada_from_an_account_model_source_is_allowed():
+    # ETH puts the memo in calldata, where the limit does not apply — the whole
+    # point of the message the UTXO sources get.
+    from swapsack.cli import _resolve_destination
+
+    assert _resolve_destination(_swap_args("ETH", "ADA", ADA_DEST), None) == ADA_DEST
+
+
+def test_a_short_dest_from_a_utxo_source_is_untouched():
+    # The guard must not fire on ordinary destinations — a taproot address is
+    # the longest common one at 62 chars, comfortably inside the cap.
+    from swapsack.cli import _resolve_destination
+
+    taproot = "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297"
+    assert _resolve_destination(_swap_args("BTC", "BTC", taproot), None) == taproot
+
+
+def test_xrp_dest_warns_that_no_destination_tag_can_be_sent(capsys):
+    from swapsack.cli import _resolve_destination
+
+    assert _resolve_destination(_swap_args("BTC", "XRP", XRP_DEST), None) == XRP_DEST
+    warning = capsys.readouterr().err
+    assert "destination tag" in warning
+    assert "exchange deposit address" in warning
+
+
+def test_atom_dest_is_accepted_without_a_warning(capsys):
+    from swapsack.cli import _resolve_destination
+
+    assert _resolve_destination(_swap_args("BTC", "ATOM", ATOM_DEST), None) == ATOM_DEST
+    assert capsys.readouterr().err == ""
+
+
 def test_resolve_destination_takes_only_the_address_from_a_uri():
     """A `--dest` URI contributes its address and nothing else, deliberately.
 

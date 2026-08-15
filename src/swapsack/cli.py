@@ -40,6 +40,7 @@ from swapsack.swap import (
     prepare_swap,
 )
 from swapsack.thorchain import THORCHAIN_UNIT, asset_unit
+from swapsack.verify import OP_RETURN_MAX_BYTES
 
 # The finest base unit across all supported assets (CACAO's 1e10) — the
 # parse-time floor for --amount; the per-asset floor lives in _base_units.
@@ -76,6 +77,10 @@ ASSET = {
     "LTC": "LTC.LTC",
     "DOGE": "DOGE.DOGE",
     "BCH": "BCH.BCH",
+    "ATOM": "GAIA.ATOM",  # Cosmos Hub; THORChain names the chain GAIA
+    "XRP": "XRP.XRP",  # classic r… addresses only — no destination tag, see below
+    "ADA": "ADA.ADA",  # Maya-only; unreachable from a UTXO source (memo length)
+    "ETH-ARB": "ARB.ETH",  # Maya-only: native ETH on Arbitrum, not the ARB token
     "CACAO": "MAYA.CACAO",  # Maya native asset; 1e10 decimals; see docs/cacao.md
     "RUNE": "THOR.RUNE",  # THORChain native asset (Cosmos MsgSend/MsgDeposit)
 }
@@ -628,6 +633,49 @@ def _derive_destination_address(
     return deriver(mnemonic, passphrase) if deriver else None
 
 
+def _dest_chain_caveats(args: argparse.Namespace, dest: str) -> None:
+    """Warn or refuse on destination chains whose payout has a hard limitation.
+
+    Both cases below are total-loss or never-works, and both are invisible in
+    the quote: the backend simply returns no route (or pays an address that
+    cannot be credited), which reads like a temporary problem rather than a
+    permanent one.
+    """
+    chain = _derivable_chain(args.to_)
+    if chain == "XRP":
+        # THORChain rejects both an X-address and an 'address:tag' spelling, so
+        # a swap payout can carry no destination tag at all. Exchange deposit
+        # addresses almost always need one, and an untagged deposit is at best
+        # a support ticket.
+        _warn(
+            "an XRP payout carries no destination tag:",
+            "THORChain accepts only a classic r… address — X-addresses and "
+            "'address:tag' are both rejected, so a tag cannot be sent",
+            "do NOT use an exchange deposit address that requires a tag; "
+            "such a deposit is usually unrecoverable",
+            "pay a self-custodial XRP address instead",
+        )
+    from_chain = ASSET[args.from_].split(".", 1)[0]
+    if from_chain not in _UTXO_ADAPTERS:
+        return
+    # A UTXO source carries its memo in an OP_RETURN, which the backend caps at
+    # verify.OP_RETURN_MAX_BYTES. The backend builds the memo, so its exact
+    # length is not knowable here — but the shortest one it could possibly
+    # build is '=:<1-char asset>:<dest>', and if even that is over the cap the
+    # swap can never be quoted, whatever the amount, backend or timing. Caught
+    # here because the backend's own refusal arrives as "no quotes", which
+    # reads as a missing pool rather than a permanent impossibility.
+    shortest_memo = len("=:x:") + len(dest)
+    if shortest_memo > OP_RETURN_MAX_BYTES:
+        raise SystemExit(
+            f"--dest: the {chain} address is {len(dest)} characters, so the "
+            f"swap memo needs at least {shortest_memo} bytes — over the "
+            f"{OP_RETURN_MAX_BYTES}-byte OP_RETURN limit a {from_chain} source "
+            f"has to fit it in. Swap from an account-model chain (ETH sends the "
+            f"memo as calldata, with no such limit) to reach {args.to_}."
+        )
+
+
 def _resolve_destination(
     args: argparse.Namespace, mnemonic: str | None, passphrase: str = ""
 ) -> str | None:
@@ -636,7 +684,9 @@ def _resolve_destination(
         if problem:
             raise SystemExit(f"--dest: {problem}")
         # Pay the address itself, not the URI wrapper it arrived in.
-        return parse_payment_uri(args.dest)[0]
+        dest = parse_payment_uri(args.dest)[0]
+        _dest_chain_caveats(args, dest)
+        return dest
     if mnemonic is None:
         return None
     # The destination address depends on the target *chain*, so a token like

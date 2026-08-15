@@ -7,17 +7,32 @@ outlived the work that created them are kept below as open risk.
 
 Owner's requested order; two-sided liquidity comes *after* these.
 
-1. **More swap *destinations* via external `--dest` addresses.** Remaining
-   candidates: ATOM, XRP, SOL (XRP needs care re: destination tag), plus the
-   Maya-only ADA/ARB under *Swap backends*.
-   A new chain needs two things in `addresses.py`: a shape rule in `_RULES`
-   *and*, if its address format is checksummed, a branch in `_checksum_problem`
-   — a shape rule alone silently opts the chain out of the checksum guard. ATOM
-   is free (Cosmos bech32, same as `thor1`/`maya1`); XRP is base58check with a
-   *non-standard alphabet* (`base58.XRP_ALPHABET`); SOL is base58 with **no**
-   checksum at all (a bare 32-byte ed25519 pubkey), so for SOL the shape rule is
-   genuinely all there is — say so in a comment rather than leaving it looking
-   like an omission.
+1. **More swap *destinations* via external `--dest` addresses.** ATOM, XRP, ADA
+   and ETH-ARB are done; **SOL is the only remaining candidate, and it is
+   blocked** — `SOL.SOL` exists on THORChain but is halted (a live
+   `BTC->SOL.SOL` quote returns "trading is halted, can't process swap"), the
+   same shape as the BSC block below. Revisit when `pools` shows
+   `trading_halted: false`, or reach it via Chainflip (see *Swap backends*).
+   When it unblocks: SOL addresses are base58 with **no checksum at all** (a
+   bare 32-byte ed25519 pubkey), so a `_RULES` shape rule is genuinely all there
+   is — say so in a comment rather than leaving it looking like a missing
+   `_checksum_problem` branch. Note that adding a chain needs *both* (a shape
+   rule alone silently opts the chain out of the checksum guard).
+
+   Two follow-ups this work exposed, neither blocking:
+   - **ADA is unreachable from a UTXO source, permanently.** A Shelley address
+     is 103 chars, so the memo exceeds the 80-byte OP_RETURN — see *N5* below,
+     which this made live. `--dest` now refuses it up front instead of letting
+     it read as "no route". Reaching ADA from BTC would need a THORName (a
+     registered short alias resolving to the address) — worth considering as a
+     general memo-length escape hatch, not just for ADA.
+   - **ARB/ATOM could be auto-derived rather than requiring `--dest`.** An
+     Arbitrum address *is* our ETH address, and ATOM is the same Cosmos
+     derivation as `thor1`/`maya1` with a different HRP. Both are deliberately
+     `--dest`-only for now because the wallet cannot *spend* from either chain;
+     `RECEIVE_ONLY_CHAINS` in `cli.py` is the existing (empty) seam for exactly
+     this — derive, but warn loudly that funds land somewhere only another
+     wallet can spend.
 
 2. **Two-sided (symmetric) liquidity — the two-leg CLI orchestration.**
    A symmetric add is two *linked* deposits: the asset leg (`+:POOL:<thor1addr>`
@@ -115,8 +130,14 @@ The review documents themselves were removed once obsolete (`f90d329`), so these
 descriptions are now the only record — the letter/number codes are historical
 labels, not lookups.
 
-- **N5** — BTC→token-destination memo vs the 80-byte OP_RETURN limit.
-  Becomes live once USDT destinations from BTC are exercised.
+- **N5** — a swap memo from a UTXO source vs the 80-byte OP_RETURN limit. No
+  longer hypothetical: a Cardano `addr1…` destination makes the memo 113 bytes,
+  and the backend refuses the quote outright. `_dest_chain_caveats` in `cli.py`
+  now refuses any `--dest` whose *shortest possible* memo would not fit, so the
+  user gets the reason instead of "no quotes". Still open: an escape hatch that
+  makes long destinations reachable from BTC at all (THORName aliases), and the
+  original token-destination case (a `0x…` contract-qualified asset from BTC)
+  has never been exercised — the check above bounds it, but nothing tests it.
 - **A2/A3** — share the EVM key derivation + `to_checksum`/keccak helpers between
   ETH and TRON; default `wallet_balance` on an account-model base. Several other
   items below want this first (BSC swaps, USDC on cheaper chains, Sepolia token
@@ -138,9 +159,11 @@ labels, not lookups.
   and `docs/chainflip.md` for the feasibility assessment). Calldata-style
   aggregators (ParaSwap/1inch/0x/LiFi) and custodial instant exchangers: not
   planned (gating problem / custody).
-- **Maya-only assets still to expose**: ADA (Cardano) and ARB (Arbitrum) —
-  destination-only is just an `ASSET` entry + a `--dest` rule. CACAO is exposed
-  as a destination, but its **full wallet side** is a Cosmos-SDK chain effort
+- **Maya-only assets**: ADA and ETH-ARB are now exposed as destinations. Note
+  what *isn't* there — the ARB **token** pool (`ARB.ARB`) is `Staged`, not
+  tradeable, so "ARB" as a destination means native ETH on Arbitrum.
+  CACAO is exposed as a destination, but its **full wallet side** is a
+  Cosmos-SDK chain effort
   (protobuf `MsgSend`/`MsgDeposit`) that overlaps *Next up* item 2's RUNE leg.
   (CACAO needs `thorchain.asset_unit` to stay 1e10, not 1e8 — see
   `docs/cacao.md`.)

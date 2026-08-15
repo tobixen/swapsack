@@ -44,11 +44,27 @@ _RULES: dict[str, re.Pattern[str]] = {
     # P2PKH 't1', P2SH 't3'. Two-char prefix then base58 (35 chars total).
     "ZEC": re.compile(rf"^t[13]{_B58}{{32,34}}$"),
     "ETH": re.compile(r"^0x[0-9a-fA-F]{40}$"),
+    # Arbitrum is an EVM L2 — same 20-byte address space and EIP-55 as ETH.
+    "ARB": re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "TRON": re.compile(rf"^T{_B58}{{33}}$"),
     # Maya native chain (Cosmos-SDK bech32, 'maya' HRP) — for a CACAO payout.
     "MAYA": re.compile(rf"^maya1{_B32}{{37,58}}$"),
     # THORChain native chain (Cosmos-SDK bech32, 'thor' HRP) — for a RUNE payout.
     "THOR": re.compile(rf"^thor1{_B32}{{37,58}}$"),
+    # Cosmos Hub — THORChain calls the chain GAIA, the address HRP is 'cosmos'.
+    "GAIA": re.compile(rf"^cosmos1{_B32}{{37,58}}$"),
+    # XRP Ledger classic addresses. Same alphabet *set* as BTC base58 (the XRP
+    # ordering differs, which only matters when decoding), but note what is NOT
+    # here: an 'X…' X-address, which is how the XRPL encodes a destination tag.
+    # THORChain rejects those outright ("unable to parse address"), so a tag
+    # cannot be expressed at all — see the warning in cli._resolve_destination.
+    "XRP": re.compile(rf"^r{_B58}{{24,34}}$"),
+    # Cardano Shelley addresses: bech32 with an 'addr' HRP, and far longer than
+    # BIP-173's 90-char cap (Cardano deliberately ignores it) — a base address
+    # is 103 chars. Byron-era 'Ae2…'/'DdzFF…' addresses are deliberately absent:
+    # they are base58 over CBOR with a CRC32, not base58check, so this module
+    # could not verify one, and they are legacy in every current wallet.
+    "ADA": re.compile(rf"^addr1{_B32}{{50,110}}$"),
 }
 
 
@@ -107,9 +123,40 @@ def uri_chain(text: str) -> str | None:
 
 # Segwit chains, mapped to their bech32 human-readable part.
 _SEGWIT_HRP: dict[str, str] = {"BTC": "bc", "LTC": "ltc"}
-# Cosmos-SDK chains, mapped to their bech32 HRP. Always plain bech32: there is
-# no witness version here to switch the checksum constant to bech32m.
-_COSMOS_HRP: dict[str, str] = {"MAYA": "maya", "THOR": "thor"}
+# Chains whose addresses are *plain* bech32 — Cosmos-SDK accounts and Cardano's
+# Shelley addresses. No witness version, so nothing ever switches the checksum
+# constant to bech32m; the HRP is the only thing that differs.
+_PLAIN_BECH32_HRP: dict[str, str] = {
+    "MAYA": "maya",
+    "THOR": "thor",
+    "GAIA": "cosmos",
+    "ADA": "addr",
+}
+# EVM chains: one address space, one EIP-55 casing rule.
+_EVM_CHAINS = frozenset({"ETH", "ARB"})
+
+# Chains whose addresses are base58check, mapped to the alphabet they use —
+# the XRPL permutes the same 58 characters, so only decoding tells them apart.
+# Listed explicitly rather than reached by a catch-all: a chain that lands here
+# by accident would have *every* valid address rejected (see _NO_CHECKSUM).
+_BASE58CHECK_ALPHABET: dict[str, bytes] = {
+    "BTC": base58.BITCOIN_ALPHABET,
+    "LTC": base58.BITCOIN_ALPHABET,
+    "DOGE": base58.BITCOIN_ALPHABET,
+    # BCH's *legacy* '1…'/'3…' form; a cashaddr never reaches here.
+    "BCH": base58.BITCOIN_ALPHABET,
+    "DASH": base58.BITCOIN_ALPHABET,
+    "ZEC": base58.BITCOIN_ALPHABET,
+    "TRON": base58.BITCOIN_ALPHABET,
+    "XRP": base58.XRP_ALPHABET,
+}
+
+# Chains whose address format carries no checksum at all, so there is nothing
+# to verify and a shape rule is genuinely the whole guard. Declared rather than
+# left implicit, so that "no branch" reads as a decision instead of an
+# oversight — and so the invariant test can tell the two apart. Solana belongs
+# here if its pool ever unhalts: an address is a bare 32-byte ed25519 pubkey.
+_NO_CHECKSUM: frozenset[str] = frozenset()
 
 # cashaddr shares bech32's alphabet but uses a wider (40-bit) BCH code.
 _CASHADDR_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
@@ -152,7 +199,7 @@ def _eip55_ok(address: str) -> bool:
     body = address[2:]
     if body == body.lower() or body == body.upper():
         return True
-    from swapsack.chains.eth import to_checksum_address
+    from swapsack.evm import to_checksum_address
 
     return to_checksum_address(address) == address
 
@@ -174,26 +221,34 @@ def _checksum_problem(chain: str, address: str) -> str | None:
         # covers both v0 (bc1q…) and taproot (bc1p…) without a special case.
         return None if bech32.segwit_ok(address, hrp) else bad
 
-    hrp = _COSMOS_HRP.get(chain)
+    hrp = _PLAIN_BECH32_HRP.get(chain)
     if hrp is not None:
         try:
-            bech32.bech32_decode(address)
+            decoded_hrp, _ = bech32.bech32_decode(address)
         except ValueError:
             return bad
-        return None
+        # The HRP is checksummed, so a wrong one cannot survive the polymod —
+        # but it can be an HRP we never asked about, so say so explicitly.
+        return None if decoded_hrp == hrp else bad
 
     # BCH legacy addresses are base58check like BTC's; anything else on that
     # chain is a cashaddr, prefixed or bare.
     if chain == "BCH" and not address.startswith(("1", "3")):
         return None if _cashaddr_ok(address) else bad
 
-    if chain == "ETH":
+    if chain in _EVM_CHAINS:
         return None if _eip55_ok(address) else bad
 
-    # What is left is base58check: legacy BTC/LTC/DOGE, DASH, ZEC (a two-byte
-    # version prefix, which base58check does not care about) and TRON.
+    # base58check: legacy BTC/LTC/DOGE, DASH, ZEC (a two-byte version prefix,
+    # which base58check does not care about), TRON and XRP.
+    alphabet = _BASE58CHECK_ALPHABET.get(chain)
+    if alphabet is None:
+        # No strategy for this chain, so there is nothing to verify. Accepting
+        # is the only safe default: falling through to base58check here would
+        # reject every valid address on a chain that carries no checksum.
+        return None
     try:
-        base58.b58decode_check(address)
+        base58.b58decode_check(address, alphabet=alphabet)
     except ValueError:
         return bad
     return None

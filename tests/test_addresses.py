@@ -39,10 +39,23 @@ VALID = {
     ],
     "ETH": ["0x9858EfFD232B4033E47d90003D41EC34EcaEda94"],
     "TRON": ["TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"],
+    # Arbitrum is EVM — the same address space and EIP-55 rule as ETH.
+    "ARB": ["0x9858EfFD232B4033E47d90003D41EC34EcaEda94"],
     # Maya native chain (Cosmos-SDK bech32), for a CACAO destination.
     "MAYA": ["maya10sy79jhw9hw9sqwdgu0k4mw4qawzl7czewzs47"],
     # THORChain native chain (Cosmos-SDK bech32), for a RUNE destination.
     "THOR": ["thor1gm00vwsfcp48enm4uv9e5dhm37jtd0ye27wrx0"],
+    # Cosmos Hub (THORChain names the chain GAIA, the HRP is 'cosmos').
+    # Synthetic but checksum-valid, and accepted by a live THORChain quote.
+    "GAIA": ["cosmos1tjjcfptfjmzm5zl9sr3r6n4dqmvqckl9a8nz3h"],
+    # XRP Ledger classic address — the XRPL genesis ("blackhole") account.
+    "XRP": ["rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"],
+    # Cardano Shelley base address (header byte + payment hash + stake hash),
+    # synthetic but checksum-valid; a live Maya quote built a memo for it.
+    "ADA": [
+        "addr1qxf4ppedwy4pylzff47uxhjxkz7fuchz3q3ewz89s80u8g05et60l9tnrg37f8"
+        "9emhs5r6xxnq80tt6l0k5y0dlcqfcqtrftvm"
+    ],
 }
 
 
@@ -82,7 +95,41 @@ def test_truncated_rejected():
 
 
 def test_unknown_chain_has_no_opinion():
-    assert validate_destination_address("XRP", "rno_rule_yet") is None
+    assert validate_destination_address("DOT", "1no_rule_yet") is None
+
+
+# --- destination-only chains added for `--to` --------------------------------
+
+
+def test_xrp_x_addresses_are_rejected():
+    """An X-address is how the XRPL encodes a destination tag — and THORChain
+    cannot parse one ("unable to parse address"), so accepting it here would
+    quote a swap that can never be built. Classic 'r…' only."""
+    assert (
+        validate_destination_address(
+            "XRP", "X7AcgcsBL6XDcUb289X4mJ8djcdyKaB5hJDWMArnXr61cqZ"
+        )
+        is not None
+    )
+
+
+def test_ada_byron_addresses_are_rejected():
+    # Byron-era addresses are base58 over CBOR with a CRC32 — not base58check,
+    # so nothing here can verify one. Shelley 'addr1…' bech32 only.
+    for byron in [
+        "Ae2tdPwUPEZFRbyhz3cpfC2CumGzNkFBN2L42rcUc2yjQpEkxDbkPodpMAi",
+        "DdzFFzCqrhstpwKc8WMvPwwBb5oabcTW9zc5ykA37wJR1T7yUJRdE4Nk1Vjkfvod"
+        "wRWnbhBhqGGKvLDgHm7HKQMhcqRhqEqbLRQLKzKQzc",
+    ]:
+        assert validate_destination_address("ADA", byron) is not None
+
+
+def test_a_cosmos_hub_address_is_not_a_thorchain_one():
+    # All three are plain bech32; only the HRP separates them, and the HRP is
+    # itself checksummed — so this has to be caught, not merely likely to be.
+    assert validate_destination_address("GAIA", VALID["THOR"][0]) is not None
+    assert validate_destination_address("THOR", VALID["GAIA"][0]) is not None
+    assert validate_destination_address("MAYA", VALID["GAIA"][0]) is not None
 
 
 # --- checksums ---------------------------------------------------------------
@@ -90,6 +137,42 @@ def test_unknown_chain_has_no_opinion():
 # The shape rules above catch a wrong network or a truncated paste, but not the
 # single-character typo — which is the mistake an address checksum exists to
 # catch, and the one that is irreversible if it reaches a vault.
+
+
+def test_every_shape_rule_declares_how_it_is_checksummed():
+    """A `_RULES` entry must not silently pick up a checksum strategy.
+
+    The dispatch used to end in a bare base58check fallback, so adding a shape
+    rule for a chain that carries *no* checksum (Solana addresses are bare
+    ed25519 pubkeys) would have rejected every valid address on it. Each chain
+    now has to say which strategy applies, or say explicitly that none does.
+    """
+    from swapsack.addresses import (
+        _BASE58CHECK_ALPHABET,
+        _EVM_CHAINS,
+        _NO_CHECKSUM,
+        _PLAIN_BECH32_HRP,
+        _RULES,
+        _SEGWIT_HRP,
+    )
+
+    covered = (
+        set(_SEGWIT_HRP)
+        | set(_PLAIN_BECH32_HRP)
+        | set(_EVM_CHAINS)
+        | set(_BASE58CHECK_ALPHABET)
+        | set(_NO_CHECKSUM)
+    )
+    assert set(_RULES) - covered == set()
+
+
+def test_a_chain_with_no_checksum_strategy_is_accepted_not_rejected():
+    # The failure this guards against: a shape rule alone must mean "no
+    # checksum to verify", never "verify it as base58check and reject".
+    from swapsack.addresses import _checksum_problem
+
+    solana = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+    assert _checksum_problem("NOSUCHCHAIN", solana) is None
 
 
 def _corrupt(address: str) -> str:

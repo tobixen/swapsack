@@ -8,6 +8,23 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Four new swap destinations: `ATOM`, `XRP`, `ADA` and `ETH-ARB`** (Cosmos
+  Hub, XRP Ledger, Cardano, and native ETH on Arbitrum), payable with `--dest`
+  like LTC/DOGE/BCH. ATOM and XRP go via THORChain, ADA and ETH-ARB via Maya;
+  all four show a market line. Two caveats the CLI now tells you about rather
+  than letting you discover them:
+  - **An XRP payout cannot carry a destination tag.** THORChain accepts only a
+    classic `r…` address — X-addresses and `address:tag` are both rejected — so
+    `--to XRP` warns you not to use an exchange deposit address that needs a
+    tag, since such a deposit is usually unrecoverable.
+  - **ADA is usually reachable only from an account-model source** such as
+    ETH. The Cardano address a wallet normally hands out is 103 characters,
+    which pushes the swap memo past the 80-byte `OP_RETURN` a BTC/DASH/ZEC
+    spend has to carry it in. Asking for it from a UTXO source now explains
+    that, instead of reporting "no quotes" as if a pool were merely missing.
+    The check is per-address, so a shorter Cardano address (an enterprise one
+    is 58 characters) still works from BTC.
+
 - **Recipient and `--dest` addresses are now checksum-verified**, not just
   shape-checked. Every chain's address carries a checksum precisely so that a
   single mistyped or dropped character is catchable, and that is the mistake

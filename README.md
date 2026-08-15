@@ -37,6 +37,10 @@ The wallet is still under rapid development as of 2026-07-10.  Missing features 
 | LTC       |      |     |  ✅ |      |      |      |     |
 | DOGE      |      |     |  ✅ |      |      |      |     |
 | BCH       |      |     |  ✅ |      |      |      |     |
+| ATOM      |      |     |  ✅ |      |      |      |     |
+| XRP       |      |     |  ✅ |      |      |      |     |
+| ADA       |      |     |  ◑  |      |      |      |     |
+| ETH-ARB   |      |     |  ✅ |      |      |      |     |
 | DASH      |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
 | ZEC       |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
 | CACAO     |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |      |     |
@@ -88,19 +92,19 @@ capability grid above for the per-feature detail.
 | USDT-SOL | Tether | SPL token | none | Not currently available on THORChain/Maya |
 | AVAX | Avalanche C-Chain | EVM | none | |
 | BASE | Base (ETH L2) | EVM | none | |
-| ARB | Arbitrum (ETH L2) | EVM | none | Maya-only |
+| ARB | Arbitrum (ETH L2) | EVM | partial | **Maya-only**. `ETH-ARB` (native ETH on Arbitrum) is a destination via `--dest`; the ARB *token* pool is `Staged`, not tradeable. Addresses are ordinary EVM ones, EIP-55 checked |
 | USDC | USD Coin (ETH/BSC/AVAX/BASE/ARB) | ERC-20 token | partial | ETH done (incl. `send`, via the shared ERC-20 path); AVAX/BASE/ARB need new EVM chain adapters; BSC additionally blocked by the THORChain halt |
 | LTC | Litecoin | UTXO | partial | destination only (via `--dest`) |
 | DOGE | Dogecoin | UTXO | partial | destination only (via `--dest`) |
 | BCH | Bitcoin Cash | UTXO | partial | destination only (via `--dest`) |
+| ADA | Cardano | Cardano | partial | **Maya-only**; destination only (via `--dest`), Shelley `addr1…` bech32 (Byron `Ae2…`/`DdzFF…` not accepted — no verifiable checksum). Usually reachable **only from an account-model source** (ETH): the base address wallets normally hand out is 103 chars, which pushes the swap memo past the 80-byte OP_RETURN a BTC/DASH/ZEC source must fit it in — the CLI checks the actual address and refuses up front, so a shorter Shelley form (an enterprise address is 58 chars) does work from BTC |
 | DASH | Dash | UTXO | partial | **Maya-only** (`--backend maya`/`auto`). Every feature is wired: hold, balance, destination, send/sweep, swap-**from** and single-sided LP (Maya, pairs with CACAO) — but all spend paths ship **mainnet-unproven** (no Dash testnet; opt-in mainnet test in docs/testnet.md), hence partial. See [docs/dash.md](docs/dash.md) |
 | ZEC | Zcash | UTXO | partial | **Maya-only** (`--backend maya`/`auto`); transparent (`t1…`) addresses only. Every feature is wired: hold, balance, destination, send/sweep, swap-**from** and single-sided LP (Maya, pairs with CACAO) — the spend paths ride a bespoke v4/ZIP-243 signer with ZIP-317 fees (bitcoinlib can't sign Zcash), anchored to a real mainnet tx in the tests but shipping **mainnet-unproven** (no testnet; opt-in test in docs/testnet.md), hence partial. See [docs/zcash.md](docs/zcash.md) |
 | RUNE | THORChain native | THORChain | partial | Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`) done — reuses the shared Cosmos-SDK adapter (RUNE is 1e8). Spend paths ship unproven on mainnet (no testnet); see [docs/cacao.md](docs/cacao.md) |
 | CACAO | Maya native | Maya | partial | **Maya-only**; 1e10 decimals (not 1e8). Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`, no vault) done; single-sided liquidity n/a for the settlement asset (it's the RUNE-leg of symmetric LP, TODO #4). Spend paths ship unproven on mainnet (no Maya testnet); see [docs/cacao.md](docs/cacao.md) |
-| ATOM | Cosmos Hub | Cosmos | none | |
-| XRP | XRP Ledger | XRP | none | |
-| SOL | Solana | Solana | none | |
-| ADA | Cardano | Cardano | none | Maya-only |
+| ATOM | Cosmos Hub | Cosmos | partial | destination only (via `--dest`, a `cosmos1…` address) |
+| XRP | XRP Ledger | XRP | partial | destination only (via `--dest`). Classic `r…` addresses only — THORChain rejects X-addresses and `address:tag`, so a payout **cannot carry a destination tag**; never send to an exchange deposit address that needs one |
+| SOL | Solana | Solana | none | Blocked: `SOL.SOL` exists on THORChain but is **halted** (a live quote returns "trading is halted"), so there is nothing to swap against. Chainflip would be the other route — see [docs/chainflip.md](docs/chainflip.md) |
 | XMR | Monero | Monero | none | Coming soon to THORChain pool; doesn't fit the current model — see [docs/monero.md](docs/monero.md) |
 | TCY | THORChain reward token | THORChain token | none | niche; low priority |
 | MAYA | Maya governance token | Maya token | none | Maya-only; niche; low priority |

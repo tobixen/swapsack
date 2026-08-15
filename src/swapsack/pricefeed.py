@@ -35,6 +35,11 @@ COINGECKO_IDS: dict[str, str] = {
     "CACAO": "cacao",
     "RUNE": "thorchain",
     "BNB": "binancecoin",
+    "ATOM": "cosmos",
+    "XRP": "ripple",
+    "ADA": "cardano",
+    # Native ETH on Arbitrum is ETH — same asset, same price, different chain.
+    "ETH-ARB": "ethereum",
     "USDT-ETH": "tether",
     "USDT-TRON": "tether",
     "USDC-ETH": "usd-coin",
