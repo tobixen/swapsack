@@ -269,10 +269,19 @@ the short version:
 
 ```sh
 make dev           # set up the environment (uv)
-gmake test          # unit tests (live network tests excluded)
+make test          # unit tests (live network tests excluded)
 make test-network  # opt-in: read-only integration tests vs live THORChain
 make lint          # ruff check + format check
 ```
+
+The unit suite is **offline by design, and enforced**: `tests/conftest.py`
+refuses outbound connections (sockets and grpc channels) in any test not marked
+`network`, and names the offending test if one tries. Live I/O belongs behind
+`-m network` — a test that quietly makes a real call does not look broken, it
+looks flaky, and only when the remote host happens to be down. The guard cannot
+see a client that connects from C without a Python socket, so
+`unshare -rn -- uv run --no-sync pytest -q` (after a `uv sync`) is the
+belt-and-braces check.
 
 Most `network` tests are read-only (no funds moved); they guard against THORChain
 API drift and stale hard-coded asset strings, and run in CI (the **Integration

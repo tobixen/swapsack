@@ -267,23 +267,26 @@ README — both copies would need the column.)
   Both DASH and ZEC are otherwise feature-complete (hold/balance/send/sweep/
   swap-from/LP); proving the broadcasts is all that remains. See `docs/dash.md`,
   `docs/zcash.md`.
-- **Nothing stops a unit test from reaching the network.** The default suite is
-  meant to be fully offline (live I/O belongs behind `-m network`), but that is
-  convention, not enforcement — and a test that leaks a real call does not look
-  broken, it looks *flaky*, and only when the remote host happens to be down.
-  One had been doing exactly that since v0.1.0:
-  `test_wallet_balance_scans_and_sums` patched `address_info` but not
-  `latest_height`, so `ZecAdapter.wallet_balance` hit `zec.rocks:443` on every
-  run; it surfaced only when a full run took 87s instead of 17s and went red.
-  Add an autouse fixture in `tests/conftest.py` that blocks socket connections
-  for any item *without* the `network` marker — the file already has both seams
-  (an autouse fixture keyed on `request.node.get_closest_marker("network")`, and
-  `pytest_collection_modifyitems`). Patch `socket.socket.connect`/`create_connection`
-  to raise, and make the message name the offending test and say to add the
-  marker or mock the call. Note gRPC (ZEC's lightwalletd) may bypass Python-level
-  sockets via the C core, so verify the guard actually catches that path rather
-  than assuming — until then `unshare -rn -- uv run --no-sync pytest -q` (after a
-  `uv sync`, which itself needs the network) is the check that definitely works.
+- **The offline guard covers Python sockets and grpc — not every possible
+  transport.** `tests/conftest.py` now refuses `socket.connect`/`connect_ex`/
+  `create_connection` and the grpc channel factories for any test without the
+  `network` marker (`tests/test_offline_guard.py` asserts both the block and
+  the lift). Two things it does *not* close:
+  - Any **other C-level client** that connects without going through a Python
+    socket object is unguarded, for the same reason grpc needed its own seam:
+    grpcio's C core connects straight past a patched `socket.socket.connect`
+    (verified, not assumed — a real channel to `zec.rocks:443` came up with the
+    patch in place). So `unshare -rn -- uv run --no-sync pytest -q` (after a
+    `uv sync`, which itself needs the network) remains the definitive check —
+    it is the kernel saying no rather than us. Worth considering for CI, where
+    the sync and the run are separate steps anyway.
+  - The guard is **per-test**, so a module doing I/O at *import* time still
+    escapes it (collection happens before fixtures). Nothing does today.
+  Five tests were leaking when the guard first ran: `send`/`status` price their
+  fee lines via CoinGecko, and `status` also queried Esplora. `_eur_price` is
+  `@functools.cache`d, which made it worse than a plain leak — the first test to
+  warm the cache spared the rest, so *which* test went out depended on ordering.
+  The `fake_feed` fixture in `test_cli.py` is autouse for that reason.
 - **BIP49/44 scanning**: real wiring scans BIP84 only (Trust Wallet's scheme).
   `scan_account` is generic enough to add `m/49'`/`m/44'` accounts + script
   types when needed.

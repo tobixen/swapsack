@@ -20,12 +20,18 @@ can leak into the unfiltered session-teardown window.
 
 Both are scoped narrowly to ``network``-marked tests, so a genuine
 leaked-resource (or any other unraisable) in the unit suite still fails as before.
+
+The other direction is the offline guard below: everything *without* the
+``network`` marker is refused a connection outright, so a test that forgets to
+mock a call fails loudly and by name instead of quietly doing live I/O.
 """
 
 from __future__ import annotations
 
 import gc
+import socket
 
+import grpc
 import pytest
 
 
@@ -49,6 +55,61 @@ def _drain_keepalive_sockets(request: pytest.FixtureRequest):
     yield
     if request.node.get_closest_marker("network"):
         gc.collect()
+
+
+class NetworkAccessInUnitTest(BaseException):
+    """A test without the ``network`` marker tried to open a connection.
+
+    Deliberately a ``BaseException`` and not an ``OSError``: every HTTP client in
+    the tree (and niquests/urllib3 underneath) catches connection errors and
+    retries or rewraps them, which would bury the message that names the
+    offending test. Inheriting outside the ``Exception`` tree makes the guard
+    un-swallowable, so the leak is reported where it happened.
+    """
+
+
+def _refuse(nodeid: str, what: str):
+    def blocked(*_args: object, **_kwargs: object):
+        raise NetworkAccessInUnitTest(
+            f"{nodeid} tried to reach the network via {what}. The default suite "
+            "is offline: mock the call, or mark the test @pytest.mark.network "
+            "(opt-in, excluded by default)."
+        )
+
+    return blocked
+
+
+@pytest.fixture(autouse=True)
+def _offline_guard(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Refuse outbound connections in every test that is not ``network``-marked.
+
+    Two seams are needed, not one. ``socket.socket.connect`` covers the HTTP
+    clients (niquests/urllib3 build the socket in Python), but grpcio — ZEC's
+    lightwalletd transport — connects from its C core and does *not* go through
+    the Python socket object: with ``socket.socket.connect`` patched to raise, a
+    real channel to ``zec.rocks:443`` still came up. So the grpc channel
+    factories are blocked separately.
+
+    That leaves any other C-level client as an unguarded hole, which is why
+    ``unshare -rn -- uv run --no-sync pytest -q`` remains the belt-and-braces
+    check: it is the kernel saying no, rather than us.
+    """
+    if request.node.get_closest_marker("network"):
+        yield
+        return
+    nodeid = request.node.nodeid
+    monkeypatch.setattr(socket.socket, "connect", _refuse(nodeid, "socket.connect"))
+    monkeypatch.setattr(
+        socket.socket, "connect_ex", _refuse(nodeid, "socket.connect_ex")
+    )
+    monkeypatch.setattr(
+        socket, "create_connection", _refuse(nodeid, "socket.create_connection")
+    )
+    monkeypatch.setattr(grpc, "secure_channel", _refuse(nodeid, "grpc.secure_channel"))
+    monkeypatch.setattr(
+        grpc, "insecure_channel", _refuse(nodeid, "grpc.insecure_channel")
+    )
+    yield
 
 
 # Shaped like a real Esplora /tx response, with synthetic addresses: a partial

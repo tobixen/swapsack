@@ -2235,8 +2235,20 @@ class _FakeFeed:
         return {c: self.prices[c] for c in coin_ids if c in self.prices}
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def fake_feed(monkeypatch):
+    """Give every CLI test a fixed EUR spot instead of a live CoinGecko lookup.
+
+    Autouse because ``--price-check`` defaults *on*: any command that prints a
+    fee prices it, so a test that merely exercises `send`/`status` reaches the
+    feed without ever mentioning it. Five did exactly that (found when the
+    offline guard in ``conftest.py`` started refusing connections), and the
+    ``@functools.cache`` on ``_eur_price`` made it worse than a plain leak: the
+    first test to warm the cache silently spared the rest, so *which* test went
+    out depended on ordering. Clearing that cache around every test is the
+    other half of the fix. Tests that want a different feed (a tripwire, a
+    raiser) monkeypatch over this in their own body.
+    """
     import swapsack.cli as cli
     import swapsack.pricefeed as pricefeed
 
@@ -2396,7 +2408,32 @@ class _StubBackend:
 NOT_OBSERVED = {"stages": {"inbound_observed": {"started": False, "completed": False}}}
 
 
-def test_status_explains_an_unobserved_txid(monkeypatch, capsys):
+@pytest.fixture
+def no_onchain_btc(monkeypatch):
+    """Make `status`'s on-chain lookup a miss instead of a live Esplora query.
+
+    `cmd_status` prints two things: the swap stages and (best-effort) what the
+    transaction did on-chain. A test that only cares about the stages still
+    triggers the second, which went out to Esplora until the offline guard in
+    `conftest.py` caught it. `None` is the honest stub — it is what a real
+    lookup returns for the synthetic hashes these tests use.
+    """
+    import swapsack.cli as cli
+
+    class NoTx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def fetch_tx(self, txid):
+            return None
+
+    monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": NoTx())
+
+
+def test_status_explains_an_unobserved_txid(monkeypatch, capsys, no_onchain_btc):
     """A hash no vault has seen must say what that means, not print a stub body.
 
     A plain `send` is never observed by THORChain/Maya — only swap inbounds
@@ -2420,7 +2457,9 @@ def test_status_explains_an_unobserved_txid(monkeypatch, capsys):
     assert '"stages"' in captured.out
 
 
-def test_status_reports_the_backend_that_observed_it(monkeypatch, capsys):
+def test_status_reports_the_backend_that_observed_it(
+    monkeypatch, capsys, no_onchain_btc
+):
     import swapsack.cli as cli
 
     observed = {
