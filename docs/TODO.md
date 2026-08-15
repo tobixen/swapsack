@@ -5,9 +5,80 @@ outlived the work that created them are kept below as open risk.
 
 ## Next up (priority order)
 
-Owner's requested order; two-sided liquidity comes *after* these.
+Owner's requested goal (2026-08-16): **two-sided liquidity for `ETH.USDC` and
+`ARB.USDC`.** Both are **Maya** pools paired with **CACAO** — THORChain LP is
+globally paused (`PAUSELP=1`, and `PAUSELPDEPOSIT-ETH-USDC-…=1`, checked
+2026-08-16), so its `ETH.USDC` pool is not an option and no THORChain/RUNE work
+is on this path. Maya is open: `PAUSELP`/`PAUSELPETH`/`PAUSELPARB` are all `0`,
+both pools are `Available`, and Maya publishes a router for both `ETH`
+(`0xe3985E6b…`) and `ARB` (`0x700E97ef…`). Items 1 and 2 below are that goal,
+split by what each delivers; everything else in this file is now behind them.
 
-1. **More swap *destinations* via external `--dest` addresses.** ATOM, XRP, ADA
+1. **The symmetric two-leg CLI orchestration → delivers `ETH.USDC` on its own.**
+   Nothing else is missing for the ETH side: the asset leg is the existing
+   ERC-20 router path (`_liquidity_eth`'s `token_add`, which already takes the
+   token contract explicitly *because* a symmetric memo has a suffix the memo
+   parse would choke on), and the CACAO leg is
+   `CosmosAdapter.build_and_verify_native_deposit`. `symmetric_add_memo`,
+   `pair_amount` and `thorchain.pool()` depths are all in place and unit-tested.
+   What remains is only the coordination, per `docs/liquidity-symmetric.md`'s
+   safety protocol: prepare + gate **both** legs, broadcast **neither** if
+   either gate fails, then CACAO first and USDC second, reporting loudly if the
+   second fails after the first is out.
+
+   Gaps to close while building it, none large:
+   - **The pause gate does not cover the protocol leg.** `prepare_liquidity`
+     checks `lp_deposit_pause_reason` on the way to the vault;
+     `build_and_verify_native_deposit` has no vault and so never consults
+     mimir. A symmetric add must run the same check for *both* legs.
+   - **`_liquidity_eth` hardcodes `inbound_addresses().get("ETH")`** for the
+     router. Read `adapter.chain` instead — item 2 needs the ARB router from
+     the same call.
+   - **Prove a CACAO mainnet broadcast first.** Every CACAO spend path ships
+     mainnet-unproven (no Maya testnet). A small plain `send` is the cheap way
+     to find a protobuf/signing bug; discovering one as the first half of an
+     irreversible two-leg add is the worst available place.
+   - Sourcing the CACAO needs no new code — `swap --to CACAO --dest maya1…`
+     works today. At the 2026-08-16 ratio both pools price CACAO at ~$0.113
+     (~8.85 CACAO per USDC), so the pair leg is roughly dollar-for-dollar.
+
+2. **An Arbitrum adapter → delivers `ARB.USDC` (and unblocks ETH-ARB).**
+   Much smaller than this file previously implied, because **the EVM chain-id
+   parameterization is already done**: `EthAdapter.__init__` takes `chain_id`
+   and threads `self.chain_id` into every build site, so the "module-level
+   `CHAIN_ID`" concern recorded under A2/A3 and under *Swap backends* is stale.
+   `chains/bsc.py` is the working precedent — ~60 lines overriding RPC, chain
+   id, native symbol and the tracked-token table — and unlike BSC, ARB is
+   tradable with a Maya router, so it does not need `build_and_verify` stubbed
+   out. `ASSET` already carries `USDC-ARB` and `ETH-ARB`.
+
+   What it needs:
+   - `chains/arb.py`: `chain="ARB"`, `asset="ARB.ETH"`, `native_symbol="ETH"`,
+     chain id **42161**, an Arbitrum RPC, `token_suffix="ARB"`,
+     `lp_backends=("maya",)`, tracked tokens `USDC 0xaf88d065… at 6 decimals`
+     (6 like Ethereum's, *not* BSC's 18 — the BSC docstring's warning is about
+     BSC specifically, don't over-generalize it).
+   - **Arbitrum gas is not Ethereum gas.** The L1 calldata cost is charged
+     through an inflated gas *limit*, so the fixed constants
+     (`TOKEN_DEPOSIT_GAS = 200000`, `--eth-gas` default 60000) are likely wrong
+     here and `ETH_MAX_FEE_WEI` bounds the wrong quantity. This is the one part
+     that is genuinely new work rather than configuration — call
+     `eth_estimateGas` on ARB rather than porting the constants. (Folds into
+     the standing `eth_estimateGas` item under *Other known gaps*.)
+   - CLI dispatch: `cmd_send`, `cmd_swap` and `_liquidity` each branch on
+     `chain == "ETH"`. Adding a second EVM chain is the point at which A5's
+     table-driving stops being cosmetic — do the minimal table, not a fourth
+     copy of the branch. `RECEIVE_ONLY_CHAINS` and the "ARB/ATOM could be
+     auto-derived" follow-up below both dissolve for ARB once it is spendable.
+   - **Re-measure the pool before committing size.** Maya's `ARB.USDC` depth is
+     ~8.9k USDC / ~78.7k CACAO (2026-08-16 — unchanged from the destination
+     work's measurement), against ~232k USDC / ~2.05M CACAO for `ETH.USDC`. A
+     position large enough to matter makes you a dominant share of a pool that
+     thin, which is where the impermanent loss lands and what makes exiting
+     expensive. Symmetric entry avoids *entry* slip; it does nothing about
+     that.
+
+3. **More swap *destinations* via external `--dest` addresses.** ATOM, XRP, ADA
    and ETH-ARB are done; **SOL is the only remaining candidate, and it is
    blocked** — `SOL.SOL` exists on THORChain but is halted (a live
    `BTC->SOL.SOL` quote returns "trading is halted, can't process swap"), the
@@ -37,25 +108,32 @@ Owner's requested order; two-sided liquidity comes *after* these.
      this — derive, but warn loudly that funds land somewhere only another
      wallet can spend.
 
-2. **Two-sided (symmetric) liquidity — the two-leg CLI orchestration.**
-   A symmetric add is two *linked* deposits: the asset leg (`+:POOL:<thor1addr>`
-   to the inbound vault) and a RUNE/CACAO leg (a Cosmos `MsgDeposit` with memo
-   `+:POOL:<assetaddr>`), paired by the protocol via the cross-referenced
-   addresses within a time window.
+## Symmetric liquidity — the standing risk notes
 
-   Build on the existing pieces — `thor1` derivation, RUNE balance, `MsgDeposit`
-   sign/broadcast for RUNE + CACAO, `symmetric_add_memo`, `pair_amount`,
-   `CosmosAdapter.build_and_verify_native_deposit`. What remains is the CLI
-   orchestration: prepare-both-then-broadcast, partial-failure handling,
-   asset-sender pairing.
+Items 1 and 2 above are the current, USDC-specific plan; these are the general
+properties of a symmetric add, which outlive it. A symmetric add is two *linked*
+deposits: the asset leg (`+:POOL:<protocol-addr>` to the inbound vault) and a
+RUNE/CACAO leg (a Cosmos `MsgDeposit` with memo `+:POOL:<asset-addr>`), paired
+by the protocol via the cross-referenced addresses within a time window.
 
-   The risk that makes this worth doing carefully: if one leg lands and the other
-   does not, the position is lopsided or stuck — material on an experimental,
-   loss-prone feature. Note also that one-sided LP already carries ~50% RUNE
-   price exposure; symmetric mainly buys *no entry slip* in exchange for sourcing
-   and holding RUNE. THORChain LP is currently paused (`PAUSELP`), so symmetric
-   works on Maya (asset + CACAO) today, RUNE when THORChain re-enables. See
-   `docs/liquidity-symmetric.md`.
+- **The partial-failure hazard is the whole reason to build it carefully**: if
+  one leg lands and the other does not, the position is lopsided or stuck —
+  material on an experimental, loss-prone feature.
+- **Symmetric buys less than it looks like it does.** One-sided LP already
+  carries ~50% RUNE/CACAO price exposure once the pool rebalances, so symmetric
+  does not reduce your exposure to the settlement asset — it only avoids *entry
+  slip*, in exchange for sourcing and holding RUNE/CACAO yourself. On a USDC
+  pool that means half a nominally dollar-stable position is a small-cap
+  protocol token either way; go in knowing that, not expecting stablecoin
+  behaviour.
+- **The asset leg's pairing address is unambiguous only for account-model
+  chains.** ETH and ARB have a single derived sender. A UTXO source does not —
+  the protocol observes `vin[0]` by convention, an assumption no testnet can
+  verify for us. Both pools in the current plan are EVM, which is part of why
+  they are a good first target.
+- THORChain LP is paused (`PAUSELP=1`), so symmetric works on Maya (asset +
+  CACAO) today and on RUNE only when THORChain re-enables it. See
+  `docs/liquidity-symmetric.md`.
 
 ## Integration tests towards testnet / stagenet
 
@@ -68,9 +146,13 @@ Owner's requested order; two-sided liquidity comes *after* these.
   as **PASSED, not skipped** — the tests skip when unfunded, so a green CI alone
   does NOT prove a real testnet tx was broadcast. Inspect the run log for the
   broadcast txids.
-- **Sepolia token send** (USDT/USDC on Sepolia) — the token-swap gate still bakes
-  in mainnet `CHAIN_ID`; parameterize it (fold into A2/A3) to testnet-cover the
-  ERC-20 send/swap path too.
+- **Sepolia token send** (USDT/USDC on Sepolia) — to testnet-cover the ERC-20
+  send/swap path. This was recorded as blocked on "the token-swap gate bakes in
+  mainnet `CHAIN_ID`"; it does not. `EthAdapter.__init__` takes `chain_id` and
+  threads `self.chain_id` into every build, and `verify_eth_token_swap` /
+  `verify_eth_approvals` compare against `built.chain_id`. The module-level
+  `CHAIN_ID` survives only as a dataclass default. What is actually missing is
+  Sepolia token *contracts* and a funded test account.
 - **THORChain stagenet swaps** — a real cross-chain swap loop (deposit on one
   testnet, receive on another) needs a stagenet vault + memo, a bigger lift.
 - Wire the testnet secrets into the CI **Integration (network)** workflow so the
@@ -142,11 +224,17 @@ labels, not lookups.
   original token-destination case (a `0x…` contract-qualified asset from BTC)
   has never been exercised — the check above bounds it, but nothing tests it.
 - **A2/A3** — share the EVM key derivation + `to_checksum`/keccak helpers between
-  ETH and TRON; default `wallet_balance` on an account-model base. Several other
-  items below want this first (BSC swaps, USDC on cheaper chains, Sepolia token
-  tests), so it is the highest-leverage refactor here.
+  ETH and **TRON**; default `wallet_balance` on an account-model base. Scope
+  correction: the *EVM-to-EVM* half of this is already done — `EthAdapter`
+  parameterizes `chain_id` and `chains/bsc.py` proves the subclass shape works,
+  so BSC/ARB/AVAX do **not** wait on it. What is left is genuinely the TRON
+  sharing, which no other item blocks. It is therefore no longer "the
+  highest-leverage refactor here"; **A5 is** (see next), because a second
+  spendable EVM chain multiplies the `chain == "ETH"` branches.
 - **A5** — table-drive the CLI per-chain factories / `_resolve_destination` /
-  `cmd_address` / `_swap_from_*`.
+  `cmd_address` / `_swap_from_*`. Promoted by *Next up* item 2: `cmd_send`,
+  `cmd_swap` and `_liquidity` each branch on `chain == "ETH"`, and Arbitrum is
+  the second EVM chain that has to appear in all three.
 - **A7** — split `base.ChainAdapter` into `WalletChain` vs `SourceChain` (Tron is
   destination-only). The `swap.SwapSource` protocol already exists from A4.
 - **C-list** — one `ThreadPoolExecutor` per scan; `quote` memo row alignment;
@@ -165,17 +253,22 @@ labels, not lookups.
 - **Maya-only assets**: ADA and ETH-ARB are now exposed as destinations. Note
   what *isn't* there — the ARB **token** pool (`ARB.ARB`) is `Staged`, not
   tradeable, so "ARB" as a destination means native ETH on Arbitrum.
-  CACAO is exposed as a destination, but its **full wallet side** is a
-  Cosmos-SDK chain effort
-  (protobuf `MsgSend`/`MsgDeposit`) that overlaps *Next up* item 2's RUNE leg.
-  (CACAO needs `thorchain.asset_unit` to stay 1e10, not 1e8 — see
-  `docs/cacao.md`.)
+  CACAO's **full wallet side is done** — hold, balance, `send` (`MsgSend`) and
+  swap-**from** (`MsgDeposit`) all ship, mainnet-unproven, via
+  `chains/cosmos.py` + `chains/maya.py`. (An earlier version of this line, and
+  the status header of `docs/cacao.md`, called it "not started"; both were
+  stale. `docs/cacao.md`'s own phasing section was correct.) So *Next up* item
+  1's CACAO leg needs no new chain work. (CACAO needs `thorchain.asset_unit` to
+  stay 1e10, not 1e8 — see `docs/cacao.md`.)
 - **USDC on cheaper chains — the *destination* half is done** (`USDC-AVAX` via
   THORChain, `USDC-ARB` via Maya). What remains is **holding, spending or
-  sourcing** them, which does need a new EVM chain adapter (RPC, chain-id,
-  native coin) — so do A2/A3 (generalize `EthAdapter` into a shared EVM code
-  path) rather than copy it per chain. Native AVAX is likewise not exposed;
-  it is one `ASSET` line away now that the `AVAX` shape rule exists.
+  sourcing** them, which needs a per-chain EVM adapter (RPC, chain id, native
+  coin, tracked tokens). This used to say "so do A2/A3 first rather than copy
+  it per chain" — that is no longer the trade-off: `EthAdapter` already
+  parameterizes `chain_id` and `chains/bsc.py` is a ~60-line subclass proving
+  the seam, so the per-chain adapter *is* the shared code path. ARB is spelled
+  out under *Next up* item 2. Native AVAX is likewise not exposed; it is one
+  `ASSET` line away now that the `AVAX` shape rule exists.
 
   Three findings from doing it, worth having before the adapter work:
   - **The premise "far cheaper than ETH mainnet" did not survive measurement.**
@@ -189,7 +282,9 @@ labels, not lookups.
     swap lost ~1269 bps against spot vs ~35 bps for the same swap to
     `USDC-ETH`. Nothing to fix in the code (the `Market:` line surfaces it),
     but it caps how useful `USDC-ARB` is at size, and is worth re-measuring
-    rather than assumed stable.
+    rather than assumed stable. Re-measured 2026-08-16: ~8.9k USDC / ~78.7k
+    CACAO, unchanged. It bounds the *LP* ambition too, not just swaps — see
+    *Next up* item 2.
   - **BASE is blocked, not merely unimplemented**: `BASE.USDC` *and* `BASE.ETH`
     are `Available` but `trading_halted: true` on THORChain (checked
     2026-08-16), same shape as the BSC and SOL blocks. One `_RULES` line and an
@@ -198,11 +293,13 @@ labels, not lookups.
   (`chains/bsc.py`), but THORChain has BSC `chain_trading_paused`/`halted` (a
   live `BTC->BSC.BNB` quote returns "trading is halted, can't process swap") and
   Maya has no BSC pools, so To/From/Sweep/Liq are unusable and untestable.
-  `BscAdapter.build_and_verify` raises by design (the inherited builders bake in
-  ETH's chain id 1, wrong for BSC's 56). Revisit when `inbound_addresses` shows
-  BSC `chain_trading_paused: false`; a swap source will also need the EVM chain
-  id parameterized (currently the module-level `CHAIN_ID` in `eth.py`) — fold
-  into A2/A3.
+  `BscAdapter.build_and_verify` raises by design — because there is nothing to
+  swap against, **not** because of chain id. (This entry used to claim "the
+  inherited builders bake in ETH's chain id 1"; they do not. `BscAdapter` passes
+  56 to `super().__init__`, which is exactly why its inherited *send* paths sign
+  correctly.) Revisit when `inbound_addresses` shows BSC
+  `chain_trading_paused: false`; at that point the swap source needs only the
+  entry point unstubbed, not a refactor.
 - **BasicSwap backend** (trustless P2P / privacy / XMR): orchestrate its daemon
   via API; needs full nodes (heavy) and a different custody seam. Future.
 - **Monero (XMR) hold/balance/send**: blocked on a custody/architecture

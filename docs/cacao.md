@@ -15,11 +15,14 @@ decimals landmine).
 
 # Maya CACAO support — design notes
 
-Status: **destination-only is DONE** (`swap --to CACAO --dest maya1... --backend
-maya`/`auto`). The **full wallet side (Hold/Bal/Send/Sweep/From/Liq) is not
-started** — unlike the UTXO coins, CACAO is the *native* asset of MayaChain, a
-Cosmos-SDK/Tendermint chain, so "full" means a whole new chain family (protobuf
-tx signing), not another adapter of an existing one. This note records the
+Status: **destination, Hold, Balance, Send and swap-From are all DONE** (see the
+*Recommended phasing* section below, which is the authoritative per-phase
+record) — every spend path shipping **unproven on mainnet**, as there is no Maya
+testnet. `Liq` is n/a for a settlement asset: CACAO's liquidity role is the
+protocol leg of a *symmetric* add, tracked in `docs/TODO.md` *Next up* item 1.
+Unlike the UTXO coins, CACAO is the *native* asset of MayaChain, a
+Cosmos-SDK/Tendermint chain, so "full" meant a whole new chain family (protobuf
+tx signing), not another adapter of an existing one — this note records that
 scoping and the **1e10-decimals landmine** discovered while wiring the
 destination, so neither is rediscovered mid-money-path. It mirrors
 `docs/dash.md` / `docs/zcash.md`.
