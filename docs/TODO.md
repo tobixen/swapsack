@@ -15,14 +15,17 @@ Owner's requested order; two-sided liquidity comes *after* these.
    `trading_halted: false`, or reach it via Chainflip (see *Swap backends*).
    When it unblocks: SOL addresses are base58 with **no checksum at all** (a
    bare 32-byte ed25519 pubkey), so a `_RULES` shape rule is genuinely all there
-   is — say so in a comment rather than leaving it looking like a missing
-   `_checksum_problem` branch. Note that adding a chain needs *both* (a shape
-   rule alone silently opts the chain out of the checksum guard).
+   is — add `"SOL"` to `_NO_CHECKSUM` in `addresses.py`, which is what declares
+   that as a decision rather than an oversight. A `_RULES` entry alone is
+   *rejected* by the invariant test in `test_addresses.py`, deliberately: every
+   chain must name a checksum strategy or explicitly say it has none.
 
    Two follow-ups this work exposed, neither blocking:
-   - **ADA is unreachable from a UTXO source, permanently.** A Shelley address
-     is 103 chars, so the memo exceeds the 80-byte OP_RETURN — see *N5* below,
-     which this made live. `--dest` now refuses it up front instead of letting
+   - **ADA is usually unreachable from a UTXO source.** The Shelley *base*
+     address wallets hand out is 103 chars, so the memo exceeds the 80-byte
+     OP_RETURN — see *N5* below, which this made live. Not a blanket rule: the
+     guard measures the actual address, and a shorter Shelley form (enterprise,
+     58 chars) fits fine, so do not "simplify" it into a per-chain block. `--dest` now refuses it up front instead of letting
      it read as "no route". Reaching ADA from BTC would need a THORName (a
      registered short alias resolving to the address) — worth considering as a
      general memo-length escape hatch, not just for ADA.
@@ -131,8 +134,8 @@ descriptions are now the only record — the letter/number codes are historical
 labels, not lookups.
 
 - **N5** — a swap memo from a UTXO source vs the 80-byte OP_RETURN limit. No
-  longer hypothetical: a Cardano `addr1…` destination makes the memo 113 bytes,
-  and the backend refuses the quote outright. `_dest_chain_caveats` in `cli.py`
+  longer hypothetical: a Cardano base address makes the memo 113 bytes, and the
+  backend refuses the quote outright. `_dest_chain_caveats` in `cli.py`
   now refuses any `--dest` whose *shortest possible* memo would not fit, so the
   user gets the reason instead of "no quotes". Still open: an escape hatch that
   makes long destinations reachable from BTC at all (THORName aliases), and the
@@ -169,10 +172,16 @@ labels, not lookups.
   `docs/cacao.md`.)
 - **USDC on cheaper chains**: THORChain also pools USDC on AVAX/BASE and Maya on
   ARB — all far cheaper to use than ETH mainnet (where the only current pool is).
-  Each
-  needs a new EVM chain adapter (RPC, chain-id, native coin, dest validation),
-  so do A2/A3 (generalize `EthAdapter` into a shared EVM code path) rather than
-  copy it per chain.
+  Each needs a new EVM chain adapter (RPC, chain-id, native coin, dest
+  validation), so do A2/A3 (generalize `EthAdapter` into a shared EVM code path)
+  rather than copy it per chain.
+  **But note the split**: that adapter is only needed to *hold, spend or source*
+  those assets. Exposing them as `--dest` **destinations** is now nearly free —
+  the `ARB` shape rule and its EIP-55 check already exist (added with ETH-ARB),
+  so `USDC-ARB` is one `ASSET` entry plus a CoinGecko id. AVAX/BASE need one
+  `_RULES` line each (identical EVM pattern) and an `_EVM_CHAINS` entry. Worth
+  doing ahead of the adapter work if the aim is just to *receive* USDC somewhere
+  cheaper than ETH mainnet.
 - **BSC swaps are blocked — do not implement yet.** Hold + Balance work
   (`chains/bsc.py`), but THORChain has BSC `chain_trading_paused`/`halted` (a
   live `BTC->BSC.BNB` quote returns "trading is halted, can't process swap") and
@@ -216,6 +225,38 @@ README — both copies would need the column.)
 
 ## Other known gaps
 
+- **The address checksum guard can now over-reject, which is the worse
+  failure.** `validate_destination_address` verifies base58check / bech32 /
+  bech32m / cashaddr / EIP-55 as well as the shape. It is fail-open where no
+  checksum exists (an all-lowercase EVM address, a chain with no shape rule, a
+  chain listed in `_NO_CHECKSUM`), but if a chain has a *second* legitimate
+  address form the dispatch does not know about, a valid address is now refused
+  — and a blocked spend you meant to make is worse than a missed typo. Known
+  deliberate exclusions: Cardano Byron (`Ae2…`/`DdzFF…`, base58-over-CBOR with
+  a CRC32, unverifiable here) and XRP X-addresses (rejected by THORChain
+  anyway). Adding a chain means naming its strategy — a `_SEGWIT_HRP` /
+  `_PLAIN_BECH32_HRP` / `_EVM_CHAINS` / `_BASE58CHECK_ALPHABET` entry, or
+  `_NO_CHECKSUM` — and the invariant test fails if a `_RULES` entry names none.
+- **Three legitimate address forms are refused by the *shape* rules** (not the
+  checksum layer; these predate it and are unchanged by it):
+  **uppercase bech32** (`BC1QW5…` is valid per BIP-173 and is what BIP-21 QR
+  codes emit), **uppercase cashaddr** (`BITCOINCASH:QPM2…`, the spec's other
+  canonical form), and **BCH CashTokens-aware addresses** (`bitcoincash:z…`,
+  live since 2023, which receive plain BCH fine). `_B32` is `[a-z0-9]` and the
+  cashaddr rule is `[qp]`, so all three miss. Fixing the first two is roughly a
+  `.lower()` before the bech32/cashaddr rules — but do it properly: BIP-173
+  requires all-one-case, so mixed case must still be *rejected*, which a bare
+  `.lower()` would start accepting.
+- **An XRP payout can never carry a destination tag.** THORChain rejects both
+  spellings that could express one: an X-address (the XRPL's own tag encoding)
+  and an `address:tag` suffix each come back "unable to parse address". So
+  `--to XRP` can only pay a bare classic `r…` address, and an exchange deposit
+  address that requires a tag **must not be used** — such a deposit is usually
+  unrecoverable, and nothing downstream of us can fix it. `--dest` warns and the
+  `XRP` rule in `addresses.py` refuses X-addresses, which is as far as this side
+  can go; the limitation itself is THORChain's and is not ours to close. Recorded
+  here so it is not rediscovered as a bug. If THORChain ever adds tag support the
+  memo format will change, and that is the trigger to revisit.
 - **Broadcast is still unproven on mainnet for DASH, ZEC and TRON.** The
   2026-07-24 run-through (`docs/live-session-2026-07-24.md`) spent real funds and
   proved the BTC send + BTC/ETH/ERC-20 swap paths (THORChain, Maya and CoW), but
