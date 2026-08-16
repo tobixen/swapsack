@@ -211,17 +211,18 @@ def test_add_liquidity_usdt_eth_routes_to_eth_handler(monkeypatch):
 
     called = {}
 
-    def fake_eth(args, *, memo, amount, sweep=False):
-        called.update(memo=memo, amount=amount, sweep=sweep)
+    def fake_evm(args, factory, *, memo, amount, sweep=False):
+        called.update(memo=memo, amount=amount, sweep=sweep, factory=factory)
         return 0
 
-    monkeypatch.setattr(cli, "_liquidity_eth", fake_eth)
+    monkeypatch.setattr(cli, "_liquidity_evm", fake_evm)
     args = build_parser().parse_args(
         ["add-liquidity", "--asset", "USDT-ETH", "--amount", "25"]
     )
     assert cli.cmd_add_liquidity(args) == 0
     assert called["memo"] == "+:ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7"
     assert called["amount"] == 2_500_000_000  # 25 USDT in THORChain 1e8 units
+    assert called["factory"] is cli._eth_adapter
 
 
 def test_token_pool_assets_uppercases_contract():
@@ -256,7 +257,7 @@ def test_add_liquidity_usdt_tron_rejected(capsys):
         ["add-liquidity", "--asset", "USDT-TRON", "--amount", "10"]
     )
     assert cli.cmd_add_liquidity(args) == 2
-    assert "only supported for ETH tokens" in capsys.readouterr().out
+    assert "only supported for EVM tokens" in capsys.readouterr().out
 
 
 def test_swap_amount_numeric_parses():
@@ -318,6 +319,9 @@ def test_swap_from_eth_token_sweep_uses_full_token_balance(monkeypatch):
 
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
     monkeypatch.setattr(cli, "_resolve_destination", lambda args, m, p="": "bc1qdest")
+    monkeypatch.setitem(
+        cli._EVM_ADAPTERS, "ETH", lambda args, passphrase="": FakeAdapter()
+    )
     monkeypatch.setattr(cli, "_eth_adapter", lambda args, passphrase="": FakeAdapter())
 
     captured = {}
@@ -333,7 +337,7 @@ def test_swap_from_eth_token_sweep_uses_full_token_balance(monkeypatch):
     args = build_parser().parse_args(
         ["swap", "--from", "USDT-ETH", "--to", "BTC", "--amount", "max"]
     )
-    rc = cli._swap_from_eth(args)
+    rc = cli._swap_from_evm(args, cli._eth_adapter)
     assert rc == 1  # aborted via our stub, not the old "not supported" rejection
     assert captured["amount"] == 250_000_000  # 2.5 USDT in THORChain 1e8 units
 
@@ -724,6 +728,11 @@ ETH_RECIP = "0x1111111111111111111111111111111111111111"
 
 
 class _FakeEthSend:
+    # The send path now reads these off the adapter instead of hardcoding "ETH",
+    # so a second EVM chain labels its own gas coin.
+    chain = "ETH"
+    native_symbol = "ETH"
+
     def __init__(self, captured):
         self._captured = captured
 
@@ -764,8 +773,8 @@ def test_send_eth_native_dry_run(monkeypatch):
 
     captured = {}
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
-    monkeypatch.setattr(
-        cli, "_eth_adapter", lambda args, passphrase="": _FakeEthSend(captured)
+    monkeypatch.setitem(
+        cli._EVM_ADAPTERS, "ETH", lambda args, passphrase="": _FakeEthSend(captured)
     )
     args = build_parser().parse_args(
         ["send", ETH_RECIP, "--asset", "ETH", "--amount", "0.001"]
@@ -781,8 +790,8 @@ def test_send_eth_token_sweep_uses_full_balance(monkeypatch):
 
     captured = {}
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
-    monkeypatch.setattr(
-        cli, "_eth_adapter", lambda args, passphrase="": _FakeEthSend(captured)
+    monkeypatch.setitem(
+        cli._EVM_ADAPTERS, "ETH", lambda args, passphrase="": _FakeEthSend(captured)
     )
     args = build_parser().parse_args(
         ["send", ETH_RECIP, "--asset", "USDT-ETH", "--amount", "max"]
@@ -2719,6 +2728,7 @@ def test_default_fee_blocks_is_a_fast_target():
 
 class _FakeSymEth:
     chain = "ETH"
+    native_symbol = "ETH"  # mirrors the real adapter: the fee line reads this
 
     def __init__(self):
         self.broadcast_error = None
@@ -2862,7 +2872,9 @@ def _wire_symmetric(monkeypatch, eth=None, maya=None):
     eth = eth or _FakeSymEth()
     maya = maya or _FakeSymMaya()
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
-    monkeypatch.setattr(cli, "_eth_adapter", lambda args, passphrase="": eth)
+    # The EVM asset adapter is reached through the _EVM_ADAPTERS registry, so
+    # patch the entry rather than the module-level factory the dict captured.
+    monkeypatch.setitem(cli._EVM_ADAPTERS, "ETH", lambda args, passphrase="": eth)
     monkeypatch.setattr(cli, "_maya_adapter", lambda args, passphrase="": maya)
     monkeypatch.setattr(cli, "_liquidity_client", lambda args: _FakeSymThor())
     return eth, maya
@@ -3001,3 +3013,199 @@ def test_add_liquidity_symmetric_native_eth_prints_the_eth_leg(monkeypatch, caps
     assert "+:ETH.ETH:maya1" in out
     assert "+:ETH.ETH:0x9858" in out
     assert not eth.broadcasted and not maya.broadcasted
+
+
+# --- Arbitrum wiring --------------------------------------------------------
+#
+# ARB is the second *spendable* EVM chain, which is what turns the `chain ==
+# "ETH"` branches in cmd_send/cmd_swap/_liquidity into a table. These pin that
+# each of those paths actually reaches an ARB adapter rather than silently
+# building an Ethereum transaction.
+
+
+def test_symmetric_fee_line_names_the_chains_own_native_coin(monkeypatch, capsys):
+    """The one fee line the native_symbol sweep missed.
+
+    Correct today because ETH and ARB both pay ether, so this pins the rule
+    rather than a present-day bug: a third EVM chain would be misreported.
+    """
+    import swapsack.cli as cli
+
+    class FakeBuilt:
+        fee = 10**16  # 0.01 native
+
+    class FakeAssetLeg:
+        built = FakeBuilt()
+
+        class plan:
+            amount_wei = 10**18
+            inbound_address = "0xvault"
+
+    class FakePrepared:
+        asset = FakeAssetLeg()
+        asset_memo = "+:BNB.USDC:maya1x"
+        protocol_memo = "+:BNB.USDC:0xabc"
+        protocol_amount = 10**10
+
+    class FakeProtocol:
+        decimals = 10
+        symbol = "CACAO"
+        chain = "MAYA"
+
+    class FakeAdapter:
+        native_symbol = "BNB"
+
+    args = build_parser().parse_args(
+        ["add-liquidity", "--symmetric", "--asset", "USDC-ETH", "--amount", "1"]
+    )
+    cli._print_symmetric_legs(
+        args,
+        FakePrepared(),
+        FakeProtocol(),
+        decimals=6,
+        token_add=False,
+        adapter=FakeAdapter(),
+    )
+    out = capsys.readouterr().out
+    assert "max fee:" in out
+    assert "BNB" in out.split("max fee:")[1]
+    assert "ETH" not in out.split("max fee:")[1]
+
+
+def test_evm_adapters_table_covers_eth_and_arb():
+    import swapsack.cli as cli
+
+    assert set(cli._EVM_ADAPTERS) == {"ETH", "ARB"}
+
+
+def test_arb_adapter_factory_honours_env_and_flag(monkeypatch):
+    import swapsack.cli as cli
+
+    monkeypatch.setenv("SWAPSACK_ARB_RPC", "https://from-env.example")
+    args = build_parser().parse_args(["balance"])
+    with cli._arb_adapter(args) as adapter:
+        assert adapter.rpc_url == "https://from-env.example"
+        assert adapter.chain_id == 42161
+
+
+def _wire_evm_dispatch(monkeypatch, seen):
+    """Replace every EVM per-chain handler with a recorder of the chain it got."""
+    import swapsack.cli as cli
+
+    def recorder(name):
+        def handler(args, factory, *a, **kw):
+            seen.append((name, factory))
+            return 0
+
+        return handler
+
+    monkeypatch.setattr(cli, "_send_evm", recorder("send"))
+    monkeypatch.setattr(cli, "_swap_from_evm", recorder("swap"))
+
+
+def test_send_dispatches_arb_to_the_arb_adapter(monkeypatch):
+    import swapsack.cli as cli
+
+    seen = []
+    _wire_evm_dispatch(monkeypatch, seen)
+    args = build_parser().parse_args(
+        [
+            "send",
+            "0x1111111111111111111111111111111111111111",
+            "--asset",
+            "USDC-ARB",
+            "--amount",
+            "1",
+        ]
+    )
+    assert cli.cmd_send(args) == 0
+    assert seen == [("send", cli._arb_adapter)]
+
+
+def test_swap_from_arb_dispatches_to_the_arb_adapter(monkeypatch):
+    import swapsack.cli as cli
+
+    seen = []
+    _wire_evm_dispatch(monkeypatch, seen)
+    args = build_parser().parse_args(
+        ["swap", "--from", "USDC-ARB", "--to", "BTC", "--amount", "10"]
+    )
+    assert cli.cmd_swap(args) == 0
+    assert seen == [("swap", cli._arb_adapter)]
+
+
+def test_send_still_dispatches_eth_to_the_eth_adapter(monkeypatch):
+    import swapsack.cli as cli
+
+    seen = []
+    _wire_evm_dispatch(monkeypatch, seen)
+    args = build_parser().parse_args(
+        [
+            "send",
+            "0x1111111111111111111111111111111111111111",
+            "--asset",
+            "USDC-ETH",
+            "--amount",
+            "1",
+        ]
+    )
+    assert cli.cmd_send(args) == 0
+    assert seen == [("send", cli._eth_adapter)]
+
+
+def test_liquidity_dispatches_arb_tokens(monkeypatch):
+    """The token guard used to read `chain != "ETH"`, which refused every ARB
+    token pool outright — including the ARB.USDC one this exists to reach."""
+    import swapsack.cli as cli
+
+    seen = {}
+
+    def fake(args, factory, *, memo, amount, sweep=False):
+        seen.update(factory=factory, memo=memo)
+        return 0
+
+    monkeypatch.setattr(cli, "_liquidity_evm", fake)
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "USDC-ARB", "--amount", "10", "--backend", "maya"]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    assert seen["factory"] is cli._arb_adapter
+    assert seen["memo"] == "+:" + ASSET["USDC-ARB"]
+
+
+def test_liquidity_still_refuses_tron_tokens(capsys):
+    """Widening the guard to "any EVM chain" must not let USDT-TRON through —
+    Maya has no TRON token pool, so there is nowhere to provide it."""
+    import swapsack.cli as cli
+
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "USDT-TRON", "--amount", "10"]
+    )
+    assert cli.cmd_add_liquidity(args) == 2
+    assert "only supported for EVM tokens" in capsys.readouterr().out
+
+
+def test_symmetric_accepts_arb():
+    import swapsack.cli as cli
+
+    assert set(cli._SYMMETRIC_ASSET_CHAINS) == {"ETH", "ARB"}
+
+
+def test_arb_is_a_derivable_destination():
+    """An Arbitrum address IS our ETH address, so --dest for ARB no longer needs
+    to be supplied by hand now that we can spend there."""
+    import swapsack.cli as cli
+
+    assert "ARB" in cli.DERIVABLE_CHAINS
+    derived = cli._derive_destination_address("ARB", MNEMONIC)
+    assert derived == cli._derive_destination_address("ETH", MNEMONIC)
+
+
+def test_address_command_lists_arb(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
+    args = build_parser().parse_args(["address"])
+    assert cli.cmd_address(args) == 0
+    out = capsys.readouterr().out
+    assert "ARB:" in out

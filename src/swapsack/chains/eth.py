@@ -59,6 +59,9 @@ APPROVE_GAS = 70000
 TOKEN_DEPOSIT_GAS = 200000
 # Plain external sends: a bare value transfer is 21000; an ERC-20 transfer() is
 # ~50-65k. These are used by `send` (no router/approve), not the swap path.
+# NATIVE_SEND_GAS is Ethereum's exact floor with no slack, so an L2 that bills
+# L1 calldata as extra gas consumed needs its own budget — see
+# EthAdapter.native_send_gas and chains/arb.py.
 NATIVE_SEND_GAS = 21000
 TOKEN_TRANSFER_GAS = 65000
 
@@ -296,6 +299,10 @@ class EthAdapter(HttpClient):
     token_suffix = "ETH"  # balance label suffix, e.g. "USDC-ETH"
     tracked_tokens = TRACKED_TOKENS
     known_token_decimals = KNOWN_TOKEN_DECIMALS
+    # Gas *limit* for a plain native send. A limit is not a fee — unused gas is
+    # refunded — so a subclass on a chain that consumes more than the 21000
+    # floor (an L2 billing L1 calldata) must raise this rather than inherit it.
+    native_send_gas = NATIVE_SEND_GAS
 
     def __init__(
         self,
@@ -690,6 +697,7 @@ class EthAdapter(HttpClient):
             amount_wei=request.amount * WEI_PER_THORCHAIN_UNIT,
             memo=quote.memo or "",
             expiry=quote.expiry,
+            chain_id=self.chain_id,
             destination=request.destination,
         )
         problems = verify_eth_swap(
@@ -743,7 +751,7 @@ class EthAdapter(HttpClient):
             amount=amount,
             memo="",  # a plain send carries no memo -> empty calldata
             nonce=nonce,
-            gas=NATIVE_SEND_GAS,
+            gas=self.native_send_gas,
             max_fee_per_gas=max_fee_per_gas,
             max_priority_fee_per_gas=max_priority_fee_per_gas,
             path=path,
@@ -905,6 +913,7 @@ class EthAdapter(HttpClient):
             amount_wei=amount * WEI_PER_THORCHAIN_UNIT,
             memo=memo,
             expiry=now + 3600,
+            chain_id=self.chain_id,
         )
         problems = verify_eth_swap(
             to=built.to,

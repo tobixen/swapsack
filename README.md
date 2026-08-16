@@ -40,9 +40,9 @@ The wallet is still under rapid development as of 2026-07-10.  Missing features 
 | ATOM      |      |     |  ✅ |      |      |      |     |
 | XRP       |      |     |  ✅ |      |      |      |     |
 | ADA       |      |     |  ◑  |      |      |      |     |
-| ETH-ARB   |      |     |  ✅ |      |      |      |     |
+| ETH-ARB   |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
+| USDC-ARB  |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
 | USDC-AVAX |      |     |  ✅ |      |      |      |     |
-| USDC-ARB  |      |     |  ✅ |      |      |      |     |
 | DASH      |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
 | ZEC       |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
 | CACAO     |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |      |     |
@@ -56,7 +56,7 @@ The wallet is still under rapid development as of 2026-07-10.  Missing features 
 * **From** — use as a `swap` *source* (the asset you spend). ◑ = the native swap-from for CACAO/RUNE (a Cosmos `MsgDeposit`, no inbound vault) is implemented + gated + unit-tested but its broadcast is **unproven on mainnet** — there is no Maya/THORChain testnet wired up; the same caveat covers DASH and ZEC (vault + OP_RETURN memo, Maya-only, no testnet; ZEC over its bespoke signer)
 * **Send** — `send` to an external address (a plain transfer, no swap). ✅ = implemented and tested; ◑ = USDC-ETH rides the *same* ERC-20 send path as USDT-ETH (only the contract/decimals differ) but isn't separately covered by a test; the native CACAO/RUNE Cosmos `MsgSend` is implemented + unit-tested (protobuf byte-exact vs cosmpy, signature verified) but its broadcast is **unproven on mainnet** — there is no Maya/THORChain testnet wired up; and the DASH legacy send shares the BTC build/gate/sign path and is unit-tested (signatures verified) but its broadcast is likewise **unproven on mainnet** (no Dash testnet — an opt-in mainnet self-sweep test exists, see docs/testnet.md); ZEC rides a bespoke v4/ZIP-243 signer (bitcoinlib can't sign Zcash) whose sighash is verified against a real mainnet transaction's signature, with the same unproven-broadcast caveat
 * **Sweep** — `--amount max` sends the maximum amount. ✅ = works: UTXO and token sweeps end at 0 (a token's gas is paid in the native coin); **native account coins (ETH/TRX) intentionally retain a small gas reserve** — the fee is only known at send time, and you *want* some left to move tokens or swap later, so the wallet warns rather than draining you to 0. ◑ = DASH/ZEC sweeps end at 0 like BTC but ride the mainnet-unproven broadcasts above. Blank = not yet (native TRX).
-* **Liq**  — `add-liquidity` and `withdraw-liquidity` provide/withdraw liquidity, single-sided by default and *two-sided* with `--symmetric` (ETH-chain assets only, pairing with your own RUNE/CACAO), now including ERC-20 tokens (e.g. USDT-ETH on Maya, via the router). ◑ = DASH/ZEC LP is Maya-only (`--backend maya`, pairs with CACAO) and rides their mainnet-unproven broadcasts. Experimental; see below.
+* **Liq**  — `add-liquidity` and `withdraw-liquidity` provide/withdraw liquidity, single-sided by default and *two-sided* with `--symmetric` (EVM assets only, pairing with your own RUNE/CACAO), now including ERC-20 tokens (e.g. USDT-ETH on Maya, via the router). ◑ = DASH/ZEC LP is Maya-only (`--backend maya`, pairs with CACAO) and rides their mainnet-unproven broadcasts; ARB LP is likewise Maya-only and mainnet-unproven. Experimental; see below.
 
 Other features:
 
@@ -74,8 +74,8 @@ remove liquidity on a THORChain pool.  By adding liquidity one will earn a share
 
 For bigger amounts, *double-sided* (symmetric) liquidity is preferable to
 single-sided: it enters at the current pool ratio and so takes **no entry
-slip**.  `add-liquidity --symmetric` does this, currently for **ETH-chain
-assets only** — see below for what it costs you in exchange.
+slip**.  `add-liquidity --symmetric` does this, currently for **EVM assets
+(Ethereum and Arbitrum)** — see below for what it costs you in exchange.
 
 ### Symmetric liquidity (two-sided)
 
@@ -105,11 +105,11 @@ What you get and what it costs:
   failure there leaves nothing live.  If the asset leg then fails, the position
   is genuinely half-added and the CLI says so loudly, with the live txid — wait
   for the protocol to refund the unpaired leg before retrying.
-* **ETH-chain assets only.**  The pairing depends on the asset leg having one
-  unambiguous sender, which an account-model chain has and a UTXO transaction
-  does not (the `vin[0]` convention is an assumption no testnet exists to
-  verify).  `--amount max` is refused for the same reason the amount must be
-  definite: the pair leg is derived from it.
+* **EVM assets only** (Ethereum and Arbitrum).  The pairing depends on the asset
+  leg having one unambiguous sender, which an account-model chain has and a UTXO
+  transaction does not (the `vin[0]` convention is an assumption no testnet
+  exists to verify).  `--amount max` is refused for the same reason the amount
+  must be definite: the pair leg is derived from it.
 * THORChain has LP deposits globally paused (`PAUSELP`), so symmetric works on
   **Maya** (asset + CACAO) today; the CLI aborts with the mimir key if you aim
   it at a paused pool.  Like every CACAO spend path, the protocol leg ships
@@ -140,7 +140,7 @@ capability grid above for the per-feature detail.
 | USDT-SOL | Tether | SPL token | none | Not currently available on THORChain/Maya |
 | AVAX | Avalanche C-Chain | EVM | partial | `USDC-AVAX` is a destination via `--dest`; native AVAX is not exposed yet. C-Chain (`0x…`, EIP-55 checked) only — an X-/P-Chain `X-avax1…` address is refused, since a payout could never credit it |
 | BASE | Base (ETH L2) | EVM | none | Blocked: THORChain's `BASE.USDC` and `BASE.ETH` pools are `Available` but **trading-halted** (checked 2026-08-16), the same shape as the BSC block. Revisit when the halt lifts |
-| ARB | Arbitrum (ETH L2) | EVM | partial | **Maya-only**. `ETH-ARB` (native ETH on Arbitrum) and `USDC-ARB` are destinations via `--dest`; the ARB *token* pool is `Staged`, not tradeable. Addresses are ordinary EVM ones, EIP-55 checked. Mind the depth: Maya's `ARB.USDC` pool held ~8.9k USDC on 2026-08-16, so anything above ~€100 slips hard — the `Market:` line shows it |
+| ARB | Arbitrum (ETH L2) | EVM | partial | **Maya-only**. Every feature is wired: hold, balance, destination (auto-derived — it *is* your ETH address), send/sweep, swap-**from** and liquidity, single- and two-sided. `ETH-ARB` is native ETH on Arbitrum; the ARB *token* pool is `Staged`, not tradeable. `USDC-ARB` is Circle's **native** USDC (`0xaf88d065…`), not the bridged `USDC.e`. Partial because the spend paths ship **mainnet-unproven**. Mind the depth: Maya's `ARB.USDC` pool held ~8.9k USDC on 2026-08-16, so anything above ~€100 slips hard — the `Market:` line shows it |
 | USDC | USD Coin (ETH/BSC/AVAX/BASE/ARB) | ERC-20 token | partial | ETH done (incl. `send`, via the shared ERC-20 path). AVAX and ARB are **destinations** (`--dest`) — receiving needs no adapter; *holding or spending* them still does. BASE and BSC are blocked by THORChain halts |
 | LTC | Litecoin | UTXO | partial | destination only (via `--dest`) |
 | DOGE | Dogecoin | UTXO | partial | destination only (via `--dest`) |

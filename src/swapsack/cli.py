@@ -192,6 +192,29 @@ def _eth_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN20
     return EthAdapter(url, bip39_passphrase=passphrase)
 
 
+def _arb_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
+    from swapsack.chains.arb import DEFAULT_ARB_RPC, ArbAdapter
+
+    url = (
+        getattr(args, "arb_rpc", None)
+        or os.environ.get("SWAPSACK_ARB_RPC")
+        or DEFAULT_ARB_RPC
+    )
+    return ArbAdapter(url, bip39_passphrase=passphrase)
+
+
+# The spendable EVM chains. They dispatch identically (derive one address ->
+# nonce+fees -> build -> gate -> broadcast) and differ only in their adapter, so
+# this registry replaces what were `chain == "ETH"` branches in cmd_send,
+# cmd_swap and _liquidity. BSC is deliberately absent: its adapter is
+# address+balance only (nothing trades it), so it has no send/swap/LP path to
+# dispatch to.
+_EVM_ADAPTERS = {
+    "ETH": _eth_adapter,
+    "ARB": _arb_adapter,
+}
+
+
 def _tron_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
     from swapsack.chains.tron import DEFAULT_TRON_API, TronAdapter
 
@@ -275,6 +298,7 @@ def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  #
     return [
         _btc_adapter(args, passphrase),
         _eth_adapter(args, passphrase),
+        _arb_adapter(args, passphrase),
         _tron_adapter(args, passphrase),
         _bsc_adapter(args, passphrase),
         _dash_adapter(args, passphrase),
@@ -412,6 +436,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_address(args: argparse.Namespace) -> int:
+    from swapsack.chains.arb import ArbAdapter
     from swapsack.chains.bsc import BscAdapter
     from swapsack.chains.btc import BtcAdapter
     from swapsack.chains.dash import DashAdapter
@@ -429,7 +454,14 @@ def cmd_address(args: argparse.Namespace) -> int:
         ),
     )
     print("ETH: ", EthAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
-    # BSC is EVM: the same derived address as ETH (and every other EVM chain).
+    # Every EVM chain shares one derived address; printed per chain anyway so
+    # `address` answers "where do I receive ARB/BSC funds" without the reader
+    # having to know that.
+    print(
+        "ARB: ",
+        ArbAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
+        "(same EVM address as ETH)",
+    )
     print(
         "BSC: ",
         BscAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
@@ -599,6 +631,12 @@ def _derive_zec(mnemonic: str, passphrase: str) -> str:
     return ZecAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
 
+def _derive_arb(mnemonic: str, passphrase: str) -> str:
+    from swapsack.chains.arb import ArbAdapter
+
+    return ArbAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+
+
 def _derive_maya(mnemonic: str, passphrase: str) -> str:
     from swapsack.chains.maya import MayaAdapter
 
@@ -618,6 +656,10 @@ def _derive_thor(mnemonic: str, passphrase: str) -> str:
 _DESTINATION_DERIVERS: dict[str, Callable[[str, str], str]] = {
     "BTC": _derive_btc,
     "ETH": _derive_eth,
+    # Arbitrum IS the ETH address (same m/44'/60' derivation) — derivable only
+    # now that we can also spend there; before that it was --dest-only, since
+    # auto-deriving a destination we cannot spend from just parks funds.
+    "ARB": _derive_arb,
     "TRON": _derive_tron,
     "DASH": _derive_dash,
     "ZEC": _derive_zec,
@@ -1021,8 +1063,9 @@ def cmd_swap(args: argparse.Namespace) -> int:
     utxo = _UTXO_ADAPTERS.get(chain)  # BTC / DASH / ZEC (Maya-only pools route
     if utxo is not None:  # via _select_backend; ZEC uses the bespoke v4 signer)
         return _swap_from_utxo(args, utxo)
-    if chain == "ETH":  # native ETH and ERC-20 tokens (e.g. USDT-ETH)
-        return _swap_from_eth(args)
+    evm = _EVM_ADAPTERS.get(chain)  # native coin and ERC-20 tokens
+    if evm is not None:
+        return _swap_from_evm(args, evm)
     if chain == "TRON":  # native TRX (TRC-20 tokens not yet a source)
         return _swap_from_tron(args)
     if chain == "MAYA":  # native CACAO (Cosmos MsgDeposit; Maya-only)
@@ -1057,8 +1100,9 @@ def cmd_send(args: argparse.Namespace) -> int:
     utxo = _UTXO_ADAPTERS.get(chain)  # BTC / DASH / ZEC (ZEC: v4/ZIP-243 signer)
     if utxo is not None:
         return _send_utxo(args, utxo)
-    if chain == "ETH":  # native ETH and ERC-20 tokens (USDT-ETH / USDC-ETH)
-        return _send_eth(args)
+    evm = _EVM_ADAPTERS.get(chain)  # native coin and ERC-20 tokens
+    if evm is not None:
+        return _send_evm(args, evm)
     if chain == "TRON":  # native TRX and TRC-20 tokens (USDT-TRON)
         return _send_tron(args)
     if chain == "MAYA":  # native CACAO (Cosmos MsgSend)
@@ -1092,16 +1136,36 @@ def _send_cosmos(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN
         return _confirm_and_execute(prepared, adapter, args)
 
 
-def _send_eth(args: argparse.Namespace) -> int:
+def _print_evm_fee_and_execute(
+    prepared,  # noqa: ANN001 (swap.Prepared)
+    adapter,  # noqa: ANN001 (EthAdapter or a subclass)
+    args: argparse.Namespace,
+) -> int:
+    """Print an EVM tx's max fee in the chain's native coin, then confirm+execute.
+
+    Every EVM chain here prices gas in an 18-decimal native coin; Arbitrum's is
+    ether, the same asset as Ethereum's, so ``native_symbol`` is also the right
+    key for the EUR lookup on both.
+    """
+    fee = prepared.built.fee / 10**18
+    print(
+        f"max fee: {fee:.6f} {adapter.native_symbol}"
+        f"{_eur_suffix(fee, adapter.native_symbol, price_check=args.price_check)}"
+    )
+    return _confirm_and_execute(prepared, adapter, args)
+
+
+def _send_evm(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN001
     from swapsack.chains.coins import InsufficientFunds, token_sweep_amount
-    from swapsack.chains.eth import NATIVE_SEND_GAS, eth_sweep_amount
+    from swapsack.chains.eth import eth_sweep_amount
 
     asset = ASSET[args.asset]
     recipient = args.address
     is_token = "-" in asset
     sweep = args.amount == "max"
     mnemonic, passphrase = _load_mnemonic(args)
-    with _eth_adapter(args, passphrase) as adapter:
+    with adapter_factory(args, passphrase) as adapter:
+        native = adapter.native_symbol
         from_address = adapter.derive_address(mnemonic)
         nonce = adapter.get_nonce(from_address)
         max_fee_per_gas, max_priority_fee_per_gas = adapter.fetch_fees()
@@ -1114,14 +1178,17 @@ def _send_eth(args: argparse.Namespace) -> int:
                 )
             elif sweep:
                 _warn(
-                    "sweeping native ETH keeps only the reserve for THIS tx:",
-                    "you'll have ~no ETH left to pay gas for future token "
-                    "(USDT/USDC) transfers, swaps or LP moves",
-                    "consider sending a fixed amount and keeping some ETH for gas",
+                    f"sweeping native {native} on {adapter.chain} keeps only the "
+                    f"reserve for THIS tx:",
+                    f"you'll have ~no {native} left to pay gas for future token "
+                    "transfers, swaps or LP moves",
+                    f"consider sending a fixed amount and keeping some {native} "
+                    "for gas",
                 )
                 amount = eth_sweep_amount(
                     adapter.fetch_balance(from_address),
-                    gas=NATIVE_SEND_GAS,
+                    # the adapter's budget, not Ethereum's: an L2 reserves more
+                    gas=adapter.native_send_gas,
                     max_fee_per_gas=max_fee_per_gas,
                 )
             else:
@@ -1140,12 +1207,7 @@ def _send_eth(args: argparse.Namespace) -> int:
             max_fee_wei=ETH_MAX_FEE_WEI,
         )
         print(f"send:    {amount / THORCHAIN_UNIT:.8f} {args.asset} to {recipient}")
-        eth_fee = prepared.built.fee / 10**18
-        print(
-            f"max fee: {eth_fee:.6f} ETH"
-            f"{_eur_suffix(eth_fee, 'ETH', price_check=args.price_check)}"
-        )
-        return _confirm_and_execute(prepared, adapter, args)
+        return _print_evm_fee_and_execute(prepared, adapter, args)
 
 
 def _send_tron(args: argparse.Namespace) -> int:
@@ -1400,7 +1462,7 @@ def _swap_from_utxo(
             return _confirm_and_execute(prepared, adapter, args)
 
 
-def _swap_from_eth(args: argparse.Namespace) -> int:
+def _swap_from_evm(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN001
     from swapsack.chains.coins import (
         InsufficientFunds,
         token_sweep_amount,
@@ -1422,13 +1484,13 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
             "if the deposit/order fails after the approve, an exact-amount "
             "allowance to the router/relayer remains",
         )
-    with _eth_adapter(args, passphrase) as adapter:
+    with adapter_factory(args, passphrase) as adapter:
         from_address = adapter.derive_address(mnemonic)
         nonce = adapter.get_nonce(from_address)
         max_fee_per_gas, max_priority_fee_per_gas = adapter.fetch_fees()
         if sweep and is_token:
-            # A token sweep sends the whole balanceOf — gas is paid in ETH, not
-            # the token, so the amount is exact.
+            # A token sweep sends the whole balanceOf — gas is paid in the
+            # native coin, not the token, so the amount is exact.
             token = from_asset.split("-", 1)[1]
             try:
                 amount = token_sweep_amount(
@@ -1518,10 +1580,11 @@ def _swap_from_eth(args: argparse.Namespace) -> int:
                 amount,
                 price_check=args.price_check,
             )
+            native = adapter.native_symbol
             print(
-                f"inbound: {max_fee_eth:.6f} ETH max "
+                f"inbound: {max_fee_eth:.6f} {native} max "
                 f"({len(prepared.built.txs)} tx)"
-                f"{_eur_suffix(max_fee_eth, 'ETH', price_check=args.price_check)}"
+                f"{_eur_suffix(max_fee_eth, native, price_check=args.price_check)}"
             )
             return _confirm_and_execute(prepared, adapter, args)
 
@@ -1896,10 +1959,12 @@ def _liquidity(
     _warn_liquidity_risks()
     asset = ASSET[args.asset]
     chain = asset.split(".", 1)[0]
-    if "-" in asset and chain != "ETH":
-        # Only ETH-chain ERC-20 LP is wired (via the Maya router). USDT-TRON has
-        # no Maya pool; there's nowhere to provide it.
-        print(f"token liquidity is only supported for ETH tokens, not {args.asset}")
+    if "-" in asset and chain not in _EVM_ADAPTERS:
+        # Only ERC-20 LP on a spendable EVM chain is wired (via that chain's
+        # Maya router). USDT-TRON has no Maya pool; there's nowhere to provide
+        # it. The guard reads the registry rather than naming ETH so that
+        # adding an EVM chain does not silently leave its token pools refused.
+        print(f"token liquidity is only supported for EVM tokens, not {args.asset}")
         return 2
     utxo = _UTXO_ADAPTERS.get(chain)
     if utxo is not None:
@@ -1911,8 +1976,14 @@ def _liquidity(
         if _lp_backend_refused(args, utxo(args)):
             return 2
         return _liquidity_utxo(args, utxo, memo=memo, amount=amount, sweep=sweep)
-    if chain == "ETH":
-        return _liquidity_eth(args, memo=memo, amount=amount, sweep=sweep)
+    evm = _EVM_ADAPTERS.get(chain)
+    if evm is not None:
+        # Same up-front backend check the UTXO branch does: ARB pools exist only
+        # on Maya, so `--backend thorchain` must be refused before any keystore
+        # or network work rather than failing at the vault lookup.
+        if _lp_backend_refused(args, evm(args)):
+            return 2
+        return _liquidity_evm(args, evm, memo=memo, amount=amount, sweep=sweep)
     if chain == "TRON":
         return _liquidity_tron(args, memo=memo, amount=amount, sweep=sweep)
     print(f"liquidity on {chain} is not implemented", file=sys.stderr)
@@ -2061,19 +2132,25 @@ def _eth_lp_build_kwargs(
     return kwargs, adapter.token_decimals(token)
 
 
-def _liquidity_eth(
-    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
+def _liquidity_evm(
+    args: argparse.Namespace,
+    adapter_factory,  # noqa: ANN001 (Callable[..., EthAdapter | ArbAdapter])
+    *,
+    memo: str,
+    amount: int | None,
+    sweep: bool = False,
 ) -> int:
     from swapsack.chains.coins import InsufficientFunds, token_sweep_amount
     from swapsack.chains.eth import eth_sweep_amount
     from swapsack.swap import prepare_liquidity
 
     asset = ASSET[args.asset]
-    # A token *add* (approve + router deposit) is the only token op that needs the
-    # router; a token *withdraw* is a native-ETH dust trigger, handled natively.
+    # A token *add* (approve + router deposit) is the only token op that needs
+    # the router; a token *withdraw* is a native-coin dust trigger, handled
+    # natively.
     token_add = memo.startswith("+") and "-" in asset
     mnemonic, passphrase = _load_mnemonic(args)
-    with _eth_adapter(args, passphrase) as adapter, _liquidity_client(args) as thor:
+    with adapter_factory(args, passphrase) as adapter, _liquidity_client(args) as thor:
         from_address = adapter.derive_address(mnemonic)
         try:
             build_extra, decimals = _eth_lp_build_kwargs(
@@ -2123,15 +2200,13 @@ def _liquidity_eth(
             )
             print(f"vault:   {built.vault}")
         else:
-            eth_amt = prepared.plan.amount_wei / 10**18
-            print(f"send:    {eth_amt:.8f} ETH to {prepared.plan.inbound_address}")
+            native_amt = prepared.plan.amount_wei / 10**18
+            print(
+                f"send:    {native_amt:.8f} {adapter.native_symbol} to "
+                f"{prepared.plan.inbound_address}"
+            )
         print(f"memo:    {memo}")
-        eth_fee = prepared.built.fee / 10**18
-        print(
-            f"max fee: {eth_fee:.6f} ETH"
-            f"{_eur_suffix(eth_fee, 'ETH', price_check=args.price_check)}"
-        )
-        return _confirm_and_execute(prepared, adapter, args)
+        return _print_evm_fee_and_execute(prepared, adapter, args)
 
 
 # A symmetric add is offered only for account-model asset chains. The protocol
@@ -2139,7 +2214,7 @@ def _liquidity_eth(
 # leg's *observed sender*, and only an account-model chain has one unambiguously:
 # a multi-input UTXO tx does not, and the vin[0] convention is an assumption no
 # testnet can verify for us. See docs/liquidity-symmetric.md.
-_SYMMETRIC_ASSET_CHAINS = ("ETH",)
+_SYMMETRIC_ASSET_CHAINS = ("ETH", "ARB")
 
 
 def _protocol_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
@@ -2189,8 +2264,9 @@ def _liquidity_symmetric(args: argparse.Namespace, pool: str) -> int:
     mnemonic, passphrase = _load_mnemonic(args)
     amount = _base_units(args.amount)
     token_add = "-" in pool
+    asset_factory = _EVM_ADAPTERS[chain]
     with (
-        _eth_adapter(args, passphrase) as adapter,
+        asset_factory(args, passphrase) as adapter,
         _protocol_adapter(args, passphrase) as protocol,
         _liquidity_client(args) as thor,
     ):
@@ -2221,7 +2297,12 @@ def _liquidity_symmetric(args: argparse.Namespace, pool: str) -> int:
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
         _print_symmetric_legs(
-            args, prepared, protocol, decimals=decimals, token_add=token_add
+            args,
+            prepared,
+            protocol,
+            decimals=decimals,
+            token_add=token_add,
+            adapter=adapter,
         )
         return _confirm_and_execute_symmetric(prepared, adapter, protocol, args)
 
@@ -2233,6 +2314,7 @@ def _print_symmetric_legs(
     *,
     decimals: int,
     token_add: bool,
+    adapter,  # noqa: ANN001 (ChainAdapter — for its native fee symbol)
 ) -> None:
     built = prepared.asset.built
     # The two ETH deposit shapes differ and neither carries the other's fields:
@@ -2257,10 +2339,13 @@ def _print_symmetric_legs(
         f"{protocol.symbol} (MsgDeposit on {protocol.chain})"
     )
     print(f"  memo:       {prepared.protocol_memo}")
-    eth_fee = prepared.asset.built.fee / 10**18
+    # The asset chain's own coin, not a hardcoded "ETH": ETH and ARB both pay
+    # ether, so this reads the same today and would misreport on a third EVM.
+    native = adapter.native_symbol
+    native_fee = prepared.asset.built.fee / 10**18
     print(
-        f"max fee:      {eth_fee:.6f} ETH"
-        f"{_eur_suffix(eth_fee, 'ETH', price_check=args.price_check)}"
+        f"max fee:      {native_fee:.6f} {native}"
+        f"{_eur_suffix(native_fee, native, price_check=args.price_check)}"
         f" + {protocol.chain}'s fixed native tx fee"
     )
 
@@ -2604,6 +2689,7 @@ def _add_broadcast_args(sub: argparse.ArgumentParser) -> None:
     )
     sub.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
     sub.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
+    sub.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
     sub.add_argument("--eth-gas", type=int, default=60000, help="ETH gas limit")
     sub.add_argument(
         "--fee-blocks",
@@ -2672,6 +2758,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("balance", help="show balances across supported chains")
     s.add_argument("--key")
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
+    s.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
     s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($SWAPSACK_BSC_RPC)")
     s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
@@ -2694,6 +2781,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
+    s.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
     s.add_argument(
         "--fee-blocks",
         type=int,
@@ -2780,6 +2868,7 @@ def build_parser() -> argparse.ArgumentParser:
         "overrides config.toml [fees] target_blocks and $SWAPSACK_FEE_BLOCKS",
     )
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
+    s.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
     s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")

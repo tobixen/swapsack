@@ -8,6 +8,25 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Arbitrum is now a chain you can spend from, not just pay to.** `ETH-ARB`
+  (native ETH on Arbitrum) and `USDC-ARB` gain hold, balance, `send`/sweep,
+  `swap --from`, and liquidity — single- and two-sided. Your Arbitrum address
+  *is* your Ethereum address, so `--dest ARB` is now derived automatically
+  instead of having to be typed, and `address` lists it.
+  - **Moving USDC on Arbitrum costs cents.** That was always the point of the
+    `USDC-ARB` destination; until now you could only receive it and had to use
+    another wallet to do anything with it.
+  - **Maya only.** THORChain has no Arbitrum pools, so `add-liquidity` refuses
+    `--backend thorchain` for ARB up front rather than failing later.
+  - **`USDC-ARB` is Circle's native USDC** (`0xaf88d065…`), not the bridged
+    `USDC.e`, which is a different token at a different address.
+  - **Mind the depth.** Maya's `ARB.USDC` pool held ~8.9k USDC on 2026-08-16 —
+    small enough that a position of any size is a large share of it. The
+    `Market:` line shows the swap side of this; for liquidity there is no
+    equivalent warning, so check the pool yourself.
+  - Like every new chain here, ARB ships **mainnet-unproven**: nothing has been
+    broadcast on it yet.
+
 - **Two-sided (symmetric) liquidity: `add-liquidity --symmetric`.** Adds both
   sides of a pool at once — the asset leg to the inbound vault, and a matching
   RUNE/CACAO leg as a native `MsgDeposit` — so you enter at the current pool
@@ -34,9 +53,10 @@ automatically from git tags (PEP 440 / SemVer).
     gas on two chains.
   - **You are told up front if you do not hold enough RUNE/CACAO** for the
     matching leg, instead of finding out when it bounces.
-  - **ETH-chain assets only, and no `--amount max`.** The protocol pairs the
-    legs by the asset leg's observed sender, which only an account-model chain
-    has unambiguously; a UTXO source is refused rather than guessed at.
+  - **EVM assets only (Ethereum and Arbitrum), and no `--amount max`.** The
+    protocol pairs the legs by the asset leg's observed sender, which only an
+    account-model chain has unambiguously; a UTXO source is refused rather than
+    guessed at.
   - Like every CACAO spend path, the protocol leg ships **unproven on
     mainnet** — there is no Maya testnet.
 

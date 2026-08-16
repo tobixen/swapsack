@@ -11,64 +11,40 @@ globally paused (`PAUSELP=1`, and `PAUSELPDEPOSIT-ETH-USDC-…=1`, checked
 2026-08-16), so its `ETH.USDC` pool is not an option and no THORChain/RUNE work
 is on this path. Maya is open: `PAUSELP`/`PAUSELPETH`/`PAUSELPARB` are all `0`,
 both pools are `Available`, and Maya publishes a router for both `ETH`
-(`0xe3985E6b…`) and `ARB` (`0x700E97ef…`). **`ETH.USDC` is now done in code**
-(`add-liquidity --symmetric`); `ARB.USDC` needs item 1 below, and both need the
-mainnet step in item 2. Everything else in this file is behind them.
+(`0xe3985E6b…`) and `ARB` (`0x700E97ef…`). **Both pools are now reachable in
+code** — `add-liquidity --symmetric` plus `chains/arb.py` — so what is left is
+no longer implementation but the mainnet step in item 1.
 
-1. **An Arbitrum adapter → delivers `ARB.USDC` (and unblocks ETH-ARB).**
-   Much smaller than this file previously implied, because **the EVM chain-id
-   parameterization is already done**: `EthAdapter.__init__` takes `chain_id`
-   and threads `self.chain_id` into every build site, so the "module-level
-   `CHAIN_ID`" concern recorded under A2/A3 and under *Swap backends* is stale.
-   `chains/bsc.py` is the working precedent — ~60 lines overriding RPC, chain
-   id, native symbol and the tracked-token table — and unlike BSC, ARB is
-   tradable with a Maya router, so it does not need `build_and_verify` stubbed
-   out. `ASSET` already carries `USDC-ARB` and `ETH-ARB`.
+1. **Prove the spend paths on mainnet before the first real add.**
+   Everything below is implemented, gated and unit-tested; none of it has ever
+   broadcast against mainnet. Two separate unproven surfaces, and the symmetric
+   add uses *both at once*:
+   - **The CACAO leg.** Like every CACAO spend path, unproven (no Maya
+     testnet). A small plain `send --asset CACAO` is the cheap way to find a
+     protobuf/signing bug; finding one as the irreversible first half of a
+     two-leg add is the worst available place.
+   - **Arbitrum.** The adapter is a `chains/bsc.py`-shaped subclass and its
+     read paths are covered by live tests (balance decoding, and the chain id
+     asked of the node rather than trusted), but no ARB transaction has been
+     signed and broadcast. Do a minimal `send --asset ETH-ARB` first.
 
-   What it needs:
-   - `chains/arb.py`: `chain="ARB"`, `asset="ARB.ETH"`, `native_symbol="ETH"`,
-     chain id **42161**, an Arbitrum RPC, `token_suffix="ARB"`,
-     `lp_backends=("maya",)`, tracked tokens `USDC 0xaf88d065… at 6 decimals`
-     (6 like Ethereum's, *not* BSC's 18 — the BSC docstring's warning is about
-     BSC specifically, don't over-generalize it).
-   - **Arbitrum gas is not Ethereum gas.** The L1 calldata cost is charged
-     through an inflated gas *limit*, so the fixed constants
-     (`TOKEN_DEPOSIT_GAS = 200000`, `--eth-gas` default 60000) are likely wrong
-     here and `ETH_MAX_FEE_WEI` bounds the wrong quantity. This is the one part
-     that is genuinely new work rather than configuration — call
-     `eth_estimateGas` on ARB rather than porting the constants. (Folds into
-     the standing `eth_estimateGas` item under *Other known gaps*.)
-   - CLI dispatch: `cmd_send`, `cmd_swap`, `_liquidity` and now
-     `_liquidity_symmetric` each branch on `chain == "ETH"` (the last via
-     `_SYMMETRIC_ASSET_CHAINS`, which is the seam to widen). Adding a second EVM
-     chain is the point at which A5's table-driving stops being cosmetic — do
-     the minimal table, not a fifth copy of the branch. `RECEIVE_ONLY_CHAINS`
-     and the "ARB/ATOM could be auto-derived" follow-up below both dissolve for
-     ARB once it is spendable.
-   - Nothing else in the symmetric path is ETH-specific: it takes the router
-     from `inbound_addresses()[adapter.chain]`, and an Arbitrum sender is as
-     unambiguous as an Ethereum one. Widening `_SYMMETRIC_ASSET_CHAINS` and
-     picking the right adapter is expected to be the whole change.
-   - **Re-measure the pool before committing size.** Maya's `ARB.USDC` depth is
-     ~8.9k USDC / ~78.7k CACAO (2026-08-16 — unchanged from the destination
-     work's measurement), against ~232k USDC / ~2.05M CACAO for `ETH.USDC`. A
-     position large enough to matter makes you a dominant share of a pool that
-     thin, which is where the impermanent loss lands and what makes exiting
-     expensive. Symmetric entry avoids *entry* slip; it does nothing about
-     that.
-
-2. **Prove the CACAO leg on mainnet before the first real symmetric add.**
-   `add-liquidity --symmetric` is implemented and unit-tested but, like every
-   CACAO spend path, its broadcast has never run against mainnet (there is no
-   Maya testnet). A small plain `send --asset CACAO` is the cheap way to find a
-   protobuf/signing bug; finding one as the first half of an irreversible
-   two-leg add is the worst available place. Sourcing the CACAO needs no new
-   code — `swap --to CACAO --dest maya1…` works today, and at the 2026-08-16
-   ratio both USDC pools price CACAO at ~$0.113 (~8.85 CACAO per USDC), so the
-   pair leg is roughly dollar-for-dollar with the asset leg.
+   Sourcing the CACAO needs no new code — `swap --to CACAO --dest maya1…` works
+   today, and at the 2026-08-16 ratio both USDC pools price CACAO at ~$0.113
+   (~8.85 CACAO per USDC), so the pair leg is roughly dollar-for-dollar with the
+   asset leg.
 
    Then do a minimum-size real `ETH.USDC` add end to end and record it the way
-   `docs/live-session-2026-07-24.md` records the swap paths.
+   `docs/live-session-2026-07-24.md` records the swap paths. **Do `ETH.USDC`
+   first, not `ARB.USDC`**: same code path, deeper pool, and one unproven
+   surface instead of two.
+
+2. **Size the `ARB.USDC` position against its depth, not your intent.**
+   Maya's `ARB.USDC` pool is ~8.9k USDC / ~78.7k CACAO (2026-08-16), against
+   ~232k USDC / ~2.05M CACAO for `ETH.USDC`. A position large enough to matter
+   makes you a dominant share of a pool that thin — that is where the
+   impermanent loss lands, and what makes exiting expensive. Symmetric entry
+   avoids *entry* slip; it does nothing about that. Re-measure rather than
+   trusting this line; it is the one number here most likely to have moved.
 
 3. **More swap *destinations* via external `--dest` addresses.** ATOM, XRP, ADA
    and ETH-ARB are done; **SOL is the only remaining candidate, and it is
@@ -92,13 +68,13 @@ mainnet step in item 2. Everything else in this file is behind them.
      it read as "no route". Reaching ADA from BTC would need a THORName (a
      registered short alias resolving to the address) — worth considering as a
      general memo-length escape hatch, not just for ADA.
-   - **ARB/ATOM could be auto-derived rather than requiring `--dest`.** An
-     Arbitrum address *is* our ETH address, and ATOM is the same Cosmos
-     derivation as `thor1`/`maya1` with a different HRP. Both are deliberately
-     `--dest`-only for now because the wallet cannot *spend* from either chain;
+   - **ATOM could be auto-derived rather than requiring `--dest`.** It is the
+     same Cosmos derivation as `thor1`/`maya1` with a different HRP, but is
+     deliberately `--dest`-only because the wallet cannot *spend* on Cosmos Hub;
      `RECEIVE_ONLY_CHAINS` in `cli.py` is the existing (empty) seam for exactly
-     this — derive, but warn loudly that funds land somewhere only another
-     wallet can spend.
+     that — derive, but warn loudly that funds land somewhere only another
+     wallet can spend. (**ARB no longer belongs here**: it is spendable now, so
+     it is simply a `_DESTINATION_DERIVERS` entry with no warning needed.)
 
 ## Symmetric liquidity — the standing risk notes
 
@@ -231,9 +207,13 @@ labels, not lookups.
   highest-leverage refactor here"; **A5 is** (see next), because a second
   spendable EVM chain multiplies the `chain == "ETH"` branches.
 - **A5** — table-drive the CLI per-chain factories / `_resolve_destination` /
-  `cmd_address` / `_swap_from_*`. Promoted by *Next up* item 2: `cmd_send`,
-  `cmd_swap` and `_liquidity` each branch on `chain == "ETH"`, and Arbitrum is
-  the second EVM chain that has to appear in all three.
+  `cmd_address` / `_swap_from_*`. **Partly done**: adding Arbitrum forced the
+  EVM half, so `_EVM_ADAPTERS` now joins `_UTXO_ADAPTERS` and `cmd_send`,
+  `cmd_swap` and `_liquidity` dispatch through it instead of branching on
+  `chain == "ETH"`. What is left is the account-model stragglers that still
+  have their own branches — TRON, MAYA, THOR — plus `cmd_address`, which still
+  hand-lists every adapter (and so is the thing that silently forgets a new
+  chain).
 - **A7** — split `base.ChainAdapter` into `WalletChain` vs `SourceChain` (Tron is
   destination-only). The `swap.SwapSource` protocol already exists from A4.
 - **C-list** — one `ThreadPoolExecutor` per scan; `quote` memo row alignment;
@@ -265,9 +245,11 @@ labels, not lookups.
   coin, tracked tokens). This used to say "so do A2/A3 first rather than copy
   it per chain" — that is no longer the trade-off: `EthAdapter` already
   parameterizes `chain_id` and `chains/bsc.py` is a ~60-line subclass proving
-  the seam, so the per-chain adapter *is* the shared code path. ARB is spelled
-  out under *Next up* item 2. Native AVAX is likewise not exposed; it is one
-  `ASSET` line away now that the `AVAX` shape rule exists.
+  the seam, so the per-chain adapter *is* the shared code path. **ARB is now
+  done** (`chains/arb.py`, ~50 lines of configuration, which is the evidence
+  for that claim). Native AVAX remains unexposed: it needs an `ASSET` line plus
+  the same adapter treatment, and `USDC-AVAX` LP needs THORChain's LP pause to
+  lift, which it has not.
 
   Three findings from doing it, worth having before the adapter work:
   - **The premise "far cheaper than ETH mainnet" did not survive measurement.**
@@ -398,8 +380,33 @@ README — both copies would need the column.)
 - **BIP49/44 scanning**: real wiring scans BIP84 only (Trust Wallet's scheme).
   `scan_account` is generic enough to add `m/49'`/`m/44'` accounts + script
   types when needed.
-- **ETH gas estimation**: ETH source uses a fixed `--eth-gas` (default 60000);
-  could call `eth_estimateGas` against the quote's vault/memo instead.
+- **EVM gas estimation**: every EVM path uses fixed gas constants (`--eth-gas`
+  default 60000, `APPROVE_GAS` 70000, `TOKEN_DEPOSIT_GAS` 200000); could call
+  `eth_estimateGas` against the quote's vault/memo instead.
+
+  This was previously flagged as a *blocker* for Arbitrum, on the reasoning that
+  L2s charge the L1 calldata cost through an inflated gas limit and so would
+  need real estimation. **Measured, and the premise was wrong at this scale.**
+  Asking Arbitrum's `NodeInterface` precompile (`gasEstimateL1Component`) on
+  2026-08-16, the L1 surcharge was **101 gas at 0 bytes of calldata rising to
+  172 at 108 bytes** — negligible against a 60k/200k budget, so ARB inherits the
+  *swap and deposit* constants unchanged.
+
+  **The native-send budget was the exception, and it was got wrong once.** The
+  same measurement put a plain native transfer at 21,345 against
+  `NATIVE_SEND_GAS = 21000`, which is Ethereum's exact floor with no slack — so
+  the shared constant was not merely tight on Arbitrum, it was *below* the
+  floor, and an `ETH-ARB` send would have run out of gas, reverted and burned
+  the whole limit delivering nothing. `NATIVE_SEND_GAS` is now a per-adapter
+  `native_send_gas`, which ARB raises to 30000. A gas limit is refunded when
+  unused, so the headroom is free. Watch for this when adding any further L2:
+  the 60k/200k budgets absorb the surcharge, the 21000 one cannot.
+
+  What would change the rest: the surcharge scales with the L1 base fee, which
+  was ~0.8 gwei when measured. It would take roughly a 250x L1 spike to eat the
+  60k budget's headroom. Re-measure with the same precompile before assuming
+  otherwise — and note this says nothing about chains with a *different* L2 fee
+  model.
 - **Cache LP provider addresses (balance-report speed-up)**: reporting added
   liquidity queries the backend's `pool/{POOL}/liquidity_provider/{ADDRESS}`
   endpoint. ETH/TRON have a single derived address; BTC's LP is keyed by the

@@ -1,12 +1,12 @@
 # Two-sided (symmetric) liquidity — design notes
 
-Status: **implemented for ETH-chain assets** — `add-liquidity --symmetric`,
-built on `swap.prepare_symmetric_liquidity` / `execute_symmetric_liquidity`.
-The safety protocol below is what the code does, not a plan. Unproven on
-mainnet, like every CACAO spend path. Remaining: **ARB** (needs the Arbitrum
-adapter, `docs/TODO.md` *Next up* item 2) and UTXO sources (blocked on the
-`vin[0]` pairing assumption — see the per-asset caveats). This note records the
-mechanics so the money-sensitive coordination stays deliberate.
+Status: **implemented for EVM assets** (Ethereum and Arbitrum) —
+`add-liquidity --symmetric`, built on `swap.prepare_symmetric_liquidity` /
+`execute_symmetric_liquidity`. The safety protocol below is what the code does,
+not a plan. Unproven on mainnet, like every CACAO spend path. Remaining: UTXO
+sources, blocked on the `vin[0]` pairing assumption — see the per-asset
+caveats. This note records the mechanics so the money-sensitive coordination
+stays deliberate.
 
 ## Why symmetric, and the honest caveats
 
@@ -80,10 +80,11 @@ Implemented building blocks (all unit-tested):
 
 ## Per-asset caveats for step 4 (the pairing address)
 
-- **Account-model assets (ETH):** the sender is the single derived address —
-  unambiguous. The first (and so far only) target; Maya has `ETH.ETH` and
-  `ETH.USDC` OPEN. **ARB** is the same shape and is blocked only on there being
-  no Arbitrum adapter to spend from.
+- **Account-model assets (ETH, ARB):** the sender is the single derived address
+  — unambiguous, and the *same* address on both chains. Maya has `ETH.ETH`,
+  `ETH.USDC`, `ARB.ETH` and `ARB.USDC` OPEN. `_SYMMETRIC_ASSET_CHAINS` in
+  `cli.py` is the list; widening it to a further EVM chain is a one-line change
+  once that chain has an adapter.
 - **UTXO assets (BTC):** a multi-input tx has no single "from"; the protocol
   observes (by convention) the **first input's** address. So the protocol-leg
   memo would have to use the built asset tx's `vin[0]` address, or the add be
@@ -102,4 +103,4 @@ withdraw mainly needs the trigger to come from an owned address on either side.
 
 - `docs/cacao.md` — the shared Cosmos adapter (`chains/cosmos.py`) that the
   protocol leg reuses.
-- `docs/TODO.md` *Next up* — the ARB half that is still open.
+- `docs/TODO.md` *Next up* — the mainnet proving step that is still open.
