@@ -1865,6 +1865,8 @@ def cmd_add_liquidity(args: argparse.Namespace) -> int:
     from swapsack.liquidity import add_liquidity_memo
 
     pool = ASSET[args.asset]
+    if getattr(args, "symmetric", False):
+        return _liquidity_symmetric(args, pool)
     sweep = args.amount == "max"
     amount = None if sweep else _base_units(args.amount)
     return _liquidity(args, memo=add_liquidity_memo(pool), amount=amount, sweep=sweep)
@@ -1877,9 +1879,8 @@ def cmd_withdraw_liquidity(args: argparse.Namespace) -> int:
     return _liquidity(args, memo=withdraw_liquidity_memo(pool, args.bps), amount=None)
 
 
-def _liquidity(
-    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
-) -> int:
+def _warn_liquidity_risks() -> None:
+    """The risks every LP op carries, single-sided or symmetric."""
     _warn(
         "only add liquidity that you can afford to lose, risks include:",
         "experimental feature - bugs may cause lost funds",
@@ -1887,6 +1888,12 @@ def _liquidity(
         "volatility may cause arbitrageurs to eat your funds",
         "for small amounts, the networking fees will probably outsize any win",
     )
+
+
+def _liquidity(
+    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
+) -> int:
+    _warn_liquidity_risks()
     asset = ASSET[args.asset]
     chain = asset.split(".", 1)[0]
     if "-" in asset and chain != "ETH":
@@ -2011,6 +2018,49 @@ def _liquidity_utxo(
         return _confirm_and_execute(prepared, adapter, args)
 
 
+def _eth_lp_build_kwargs(
+    args: argparse.Namespace,
+    adapter,  # noqa: ANN001 (EthAdapter)
+    thor,  # noqa: ANN001 (ThorchainClient)
+    *,
+    from_address: str,
+    asset: str,
+    token_add: bool,
+) -> tuple[dict[str, object], int]:
+    """The ``build_and_verify_deposit`` kwargs for an ETH-chain LP leg.
+
+    Shared by the single-sided and symmetric paths so the router lookup, the
+    token-decimals lookup and the gas/fee plumbing exist once. Returns the
+    kwargs and the deposited asset's decimals (18 for native ETH).
+    """
+    max_fee_per_gas, max_priority_fee_per_gas = adapter.fetch_fees()
+    kwargs: dict[str, object] = {
+        "nonce": adapter.get_nonce(from_address),
+        "gas": args.eth_gas,
+        "max_fee_per_gas": max_fee_per_gas,
+        "max_priority_fee_per_gas": max_priority_fee_per_gas,
+        "max_fee_wei": ETH_MAX_FEE_WEI,
+    }
+    if not token_add:
+        return kwargs, 18
+    token = asset.split("-", 1)[1]
+    status = thor.inbound_addresses().get(adapter.chain)
+    if not status or not status.router:
+        raise SwapAborted(
+            f"no {adapter.chain} router on this backend — token LP needs it"
+        )
+    kwargs["router"] = status.router
+    # The adapter takes the contract explicitly; it must not parse it out of
+    # the memo (a symmetric add memo has a suffix after the pool).
+    kwargs["token"] = token
+    _warn(
+        "token liquidity add — 2 transactions (approve + deposit):",
+        "gas is paid in ETH, separate from the tokens deposited",
+        "if the deposit fails after approve, a router allowance remains",
+    )
+    return kwargs, adapter.token_decimals(token)
+
+
 def _liquidity_eth(
     args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
 ) -> int:
@@ -2025,26 +2075,18 @@ def _liquidity_eth(
     mnemonic, passphrase = _load_mnemonic(args)
     with _eth_adapter(args, passphrase) as adapter, _liquidity_client(args) as thor:
         from_address = adapter.derive_address(mnemonic)
-        nonce = adapter.get_nonce(from_address)
-        max_fee_per_gas, max_priority_fee_per_gas = adapter.fetch_fees()
-        build_extra: dict[str, object] = {}
-        decimals = 18
-        if token_add:
-            token = asset.split("-", 1)[1]
-            decimals = adapter.token_decimals(token)
-            eth_status = thor.inbound_addresses().get("ETH")
-            if not eth_status or not eth_status.router:
-                print("no ETH router on this backend — token LP needs it")
-                return 2
-            build_extra["router"] = eth_status.router
-            # The adapter takes the contract explicitly; it must not parse it
-            # out of the memo (a symmetric add memo has a suffix after it).
-            build_extra["token"] = token
-            _warn(
-                "token liquidity add — 2 transactions (approve + deposit):",
-                "gas is paid in ETH, separate from the tokens deposited",
-                "if the deposit fails after approve, a router allowance remains",
+        try:
+            build_extra, decimals = _eth_lp_build_kwargs(
+                args,
+                adapter,
+                thor,
+                from_address=from_address,
+                asset=asset,
+                token_add=token_add,
             )
+        except SwapAborted as exc:
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
         try:
             if sweep and token_add:
                 token = asset.split("-", 1)[1]
@@ -2055,7 +2097,7 @@ def _liquidity_eth(
                 amount = eth_sweep_amount(
                     adapter.fetch_balance(from_address),
                     gas=args.eth_gas,
-                    max_fee_per_gas=max_fee_per_gas,
+                    max_fee_per_gas=build_extra["max_fee_per_gas"],
                 )
         except InsufficientFunds as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
@@ -2068,11 +2110,6 @@ def _liquidity_eth(
                 amount=amount,
                 now=int(time.time()),
                 mnemonic=mnemonic,
-                nonce=nonce,
-                gas=args.eth_gas,
-                max_fee_per_gas=max_fee_per_gas,
-                max_priority_fee_per_gas=max_priority_fee_per_gas,
-                max_fee_wei=ETH_MAX_FEE_WEI,
                 **build_extra,
             )
         except SwapAborted as exc:
@@ -2095,6 +2132,187 @@ def _liquidity_eth(
             f"{_eur_suffix(eth_fee, 'ETH', price_check=args.price_check)}"
         )
         return _confirm_and_execute(prepared, adapter, args)
+
+
+# A symmetric add is offered only for account-model asset chains. The protocol
+# pairs the two legs by matching each memo's referenced address against the other
+# leg's *observed sender*, and only an account-model chain has one unambiguously:
+# a multi-input UTXO tx does not, and the vin[0] convention is an assumption no
+# testnet can verify for us. See docs/liquidity-symmetric.md.
+_SYMMETRIC_ASSET_CHAINS = ("ETH",)
+
+
+def _protocol_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
+    """The RUNE/CACAO adapter for the LP backend — the symmetric add's other leg.
+
+    Resolved through the module globals at call time (not a lookup table built
+    at import) so the factories stay monkeypatchable in tests.
+    """
+    factory = _maya_adapter if args.backend == "maya" else _thor_adapter
+    return factory(args, passphrase)
+
+
+def _liquidity_symmetric(args: argparse.Namespace, pool: str) -> int:
+    """Add liquidity to both sides of ``pool`` at once — two linked deposits."""
+    from swapsack.swap import prepare_symmetric_liquidity
+
+    chain = pool.split(".", 1)[0]
+    if chain not in _SYMMETRIC_ASSET_CHAINS:
+        print(
+            f"--symmetric needs an account-model asset chain "
+            f"({'/'.join(_SYMMETRIC_ASSET_CHAINS)}), not {chain}: the protocol "
+            f"pairs the two legs by the asset leg's observed sender, and a UTXO "
+            f"transaction has no single sender (the convention is vin[0], which "
+            f"no testnet exists to verify). Use a single-sided add instead.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.amount == "max":
+        print(
+            "--symmetric needs a definite --amount, not 'max': the RUNE/CACAO leg "
+            "is computed from it at the current pool ratio, and a sweep would "
+            "leave no gas for the asset leg either.",
+            file=sys.stderr,
+        )
+        return 2
+    _warn_liquidity_risks()
+    _warn(
+        "symmetric add — TWO irreversible transactions on two chains:",
+        "they are prepared and verified together, and neither is broadcast "
+        "unless both pass",
+        "but if the second fails after the first is out, the position sits "
+        "pending until the protocol refunds it",
+        "symmetric avoids entry slip; it does NOT reduce your RUNE/CACAO "
+        "exposure, which is ~50% of the position either way",
+    )
+
+    mnemonic, passphrase = _load_mnemonic(args)
+    amount = _base_units(args.amount)
+    token_add = "-" in pool
+    with (
+        _eth_adapter(args, passphrase) as adapter,
+        _protocol_adapter(args, passphrase) as protocol,
+        _liquidity_client(args) as thor,
+    ):
+        asset_address = adapter.derive_address(mnemonic)
+        protocol_address = protocol.derive_address(mnemonic)
+        try:
+            build_extra, decimals = _eth_lp_build_kwargs(
+                args,
+                adapter,
+                thor,
+                from_address=asset_address,
+                asset=pool,
+                token_add=token_add,
+            )
+            prepared = prepare_symmetric_liquidity(
+                thorchain=thor,
+                asset_adapter=adapter,
+                protocol_adapter=protocol,
+                pool=pool,
+                asset_amount=amount,
+                asset_address=asset_address,
+                protocol_address=protocol_address,
+                mnemonic=mnemonic,
+                now=int(time.time()),
+                **build_extra,
+            )
+        except SwapAborted as exc:
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
+        _print_symmetric_legs(
+            args, prepared, protocol, decimals=decimals, token_add=token_add
+        )
+        return _confirm_and_execute_symmetric(prepared, adapter, protocol, args)
+
+
+def _print_symmetric_legs(
+    args: argparse.Namespace,
+    prepared,  # noqa: ANN001 (swap.SymmetricPrepared)
+    protocol,  # noqa: ANN001 (CosmosAdapter)
+    *,
+    decimals: int,
+    token_add: bool,
+) -> None:
+    built = prepared.asset.built
+    # The two ETH deposit shapes differ and neither carries the other's fields:
+    # a token add is a router call (its own plan, with native_amount/router/
+    # vault), a native add is a plain vault payment whose amount lives on the
+    # plan as wei. Same split as the single-sided path below.
+    if token_add:
+        print(
+            f"asset leg:    {built.native_amount / 10**decimals:.6f} {args.asset} "
+            f"via router {built.router} -> vault {built.vault}"
+        )
+    else:
+        eth_amount = prepared.asset.plan.amount_wei / 10**18
+        print(
+            f"asset leg:    {eth_amount:.8f} {args.asset} -> vault "
+            f"{prepared.asset.plan.inbound_address}"
+        )
+    print(f"  memo:       {prepared.asset_memo}")
+    protocol_unit = 10**protocol.decimals
+    print(
+        f"protocol leg: {prepared.protocol_amount / protocol_unit:.8f} "
+        f"{protocol.symbol} (MsgDeposit on {protocol.chain})"
+    )
+    print(f"  memo:       {prepared.protocol_memo}")
+    eth_fee = prepared.asset.built.fee / 10**18
+    print(
+        f"max fee:      {eth_fee:.6f} ETH"
+        f"{_eur_suffix(eth_fee, 'ETH', price_check=args.price_check)}"
+        f" + {protocol.chain}'s fixed native tx fee"
+    )
+
+
+def _confirm_and_execute_symmetric(
+    prepared,  # noqa: ANN001 (swap.SymmetricPrepared)
+    asset_adapter,  # noqa: ANN001
+    protocol_adapter,  # noqa: ANN001
+    args: argparse.Namespace,
+) -> int:
+    from swapsack.swap import PartialSymmetricAdd, execute_symmetric_liquidity
+
+    if prepared.problems:
+        print("VERIFY GATE FAILED — not safe to broadcast:", file=sys.stderr)
+        for problem in prepared.problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return 1
+    if not args.confirm:
+        print(
+            "\nDRY RUN — both legs verified OK, neither broadcast. "
+            "Re-run with --confirm to send."
+        )
+        return 0
+    if not args.yes:
+        if input("\nBroadcast BOTH legs shown above? type 'yes': ").strip() != "yes":
+            print("aborted, nothing broadcast.")
+            return 0
+    try:
+        result = execute_symmetric_liquidity(
+            prepared,
+            asset_adapter=asset_adapter,
+            protocol_adapter=protocol_adapter,
+            confirm=True,
+        )
+    except PartialSymmetricAdd as exc:
+        # Must precede the BroadcastError arm below — it is a subclass, and this
+        # is the one outcome the user has to act on.
+        _warn(
+            "PARTIAL ADD — the position is pending, NOT complete:",
+            f"the {protocol_adapter.symbol} leg IS ON-CHAIN, txid {exc.protocol_txid}",
+            f"the {asset_adapter.chain} leg did NOT go out: {exc.cause}",
+            "the protocol refunds an unpaired leg once its window expires; wait "
+            "for that before re-running, or the refund and a retry will collide",
+        )
+        return 1
+    except (BroadcastError, *HTTP_ERRORS) as exc:
+        print(f"BROADCAST FAILED (nothing was sent): {exc}", file=sys.stderr)
+        return 1
+    print(f"\nBROADCAST {protocol_adapter.symbol} leg: {result.protocol_txid}")
+    print(f"BROADCAST {asset_adapter.chain} leg: {result.asset_txid}")
+    print("both legs are out; the protocol pairs them once it has observed both.")
+    return 0
 
 
 def _liquidity_tron(
@@ -2497,15 +2715,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.set_defaults(func=cmd_swap)
 
-    s = sub.add_parser(
-        "add-liquidity", help="EXPERIMENTAL: add single-sided liquidity to a pool"
-    )
+    s = sub.add_parser("add-liquidity", help="EXPERIMENTAL: add liquidity to a pool")
     s.add_argument("--asset", required=True, choices=list(ASSET))
     s.add_argument(
         "--amount",
         type=_amount,
         required=True,
         help="amount of --asset, or 'max' to add the whole balance (BTC/ETH)",
+    )
+    s.add_argument(
+        "--symmetric",
+        action="store_true",
+        help="EXPERIMENTAL: two-sided add — pairs --amount with the matching "
+        "RUNE/CACAO from your own balance, in two linked txs. Takes no entry "
+        "slip, but both legs must land or the position sits pending",
     )
     _add_liquidity_backend_arg(s)
     _add_broadcast_args(s)

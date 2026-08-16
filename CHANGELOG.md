@@ -8,6 +8,38 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Two-sided (symmetric) liquidity: `add-liquidity --symmetric`.** Adds both
+  sides of a pool at once — the asset leg to the inbound vault, and a matching
+  RUNE/CACAO leg as a native `MsgDeposit` — so you enter at the current pool
+  ratio and pay **no entry slip**. You give `--amount` for the asset side; the
+  RUNE/CACAO amount comes from the live pool ratio and must already be in your
+  wallet (`swap --to CACAO --dest maya1…` is how you get it). THORChain has LP
+  deposits paused, so this means Maya + CACAO today.
+
+  What it does *not* buy you: a single-sided add already ends up ~50% exposed
+  to RUNE/CACAO once the pool rebalances, so symmetric does not reduce that —
+  on a stablecoin pool, half the position is a small-cap protocol token either
+  way.
+
+  The money-sensitive parts, all of which the CLI now handles for you:
+  - **Both legs are built and verified before either is broadcast**, and
+    nothing is sent if either gate objects — the output labels which leg
+    complained.
+  - **The protocol leg goes first** (native, cheap, fast), so a failure there
+    leaves nothing live and the expensive leg is simply never sent. If the
+    asset leg then fails, the add is genuinely half-complete and the CLI says
+    so loudly with the live txid, rather than reporting a plain failure.
+  - **A pool with LP deposits paused is refused up front**, before either leg
+    is built — an add against one is refunded minus gas, and here that would be
+    gas on two chains.
+  - **You are told up front if you do not hold enough RUNE/CACAO** for the
+    matching leg, instead of finding out when it bounces.
+  - **ETH-chain assets only, and no `--amount max`.** The protocol pairs the
+    legs by the asset leg's observed sender, which only an account-model chain
+    has unambiguously; a UTXO source is refused rather than guessed at.
+  - Like every CACAO spend path, the protocol leg ships **unproven on
+    mainnet** — there is no Maya testnet.
+
 - **USDC as a swap destination on Avalanche and Arbitrum: `USDC-AVAX` and
   `USDC-ARB`**, payable with `--dest` like the other destination-only assets
   (AVAX via THORChain, ARB via Maya). Same dollar, on a chain where moving it

@@ -17,9 +17,15 @@ from swapsack.swap import (
     prepare_liquidity,
     prepare_swap,
 )
-from swapsack.thorchain import ChainStatus, Quote, SwapFees
+from swapsack.thorchain import ChainStatus, PoolDepth, Quote, SwapFees
 
 VAULT = "bc1qvault"
+# Pool depths the symmetric-liquidity tests price against; defined up here
+# because FakeThor.pool() serves every test in the file. 1000.0 asset (1e8)
+# against 8850.0 CACAO (1e10) — the ~8.85 protocol-per-asset ratio Maya's USDC
+# pools actually run at.
+POOL_ASSET_DEPTH = 100_000_000_000
+POOL_PROTOCOL_DEPTH = 88_500_000_000_000
 
 
 def make_quote(
@@ -69,6 +75,7 @@ class FakeThor:
         mimir=None,
         dust_threshold=1000,
         path_prefix="thorchain",
+        pool_depth=None,
     ):
         self._quote = quote or make_quote()
         self._tradable = tradable
@@ -76,6 +83,7 @@ class FakeThor:
         self._mimir = mimir or {}
         self._dust = dust_threshold
         self.path_prefix = path_prefix
+        self._pool_depth = pool_depth
 
     def inbound_addresses(self):
         return {self._chain: make_status(self._chain, self._tradable, self._dust)}
@@ -85,6 +93,13 @@ class FakeThor:
 
     def mimir(self):
         return self._mimir
+
+    def pool(self, asset):
+        return self._pool_depth or PoolDepth(
+            asset=asset,
+            balance_asset=POOL_ASSET_DEPTH,
+            balance_protocol=POOL_PROTOCOL_DEPTH,
+        )
 
 
 class FakeAdapter:
@@ -451,3 +466,245 @@ def test_prepare_liquidity_withdraw_allowed_when_lp_paused():
         now=0,
     )
     assert p.plan.amount == 1000
+
+
+# --- symmetric (two-sided) liquidity ---------------------------------------
+#
+# The money-sensitive part is the *coordination*, not the arithmetic (that lives
+# in test_liquidity.py): both legs must be built and gated before either is
+# broadcast, and a failure after the first leg is out must be reported as a
+# pending position rather than swallowed. These fakes stand in for an
+# account-model asset adapter (ETH) and a Cosmos protocol adapter (Maya/THOR).
+
+
+class FakeCosmosAdapter:
+    """Stands in for MayaAdapter/ThorAdapter (the protocol leg)."""
+
+    symbol = "CACAO"
+    decimals = 10
+
+    def __init__(self, chain="MAYA", asset="MAYA.CACAO", problems=None, balance=10**20):
+        self.chain = chain
+        self.asset = asset
+        self._problems = problems or []
+        self._balance = balance
+        self.built = None
+        self.broadcasted = False
+        self.broadcast_error = None
+
+    def fetch_balance(self, address):
+        return self._balance
+
+    def build_and_verify_native_deposit(self, *, memo, amount, mnemonic, now, **kw):
+        self.built = SimpleNamespace(memo=memo, amount=amount)
+        plan = SimpleNamespace(memo=memo, amount=amount, expiry=now + 3600)
+        return Prepared(
+            quote=None,
+            built=SimpleNamespace(fee=0),
+            plan=plan,
+            problems=list(self._problems),
+        )
+
+    def sign(self, built):
+        return ["cafe"]
+
+    def broadcast(self, raws):
+        if self.broadcast_error is not None:
+            raise self.broadcast_error
+        self.broadcasted = True
+        return "protocol_txid"
+
+
+class FakeAssetAdapter(FakeAdapter):
+    """FakeAdapter that records the deposit build and can fail its broadcast."""
+
+    def __init__(self, chain="ETH", problems=None):
+        super().__init__(chain=chain, problems=problems)
+        self.built = None
+        self.broadcast_error = None
+
+    def build_and_verify_deposit(self, *, vault, memo, amount, now, **kwargs):
+        self.built = SimpleNamespace(vault=vault, memo=memo, amount=amount, kw=kwargs)
+        return super().build_and_verify_deposit(
+            vault=vault, memo=memo, amount=amount, now=now, **kwargs
+        )
+
+    def broadcast(self, raws):
+        if self.broadcast_error is not None:
+            raise self.broadcast_error
+        return "asset_txid"
+
+
+ETH_ADDR = "0xB0b"
+MAYA_ADDR = "maya1abc"
+
+
+def make_symmetric(
+    thor=None, asset_adapter=None, protocol_adapter=None, asset_amount=10_000_000_000
+):
+    from swapsack.swap import prepare_symmetric_liquidity
+
+    return prepare_symmetric_liquidity(
+        thorchain=thor or FakeThor(chain="ETH"),
+        asset_adapter=asset_adapter or FakeAssetAdapter(),
+        protocol_adapter=protocol_adapter or FakeCosmosAdapter(),
+        pool="ETH.USDC-0XA0B8",
+        asset_amount=asset_amount,
+        asset_address=ETH_ADDR,
+        protocol_address=MAYA_ADDR,
+        mnemonic="x " * 12,
+        now=0,
+    )
+
+
+def test_symmetric_legs_cross_reference_each_others_address():
+    # The crux of the pairing: each leg's memo names the OTHER side's address.
+    asset_adapter, protocol_adapter = FakeAssetAdapter(), FakeCosmosAdapter()
+    p = make_symmetric(asset_adapter=asset_adapter, protocol_adapter=protocol_adapter)
+    assert p.asset_memo == f"+:ETH.USDC-0XA0B8:{MAYA_ADDR}"
+    assert p.protocol_memo == f"+:ETH.USDC-0XA0B8:{ETH_ADDR}"
+    assert asset_adapter.built.memo == p.asset_memo
+    assert protocol_adapter.built.memo == p.protocol_memo
+    assert asset_adapter.built.vault == VAULT
+
+
+def test_symmetric_protocol_amount_comes_from_the_pool_ratio():
+    p = make_symmetric()
+    # 100 asset units at 8.85 protocol-per-asset, protocol side native (1e10).
+    assert p.protocol_amount == 10_000_000_000 * POOL_PROTOCOL_DEPTH // POOL_ASSET_DEPTH
+    assert p.asset_amount == 10_000_000_000
+
+
+def test_symmetric_gates_the_protocol_leg_against_the_lp_pause():
+    # The regression this exists for: build_and_verify_native_deposit has no
+    # vault and so never consults mimir on its own. A paused pool must stop the
+    # symmetric add before EITHER leg is built.
+    asset_adapter, protocol_adapter = FakeAssetAdapter(), FakeCosmosAdapter()
+    with pytest.raises(SwapAborted, match="paused"):
+        make_symmetric(
+            thor=FakeThor(chain="ETH", mimir={"PAUSELP": 1}),
+            asset_adapter=asset_adapter,
+            protocol_adapter=protocol_adapter,
+        )
+    assert asset_adapter.built is None
+    assert protocol_adapter.built is None
+
+
+def test_symmetric_aborts_when_the_asset_chain_is_halted():
+    with pytest.raises(SwapAborted):
+        make_symmetric(thor=FakeThor(chain="ETH", tradable=False))
+
+
+def test_symmetric_aborts_when_protocol_balance_is_short():
+    # Broadcasting a leg we know will bounce is worse than refusing up front.
+    protocol_adapter = FakeCosmosAdapter(balance=1)
+    with pytest.raises(SwapAborted, match="CACAO"):
+        make_symmetric(protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+def test_symmetric_is_unsafe_and_labels_which_leg_failed():
+    p = make_symmetric(asset_adapter=FakeAssetAdapter(problems=["bad vault"]))
+    assert not p.safe
+    assert p.problems == ["asset leg: bad vault"]
+    p = make_symmetric(protocol_adapter=FakeCosmosAdapter(problems=["bad memo"]))
+    assert not p.safe
+    assert p.problems == ["protocol leg: bad memo"]
+
+
+def test_symmetric_execute_broadcasts_protocol_leg_first():
+    from swapsack.swap import execute_symmetric_liquidity
+
+    order = []
+    asset_adapter, protocol_adapter = FakeAssetAdapter(), FakeCosmosAdapter()
+    for adapter, name in ((asset_adapter, "asset"), (protocol_adapter, "protocol")):
+        original = adapter.broadcast
+        adapter.broadcast = lambda raws, _o=original, _n=name: (
+            order.append(_n),
+            _o(raws),
+        )[1]
+    p = make_symmetric(asset_adapter=asset_adapter, protocol_adapter=protocol_adapter)
+    result = execute_symmetric_liquidity(
+        p, asset_adapter=asset_adapter, protocol_adapter=protocol_adapter, confirm=True
+    )
+    # Protocol first: it is native, cheap and fast, so the expensive/slow leg is
+    # the one we are still free to abandon if the first fails.
+    assert order == ["protocol", "asset"]
+    assert result.protocol_txid == "protocol_txid"
+    assert result.asset_txid == "asset_txid"
+    assert result.broadcast
+
+
+def test_symmetric_execute_dry_run_broadcasts_neither():
+    from swapsack.swap import execute_symmetric_liquidity
+
+    asset_adapter, protocol_adapter = FakeAssetAdapter(), FakeCosmosAdapter()
+    p = make_symmetric(asset_adapter=asset_adapter, protocol_adapter=protocol_adapter)
+    result = execute_symmetric_liquidity(
+        p, asset_adapter=asset_adapter, protocol_adapter=protocol_adapter, confirm=False
+    )
+    assert not result.broadcast
+    assert result.protocol_txid is None and result.asset_txid is None
+    assert not protocol_adapter.broadcasted
+
+
+def test_symmetric_execute_refuses_when_either_gate_failed():
+    from swapsack.swap import execute_symmetric_liquidity
+
+    protocol_adapter = FakeCosmosAdapter()
+    asset_adapter = FakeAssetAdapter(problems=["bad vault"])
+    p = make_symmetric(asset_adapter=asset_adapter, protocol_adapter=protocol_adapter)
+    with pytest.raises(SwapAborted):
+        execute_symmetric_liquidity(
+            p,
+            asset_adapter=asset_adapter,
+            protocol_adapter=protocol_adapter,
+            confirm=True,
+        )
+    assert not protocol_adapter.broadcasted
+
+
+def test_symmetric_execute_reports_a_half_add_loudly():
+    # The failure mode the whole design exists to handle: the protocol leg is
+    # irreversibly out and the asset leg did not go. The caller must be handed
+    # the live txid, not a bare broadcast error.
+    from swapsack.swap import (
+        BroadcastError,
+        PartialSymmetricAdd,
+        execute_symmetric_liquidity,
+    )
+
+    asset_adapter, protocol_adapter = FakeAssetAdapter(), FakeCosmosAdapter()
+    asset_adapter.broadcast_error = BroadcastError("rpc rejected")
+    p = make_symmetric(asset_adapter=asset_adapter, protocol_adapter=protocol_adapter)
+    with pytest.raises(PartialSymmetricAdd) as excinfo:
+        execute_symmetric_liquidity(
+            p,
+            asset_adapter=asset_adapter,
+            protocol_adapter=protocol_adapter,
+            confirm=True,
+        )
+    assert excinfo.value.protocol_txid == "protocol_txid"
+    assert "rpc rejected" in str(excinfo.value)
+
+
+def test_symmetric_execute_leaves_nothing_out_when_the_first_leg_fails():
+    # Protocol leg fails => nothing is live; this is the benign failure and must
+    # NOT be reported as a partial add.
+    from swapsack.swap import (
+        BroadcastError,
+        PartialSymmetricAdd,
+        execute_symmetric_liquidity,
+    )
+
+    asset_adapter, protocol_adapter = FakeAssetAdapter(), FakeCosmosAdapter()
+    protocol_adapter.broadcast_error = BroadcastError("nope")
+    p = make_symmetric(asset_adapter=asset_adapter, protocol_adapter=protocol_adapter)
+    with pytest.raises(BroadcastError) as excinfo:
+        execute_symmetric_liquidity(
+            p,
+            asset_adapter=asset_adapter,
+            protocol_adapter=protocol_adapter,
+            confirm=True,
+        )
+    assert not isinstance(excinfo.value, PartialSymmetricAdd)

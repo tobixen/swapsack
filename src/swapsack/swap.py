@@ -19,6 +19,7 @@ from typing import Protocol
 from swapsack.thorchain import (
     DEFAULT_TOLERANCE_BPS,
     ChainStatus,
+    PoolDepth,
     Quote,
     ThorchainError,
     effective_tolerance_bps,
@@ -101,6 +102,8 @@ class ThorchainLike(Protocol):
     ) -> Quote: ...
 
     def mimir(self) -> dict: ...
+
+    def pool(self, asset: str) -> PoolDepth: ...
 
 
 def lp_deposit_pause_reason(mimir: dict, pool: str) -> str | None:
@@ -294,3 +297,188 @@ def execute_swap(
     raws = adapter.sign(prepared.built)
     txid = adapter.broadcast(raws)
     return SwapResult(prepared=prepared, txid=txid, broadcast=True)
+
+
+# --- symmetric (two-sided) liquidity ----------------------------------------
+
+
+class PartialSymmetricAdd(BroadcastError):
+    """The protocol leg is broadcast but the asset leg failed — position pending.
+
+    The one outcome a symmetric add cannot undo. It subclasses
+    :class:`BroadcastError` so an existing ``except BroadcastError`` still
+    catches it, but carries ``protocol_txid`` so the caller can tell the user
+    exactly what is live on-chain rather than reporting a bare failure.
+    """
+
+    def __init__(self, protocol_txid: str, cause: Exception) -> None:
+        super().__init__(
+            f"the protocol leg IS BROADCAST (txid {protocol_txid}) but the asset "
+            f"leg failed: {cause}"
+        )
+        self.protocol_txid = protocol_txid
+        self.cause = cause
+
+
+@dataclasses.dataclass(frozen=True)
+class SymmetricPrepared:
+    """Both legs of a symmetric add, built and gated but not broadcast."""
+
+    asset: Prepared
+    protocol: Prepared
+    pool: str
+    asset_amount: int  # THORChain 1e8 units of the pool asset
+    protocol_amount: int  # RUNE/CACAO native base units (1e8 / 1e10)
+    asset_address: str
+    protocol_address: str
+    asset_memo: str
+    protocol_memo: str
+
+    @property
+    def problems(self) -> list[str]:
+        """Both gates' problems, labelled by leg (either one blocks the add)."""
+        return [f"asset leg: {p}" for p in self.asset.problems] + [
+            f"protocol leg: {p}" for p in self.protocol.problems
+        ]
+
+    @property
+    def safe(self) -> bool:
+        return self.asset.safe and self.protocol.safe
+
+
+@dataclasses.dataclass(frozen=True)
+class SymmetricResult:
+    prepared: SymmetricPrepared
+    protocol_txid: str | None
+    asset_txid: str | None
+    broadcast: bool
+
+
+def prepare_symmetric_liquidity(
+    *,
+    thorchain: ThorchainLike,
+    asset_adapter: SwapSource,
+    protocol_adapter,  # noqa: ANN001 (chains.cosmos.CosmosAdapter)
+    pool: str,
+    asset_amount: int,
+    asset_address: str,
+    protocol_address: str,
+    mnemonic: str,
+    now: int,
+    **asset_build_kwargs: object,
+) -> SymmetricPrepared:
+    """Build + gate **both** legs of a symmetric add, broadcasting neither.
+
+    The asset leg deposits ``asset_amount`` to the asset chain's inbound vault
+    with memo ``+:POOL:<protocol_address>``; the protocol leg is a native
+    ``MsgDeposit`` of the pool-ratio-matched RUNE/CACAO amount with memo
+    ``+:POOL:<asset_address>``. The protocol pairs them by matching each memo's
+    referenced address against the *other* leg's observed sender, which is why
+    ``asset_address`` must be the address the asset leg will actually send from.
+    For an account-model chain that is the single derived address; a UTXO source
+    has no unambiguous sender (the protocol observes ``vin[0]`` by convention),
+    so callers should not offer this for one — see docs/liquidity-symmetric.md.
+
+    Every check that can refuse the add happens before either leg is built, so
+    an abort here means nothing was signed and nothing is live.
+    """
+    from swapsack.liquidity import pair_amount, symmetric_add_memo
+
+    # The LP-pause check must happen here rather than per-leg: the protocol leg
+    # goes to the chain itself, not to an inbound vault, so it never passes
+    # through prepare_liquidity's gate and would otherwise be unchecked. A
+    # paused pool refunds an add minus gas — on two chains, here.
+    reason = lp_deposit_pause_reason(thorchain.mimir(), pool)
+    if reason:
+        raise SwapAborted(
+            f"LP deposits are paused (mimir {reason}); a symmetric add would be "
+            f"observed and then refunded minus gas on both legs. Not broadcasting."
+        )
+    status = thorchain.inbound_addresses().get(asset_adapter.chain)
+    if status is None or not status.tradable:
+        raise SwapAborted(f"{asset_adapter.chain} is not currently tradable")
+    if not status.address:
+        raise SwapAborted(f"no inbound vault address for {asset_adapter.chain}")
+
+    depth = thorchain.pool(pool)
+    protocol_amount = pair_amount(
+        asset_amount, depth.balance_asset, depth.balance_protocol
+    )
+    held = protocol_adapter.fetch_balance(protocol_address)
+    if held < protocol_amount:
+        unit = 10**protocol_adapter.decimals
+        raise SwapAborted(
+            f"the {protocol_adapter.symbol} leg needs "
+            f"{protocol_amount / unit:.8f} {protocol_adapter.symbol} at the "
+            f"current pool ratio but {protocol_address} holds {held / unit:.8f} "
+            f"(and the native tx fee comes out of that too)"
+        )
+
+    asset_memo = symmetric_add_memo(pool, protocol_address)
+    protocol_memo = symmetric_add_memo(pool, asset_address)
+    asset_leg = asset_adapter.build_and_verify_deposit(
+        vault=status.address,
+        memo=asset_memo,
+        amount=asset_amount,
+        now=now,
+        mnemonic=mnemonic,
+        **asset_build_kwargs,
+    )
+    protocol_leg = protocol_adapter.build_and_verify_native_deposit(
+        memo=protocol_memo,
+        amount=protocol_amount,
+        mnemonic=mnemonic,
+        now=now,
+    )
+    return SymmetricPrepared(
+        asset=asset_leg,
+        protocol=protocol_leg,
+        pool=pool,
+        asset_amount=asset_amount,
+        protocol_amount=protocol_amount,
+        asset_address=asset_address,
+        protocol_address=protocol_address,
+        asset_memo=asset_memo,
+        protocol_memo=protocol_memo,
+    )
+
+
+def execute_symmetric_liquidity(
+    prepared: SymmetricPrepared,
+    *,
+    asset_adapter: SwapSource,
+    protocol_adapter,  # noqa: ANN001 (chains.cosmos.CosmosAdapter)
+    confirm: bool,
+) -> SymmetricResult:
+    """Broadcast both legs, protocol first. Refuses unless *both* gates passed.
+
+    Order is deliberate. The protocol leg is native, cheap and fast, so if it
+    fails nothing is live and the expensive asset leg is simply never sent —
+    the benign failure, and the one we can still choose. Reversing the order
+    would risk stranding the costly leg instead.
+
+    If the asset leg fails *after* the protocol leg is out, the position is
+    genuinely half-added and :class:`PartialSymmetricAdd` carries the live txid.
+    """
+    if not prepared.safe:
+        raise SwapAborted(
+            "verify gate refused the transaction: " + "; ".join(prepared.problems)
+        )
+    if not confirm:
+        return SymmetricResult(
+            prepared=prepared, protocol_txid=None, asset_txid=None, broadcast=False
+        )
+    # Nothing is live yet, so a failure here propagates as an ordinary error.
+    protocol_txid = protocol_adapter.broadcast(
+        protocol_adapter.sign(prepared.protocol.built)
+    )
+    try:
+        asset_txid = asset_adapter.broadcast(asset_adapter.sign(prepared.asset.built))
+    except Exception as exc:
+        raise PartialSymmetricAdd(protocol_txid, exc) from exc
+    return SymmetricResult(
+        prepared=prepared,
+        protocol_txid=protocol_txid,
+        asset_txid=asset_txid,
+        broadcast=True,
+    )

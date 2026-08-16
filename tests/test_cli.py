@@ -2,6 +2,7 @@
 
 import time
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -2707,3 +2708,296 @@ def test_default_fee_blocks_is_a_fast_target():
     import swapsack.cli as cli
 
     assert 1 <= cli.DEFAULT_FEE_BLOCKS <= 3
+
+
+# --- symmetric (two-sided) add-liquidity ------------------------------------
+#
+# The orchestration itself is covered in test_swap.py; these pin the CLI's own
+# decisions — which assets it will attempt at all, and that a half-completed add
+# is reported with the live txid rather than as a plain failure.
+
+
+class _FakeSymEth:
+    chain = "ETH"
+
+    def __init__(self):
+        self.broadcast_error = None
+        self.broadcasted = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def derive_address(self, mnemonic, path=None):
+        return "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+
+    def get_nonce(self, address):
+        return 0
+
+    def fetch_fees(self):
+        return (20_000_000_000, 1_000_000_000)
+
+    def token_decimals(self, token):
+        return 6
+
+    def build_and_verify_deposit(self, *, vault, memo, amount, now, **kwargs):
+        """Mirrors EthAdapter's two shapes — they differ, and the difference bit."""
+        from swapsack.swap import Prepared
+
+        if kwargs.get("token"):
+            # EthTokenDeposit: the router call is its own plan, and carries the
+            # token amount / router / vault.
+            built = SimpleNamespace(
+                fee=10**15,
+                native_amount=100_000_000,
+                router=kwargs["router"],
+                vault=vault,
+            )
+            return Prepared(quote=None, built=built, plan=built, problems=[])
+        # EthBuiltSwap + EthSwapPlan: no native_amount, no router, no vault —
+        # the amount lives on the plan as wei.
+        plan = SimpleNamespace(
+            inbound_address=vault, memo=memo, amount_wei=amount * 10**10
+        )
+        return Prepared(
+            quote=None, built=SimpleNamespace(fee=10**15), plan=plan, problems=[]
+        )
+
+    def sign(self, built):
+        return ["beef"]
+
+    def broadcast(self, raws):
+        if self.broadcast_error is not None:
+            raise self.broadcast_error
+        self.broadcasted = True
+        return "eth_txid"
+
+
+class _FakeSymMaya:
+    chain = "MAYA"
+    asset = "MAYA.CACAO"
+    symbol = "CACAO"
+    decimals = 10
+
+    def __init__(self, balance=10**20):
+        self._balance = balance
+        self.broadcasted = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def derive_address(self, mnemonic, path=None):
+        return "maya1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+
+    def fetch_balance(self, address):
+        return self._balance
+
+    def build_and_verify_native_deposit(self, *, memo, amount, mnemonic, now, **kw):
+        from swapsack.swap import Prepared
+
+        plan = SimpleNamespace(memo=memo, amount=amount)
+        return Prepared(
+            quote=None, built=SimpleNamespace(fee=0), plan=plan, problems=[]
+        )
+
+    def sign(self, built):
+        return ["cafe"]
+
+    def broadcast(self, raws):
+        self.broadcasted = True
+        return "maya_txid"
+
+
+class _FakeSymThor:
+    """The LP backend client (Maya), as a context manager."""
+
+    ROUTER = "0xe3985E6b61b814F7Cdb188766562ba71b446B46d"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def inbound_addresses(self):
+        from swapsack.thorchain import ChainStatus
+
+        return {
+            "ETH": ChainStatus(
+                chain="ETH",
+                gas_rate=15,
+                gas_rate_units="gwei",
+                outbound_fee=0,
+                dust_threshold=0,
+                halted=False,
+                global_trading_paused=False,
+                chain_trading_paused=False,
+                address="0xvault",
+                router=self.ROUTER,
+            )
+        }
+
+    def mimir(self):
+        return {}
+
+    def pool(self, asset):
+        from swapsack.thorchain import PoolDepth
+
+        # Maya's live ETH.USDC ratio: ~231.7k USDC (1e8) : ~2.05M CACAO (1e10).
+        return PoolDepth(
+            asset=asset,
+            balance_asset=23_167_994_792_257,
+            balance_protocol=20_511_113_357_838_187,
+        )
+
+
+def _wire_symmetric(monkeypatch, eth=None, maya=None):
+    import swapsack.cli as cli
+
+    eth = eth or _FakeSymEth()
+    maya = maya or _FakeSymMaya()
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr(cli, "_eth_adapter", lambda args, passphrase="": eth)
+    monkeypatch.setattr(cli, "_maya_adapter", lambda args, passphrase="": maya)
+    monkeypatch.setattr(cli, "_liquidity_client", lambda args: _FakeSymThor())
+    return eth, maya
+
+
+def _symmetric_args(*extra):
+    return build_parser().parse_args(
+        [
+            "add-liquidity",
+            "--asset",
+            "USDC-ETH",
+            "--amount",
+            "100",
+            "--symmetric",
+            "--backend",
+            "maya",
+            *extra,
+        ]
+    )
+
+
+def test_add_liquidity_symmetric_flag_parses():
+    args = _symmetric_args()
+    assert args.symmetric is True
+    # The default must stay single-sided: symmetric is opt-in.
+    plain = build_parser().parse_args(
+        ["add-liquidity", "--asset", "BTC", "--amount", "1"]
+    )
+    assert plain.symmetric is False
+
+
+def test_add_liquidity_symmetric_routes_to_the_two_leg_path(monkeypatch):
+    import swapsack.cli as cli
+
+    called = {}
+
+    def fake_symmetric(args, pool):
+        called["pool"] = pool
+        return 0
+
+    monkeypatch.setattr(cli, "_liquidity_symmetric", fake_symmetric)
+    assert cli.cmd_add_liquidity(_symmetric_args()) == 0
+    assert called["pool"] == ASSET["USDC-ETH"]
+
+
+def test_add_liquidity_symmetric_refuses_a_utxo_source(capsys, monkeypatch):
+    """A UTXO tx has no single sender, so the pairing address would be a guess
+    (the protocol observes vin[0] by convention — an assumption no testnet can
+    verify for us). Refuse rather than risk legs that never pair."""
+    import swapsack.cli as cli
+
+    _wire_symmetric(monkeypatch)
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "BTC", "--amount", "1", "--symmetric"]
+    )
+    assert cli.cmd_add_liquidity(args) == 2
+    err = capsys.readouterr().err
+    assert "account-model" in err or "single sender" in err
+
+
+def test_add_liquidity_symmetric_refuses_amount_max(capsys, monkeypatch):
+    import swapsack.cli as cli
+
+    _wire_symmetric(monkeypatch)
+    args = build_parser().parse_args(
+        [
+            "add-liquidity",
+            "--asset",
+            "USDC-ETH",
+            "--amount",
+            "max",
+            "--symmetric",
+            "--backend",
+            "maya",
+        ]
+    )
+    assert cli.cmd_add_liquidity(args) == 2
+    assert "max" in capsys.readouterr().err
+
+
+def test_add_liquidity_symmetric_dry_run_prints_both_legs(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    eth, maya = _wire_symmetric(monkeypatch)
+    assert cli.cmd_add_liquidity(_symmetric_args()) == 0
+    out = capsys.readouterr().out
+    # Each leg's memo names the other side's address — the pairing, made visible
+    # before the user confirms two irreversible txs.
+    assert "+:ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48:maya1" in out
+    assert "+:ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48:0x9858" in out
+    assert "DRY RUN" in out
+    assert not eth.broadcasted and not maya.broadcasted
+
+
+def test_add_liquidity_symmetric_reports_a_half_add_with_the_live_txid(
+    monkeypatch, capsys
+):
+    """The failure the two-leg design exists for: CACAO is irreversibly out and
+    the USDC leg bounced. The user must be told what is live, loudly."""
+    import swapsack.cli as cli
+    from swapsack.swap import BroadcastError
+
+    eth = _FakeSymEth()
+    eth.broadcast_error = BroadcastError("rpc rejected")
+    eth, maya = _wire_symmetric(monkeypatch, eth=eth)
+    rc = cli.cmd_add_liquidity(_symmetric_args("--confirm", "--yes"))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "maya_txid" in err
+    assert "PARTIAL" in err.upper()
+    assert maya.broadcasted
+
+
+def test_add_liquidity_symmetric_native_eth_prints_the_eth_leg(monkeypatch, capsys):
+    """A native-ETH symmetric add builds a plain vault deposit, not a router
+    call, so its built tx has no native_amount/router/vault — printing it the
+    token way raised AttributeError instead of showing the leg."""
+    import swapsack.cli as cli
+
+    eth, maya = _wire_symmetric(monkeypatch)
+    args = build_parser().parse_args(
+        [
+            "add-liquidity",
+            "--asset",
+            "ETH",
+            "--amount",
+            "0.5",
+            "--symmetric",
+            "--backend",
+            "maya",
+        ]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    out = capsys.readouterr().out
+    assert "0.50000000 ETH" in out
+    assert "+:ETH.ETH:maya1" in out
+    assert "+:ETH.ETH:0x9858" in out
+    assert not eth.broadcasted and not maya.broadcasted

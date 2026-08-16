@@ -11,38 +11,11 @@ globally paused (`PAUSELP=1`, and `PAUSELPDEPOSIT-ETH-USDC-…=1`, checked
 2026-08-16), so its `ETH.USDC` pool is not an option and no THORChain/RUNE work
 is on this path. Maya is open: `PAUSELP`/`PAUSELPETH`/`PAUSELPARB` are all `0`,
 both pools are `Available`, and Maya publishes a router for both `ETH`
-(`0xe3985E6b…`) and `ARB` (`0x700E97ef…`). Items 1 and 2 below are that goal,
-split by what each delivers; everything else in this file is now behind them.
+(`0xe3985E6b…`) and `ARB` (`0x700E97ef…`). **`ETH.USDC` is now done in code**
+(`add-liquidity --symmetric`); `ARB.USDC` needs item 1 below, and both need the
+mainnet step in item 2. Everything else in this file is behind them.
 
-1. **The symmetric two-leg CLI orchestration → delivers `ETH.USDC` on its own.**
-   Nothing else is missing for the ETH side: the asset leg is the existing
-   ERC-20 router path (`_liquidity_eth`'s `token_add`, which already takes the
-   token contract explicitly *because* a symmetric memo has a suffix the memo
-   parse would choke on), and the CACAO leg is
-   `CosmosAdapter.build_and_verify_native_deposit`. `symmetric_add_memo`,
-   `pair_amount` and `thorchain.pool()` depths are all in place and unit-tested.
-   What remains is only the coordination, per `docs/liquidity-symmetric.md`'s
-   safety protocol: prepare + gate **both** legs, broadcast **neither** if
-   either gate fails, then CACAO first and USDC second, reporting loudly if the
-   second fails after the first is out.
-
-   Gaps to close while building it, none large:
-   - **The pause gate does not cover the protocol leg.** `prepare_liquidity`
-     checks `lp_deposit_pause_reason` on the way to the vault;
-     `build_and_verify_native_deposit` has no vault and so never consults
-     mimir. A symmetric add must run the same check for *both* legs.
-   - **`_liquidity_eth` hardcodes `inbound_addresses().get("ETH")`** for the
-     router. Read `adapter.chain` instead — item 2 needs the ARB router from
-     the same call.
-   - **Prove a CACAO mainnet broadcast first.** Every CACAO spend path ships
-     mainnet-unproven (no Maya testnet). A small plain `send` is the cheap way
-     to find a protobuf/signing bug; discovering one as the first half of an
-     irreversible two-leg add is the worst available place.
-   - Sourcing the CACAO needs no new code — `swap --to CACAO --dest maya1…`
-     works today. At the 2026-08-16 ratio both pools price CACAO at ~$0.113
-     (~8.85 CACAO per USDC), so the pair leg is roughly dollar-for-dollar.
-
-2. **An Arbitrum adapter → delivers `ARB.USDC` (and unblocks ETH-ARB).**
+1. **An Arbitrum adapter → delivers `ARB.USDC` (and unblocks ETH-ARB).**
    Much smaller than this file previously implied, because **the EVM chain-id
    parameterization is already done**: `EthAdapter.__init__` takes `chain_id`
    and threads `self.chain_id` into every build site, so the "module-level
@@ -65,11 +38,17 @@ split by what each delivers; everything else in this file is now behind them.
      that is genuinely new work rather than configuration — call
      `eth_estimateGas` on ARB rather than porting the constants. (Folds into
      the standing `eth_estimateGas` item under *Other known gaps*.)
-   - CLI dispatch: `cmd_send`, `cmd_swap` and `_liquidity` each branch on
-     `chain == "ETH"`. Adding a second EVM chain is the point at which A5's
-     table-driving stops being cosmetic — do the minimal table, not a fourth
-     copy of the branch. `RECEIVE_ONLY_CHAINS` and the "ARB/ATOM could be
-     auto-derived" follow-up below both dissolve for ARB once it is spendable.
+   - CLI dispatch: `cmd_send`, `cmd_swap`, `_liquidity` and now
+     `_liquidity_symmetric` each branch on `chain == "ETH"` (the last via
+     `_SYMMETRIC_ASSET_CHAINS`, which is the seam to widen). Adding a second EVM
+     chain is the point at which A5's table-driving stops being cosmetic — do
+     the minimal table, not a fifth copy of the branch. `RECEIVE_ONLY_CHAINS`
+     and the "ARB/ATOM could be auto-derived" follow-up below both dissolve for
+     ARB once it is spendable.
+   - Nothing else in the symmetric path is ETH-specific: it takes the router
+     from `inbound_addresses()[adapter.chain]`, and an Arbitrum sender is as
+     unambiguous as an Ethereum one. Widening `_SYMMETRIC_ASSET_CHAINS` and
+     picking the right adapter is expected to be the whole change.
    - **Re-measure the pool before committing size.** Maya's `ARB.USDC` depth is
      ~8.9k USDC / ~78.7k CACAO (2026-08-16 — unchanged from the destination
      work's measurement), against ~232k USDC / ~2.05M CACAO for `ETH.USDC`. A
@@ -77,6 +56,19 @@ split by what each delivers; everything else in this file is now behind them.
      thin, which is where the impermanent loss lands and what makes exiting
      expensive. Symmetric entry avoids *entry* slip; it does nothing about
      that.
+
+2. **Prove the CACAO leg on mainnet before the first real symmetric add.**
+   `add-liquidity --symmetric` is implemented and unit-tested but, like every
+   CACAO spend path, its broadcast has never run against mainnet (there is no
+   Maya testnet). A small plain `send --asset CACAO` is the cheap way to find a
+   protobuf/signing bug; finding one as the first half of an irreversible
+   two-leg add is the worst available place. Sourcing the CACAO needs no new
+   code — `swap --to CACAO --dest maya1…` works today, and at the 2026-08-16
+   ratio both USDC pools price CACAO at ~$0.113 (~8.85 CACAO per USDC), so the
+   pair leg is roughly dollar-for-dollar with the asset leg.
+
+   Then do a minimum-size real `ETH.USDC` add end to end and record it the way
+   `docs/live-session-2026-07-24.md` records the swap paths.
 
 3. **More swap *destinations* via external `--dest` addresses.** ATOM, XRP, ADA
    and ETH-ARB are done; **SOL is the only remaining candidate, and it is
@@ -110,15 +102,20 @@ split by what each delivers; everything else in this file is now behind them.
 
 ## Symmetric liquidity — the standing risk notes
 
-Items 1 and 2 above are the current, USDC-specific plan; these are the general
-properties of a symmetric add, which outlive it. A symmetric add is two *linked*
-deposits: the asset leg (`+:POOL:<protocol-addr>` to the inbound vault) and a
-RUNE/CACAO leg (a Cosmos `MsgDeposit` with memo `+:POOL:<asset-addr>`), paired
-by the protocol via the cross-referenced addresses within a time window.
+`add-liquidity --symmetric` is implemented (ETH-chain assets); the items above
+are what is left. These are the general properties of a symmetric add, which
+outlive any particular pool, and none of them are closed by having shipped the
+code. A symmetric add is two *linked* deposits: the asset leg
+(`+:POOL:<protocol-addr>` to the inbound vault) and a RUNE/CACAO leg (a Cosmos
+`MsgDeposit` with memo `+:POOL:<asset-addr>`), paired by the protocol via the
+cross-referenced addresses within a time window.
 
-- **The partial-failure hazard is the whole reason to build it carefully**: if
-  one leg lands and the other does not, the position is lopsided or stuck —
-  material on an experimental, loss-prone feature.
+- **The partial-failure hazard is a property of the operation, not a bug the
+  code removed.** Both legs are gated before either is broadcast and the
+  protocol (cheap, fast) leg goes first, so the *avoidable* half is handled —
+  but two irreversible txs on two chains can still end with one landed, and
+  then the position is lopsided or stuck. `PartialSymmetricAdd` exists to name
+  that outcome, not to prevent it.
 - **Symmetric buys less than it looks like it does.** One-sided LP already
   carries ~50% RUNE/CACAO price exposure once the pool rebalances, so symmetric
   does not reduce your exposure to the settlement asset — it only avoids *entry
@@ -129,8 +126,10 @@ by the protocol via the cross-referenced addresses within a time window.
 - **The asset leg's pairing address is unambiguous only for account-model
   chains.** ETH and ARB have a single derived sender. A UTXO source does not —
   the protocol observes `vin[0]` by convention, an assumption no testnet can
-  verify for us. Both pools in the current plan are EVM, which is part of why
-  they are a good first target.
+  verify for us, so `--symmetric` refuses UTXO chains outright. Reaching BTC
+  would mean either constraining the add to spend from one address or reading
+  `vin[0]` back off the built tx and betting on the convention; neither is
+  worth doing without a way to test it.
 - THORChain LP is paused (`PAUSELP=1`), so symmetric works on Maya (asset +
   CACAO) today and on RUNE only when THORChain re-enables it. See
   `docs/liquidity-symmetric.md`.

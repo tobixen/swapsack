@@ -1,8 +1,12 @@
 # Two-sided (symmetric) liquidity — design notes
 
-Status: **building blocks done + tested; two-leg CLI orchestration is the
-remaining (and riskiest) step.** This note records the mechanics so the
-money-sensitive coordination is decided deliberately, not mid-broadcast.
+Status: **implemented for ETH-chain assets** — `add-liquidity --symmetric`,
+built on `swap.prepare_symmetric_liquidity` / `execute_symmetric_liquidity`.
+The safety protocol below is what the code does, not a plan. Unproven on
+mainnet, like every CACAO spend path. Remaining: **ARB** (needs the Arbitrum
+adapter, `docs/TODO.md` *Next up* item 2) and UTXO sources (blocked on the
+`vin[0]` pairing assumption — see the per-asset caveats). This note records the
+mechanics so the money-sensitive coordination stays deliberate.
 
 ## Why symmetric, and the honest caveats
 
@@ -46,30 +50,46 @@ Implemented building blocks (all unit-tested):
   protocol leg: a native `MsgDeposit` carrying `P` with the LP memo, gated
   (`verify_cosmos_deposit`, no swap destination) exactly like a native swap.
 
-## The safety protocol for the two-leg CLI (remaining work)
+## The safety protocol (implemented)
 
+`prepare_symmetric_liquidity` does 0–5, `execute_symmetric_liquidity` does 6.
+
+0. **Check the LP pause first**, before anything is built. This one deserves
+   naming: `prepare_liquidity` checks `lp_deposit_pause_reason` on its way to
+   the inbound vault, but the protocol leg has no vault and so never passes
+   through it — left per-leg, the RUNE/CACAO half would be **ungated**, and a
+   paused pool refunds an add minus gas on *both* chains.
 1. Derive both addresses: asset-chain (`X`) and protocol-chain (`P`).
 2. Fetch pool depth; `pair_amount` computes the protocol amount from the
    user-supplied asset amount (the chosen "auto-compute from pool ratio" model).
+   Refuse up front if the wallet does not hold that much `P` — broadcasting a
+   leg known to bounce is worse than refusing.
 3. Build the **asset leg** (memo `+:X.Y:<P-addr>`) — but do **not** broadcast.
-4. Read the asset leg's **observed sender** and build the **protocol leg**
-   (memo `+:X.Y:<that sender>`).
+4. Build the **protocol leg** against the asset leg's **observed sender**
+   (memo `+:X.Y:<that sender>`). For an account-model chain the sender is the
+   single derived address, known before the build; this is why the CLI restricts
+   `--symmetric` to those (`_SYMMETRIC_ASSET_CHAINS`).
 5. Run the verify gate on **both** legs. If either fails, abort with **neither**
-   broadcast.
+   broadcast — `SymmetricPrepared.problems` labels which leg objected.
 6. On `--confirm`: broadcast the protocol leg (native, cheap, fast), then the
-   asset leg. If the second fails after the first is out, report **loudly** that
-   one leg is live and the position is pending, with the txid and recovery hint.
-   Never silently leave a half-add.
+   asset leg. A failure on the *first* leaves nothing live and propagates as an
+   ordinary `BroadcastError` — the benign case, and the one we can still choose.
+   A failure on the *second* raises `PartialSymmetricAdd`, which carries the
+   live txid so the CLI can say what is on-chain rather than reporting a bare
+   failure. Never silently leave a half-add.
 
 ## Per-asset caveats for step 4 (the pairing address)
 
 - **Account-model assets (ETH):** the sender is the single derived address —
-  unambiguous. Cleanest first target. Maya has `ETH.ETH` OPEN.
+  unambiguous. The first (and so far only) target; Maya has `ETH.ETH` and
+  `ETH.USDC` OPEN. **ARB** is the same shape and is blocked only on there being
+  no Arbitrum adapter to spend from.
 - **UTXO assets (BTC):** a multi-input tx has no single "from"; the protocol
   observes (by convention) the **first input's** address. So the protocol-leg
-  memo must use the built asset tx's `vin[0]` address, or the add must be
+  memo would have to use the built asset tx's `vin[0]` address, or the add be
   constrained to spend from a single address. This is an **unverified
-  assumption** (no testnet) — get it wrong and the legs don't pair.
+  assumption** (no testnet) — get it wrong and the legs don't pair, so the CLI
+  refuses `--symmetric` for UTXO chains rather than guessing.
 
 ## Withdraw
 
@@ -80,6 +100,6 @@ withdraw mainly needs the trigger to come from an owned address on either side.
 
 ## See also
 
-- `docs/cacao.md` — the shared Cosmos adapter (`chains/cosmos.py`) that both legs'
-  protocol side reuses.
-- `docs/TODO.md` #4 — the original scoping.
+- `docs/cacao.md` — the shared Cosmos adapter (`chains/cosmos.py`) that the
+  protocol leg reuses.
+- `docs/TODO.md` *Next up* — the ARB half that is still open.
