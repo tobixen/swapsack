@@ -76,6 +76,72 @@ no longer implementation but the mainnet step in item 1.
      wallet can spend. (**ARB no longer belongs here**: it is spendable now, so
      it is simply a `_DESTINATION_DERIVERS` entry with no warning needed.)
 
+## Known bugs (found, diagnosed, not yet fixed)
+
+Both surfaced during a real 2026-08-16 session. Neither risks funds — they are
+*reporting* defects — but both tell the user something false about their money,
+which is why they sit above the feature work rather than in *Other known gaps*.
+
+### `status` reports a **completed** swap as "not observed"
+
+`cli.py:2466` decides whether a backend saw the tx with:
+
+```python
+observed = status.get("stages", {}).get("inbound_observed", {}).get("started")
+```
+
+Thornode does not serialise `started` once the stage is done. Verified against
+the live API (`/thorchain/tx/status/{hash}`) on 2026-08-16:
+
+| hash | `stages.inbound_observed` |
+|---|---|
+| unknown | `{"started": false, "final_count": 0, "completed": false}` |
+| observed + completed | `{"final_count": 93, "completed": true}` — **no `started`** |
+
+So `.get("started")` is falsy in *both* cases, and the check fails exactly when
+the answer is "yes, fully observed". The polarity is the worst available one:
+`status` works while a swap is mid-flight and breaks once it succeeds, telling
+the user their finished swap vanished.
+
+With the default `--backend auto` it then falls through to the next backend and
+prints *that* one's empty body — so a completed THORChain swap is reported using
+Maya's answer, and Maya has never heard of the hash (TRON is THORChain-only).
+The observed case: a TRX→ETH swap that had completed in 41 seconds still read as
+"not observed" minutes later.
+
+**Fix**: thornode returns a `tx` object only for hashes it knows — unknown hash
+gives top-level keys `['stages']`, a known one gives
+`['out_txs', 'planned_out_txs', 'stages', 'tx']`. Key the "this backend saw it"
+decision off that instead of a stage flag whose absence is meaningful. Broadening
+the stage test (`started or completed or final_count > 0`) also works but keeps
+depending on which flags a given thornode version happens to emit — and Maya, an
+older fork, still emits `started`, so the two node families must both be handled.
+Worth a regression test built on both real response shapes, captured above.
+
+### `balance` prints two indistinguishable `ETH` rows
+
+Introduced with the Arbitrum adapter (`91228b2`). `EthAdapter.wallet_balance`
+labels the row `self.native_symbol`, which is `"ETH"` for **both** `EthAdapter`
+and `ArbAdapter`, and annotates it with the address — which is also the same on
+both chains. Result:
+
+```
+ETH: <a balance>  (0x…our EVM address)     <- Ethereum
+ETH: 0.00000000  (0x…our EVM address)     <- Arbitrum, indistinguishable
+```
+
+Only the *native* row collides; token rows are already fine, because
+`token_suffix` gives `USDC-ETH` vs `USDC-ARB`.
+
+**Fix**: give the native row the chain-qualified name the CLI already uses
+elsewhere — `ASSET` calls Arbitrum's native coin `ETH-ARB`, and `--asset
+ETH-ARB` is what you would type to spend it, so `balance` should print that.
+A `native_label` class attribute (defaulting to `native_symbol`, overridden to
+`"ETH-ARB"` on `ArbAdapter`) keeps what `balance` shows identical to what
+`--asset` accepts. Do **not** label it by chain (`ARB:`): Arbitrum's native coin
+is ether, not the ARB token, and the ARB token pool is `Staged` anyway — that
+naming would trade one confusion for a worse one.
+
 ## Symmetric liquidity — the standing risk notes
 
 `add-liquidity --symmetric` is implemented (ETH-chain assets); the items above
