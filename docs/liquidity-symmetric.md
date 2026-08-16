@@ -3,7 +3,8 @@
 Status: **implemented for EVM assets** (Ethereum and Arbitrum) —
 `add-liquidity --symmetric`, built on `swap.prepare_symmetric_liquidity` /
 `execute_symmetric_liquidity`. The safety protocol below is what the code does,
-not a plan. Unproven on mainnet, like every CACAO spend path. Remaining: UTXO
+not a plan, and **mainnet-proven for `ETH.USDC`** (`docs/live-session-2026-08-16.md`)
+— ARB is implemented but has never broadcast, and RUNE never has. Remaining: UTXO
 sources, blocked on the `vin[0]` pairing assumption — see the per-asset
 caveats. This note records the mechanics so the money-sensitive coordination
 stays deliberate.
@@ -18,7 +19,10 @@ rebalance). In exchange you must source and hold the protocol asset
 - **Two irreversible txs on two chains that must pair.** New failure mode vs.
   every single-leg path: if one leg lands and the other doesn't, the position
   sits *pending* (or is refunded after a timeout) — lopsided/stuck funds.
-- **Unproven on mainnet, doubled.** No THORChain/Maya testnet; two money legs.
+- **Two money legs, and no testnet to rehearse them on.** `ETH.USDC` has now
+  run for real (`docs/live-session-2026-08-16.md`), so the path is no longer
+  unexercised — but that proves *one* pool on *one* pair of chains. ARB and
+  RUNE have still never broadcast.
 - **THORChain LP is currently paused (`PAUSELP`, checked 2026-07-05).** A RUNE
   symmetric add is refunded today; the existing `lp_deposit_pause_reason` gate
   refuses it. **Maya is OPEN**, so an asset+CACAO add works now.

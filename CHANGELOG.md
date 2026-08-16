@@ -57,8 +57,10 @@ automatically from git tags (PEP 440 / SemVer).
     protocol pairs the legs by the asset leg's observed sender, which only an
     account-model chain has unambiguously; a UTXO source is refused rather than
     guessed at.
-  - Like every CACAO spend path, the protocol leg ships **unproven on
-    mainnet** — there is no Maya testnet.
+  - **Exercised on mainnet**: a real `ETH.USDC` position,
+    which entered with no measurable slip (±2.7 bps a side). On **RUNE** the
+    protocol leg remains unproven — no THORChain native transaction has ever
+    been broadcast.
 
 - **USDC as a swap destination on Avalanche and Arbitrum: `USDC-AVAX` and
   `USDC-ARB`**, payable with `--dest` like the other destination-only assets

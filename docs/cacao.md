@@ -17,7 +17,8 @@ decimals landmine).
 
 Status: **destination, Hold, Balance, Send and swap-From are all DONE** (see the
 *Recommended phasing* section below, which is the authoritative per-phase
-record) — every spend path shipping **unproven on mainnet**, as there is no Maya
+record). The `MsgDeposit` path is **mainnet-proven** as of 2026-08-16
+(`docs/live-session-2026-08-16.md`); `MsgSend` has still never broadcast, as there is no Maya
 testnet. `Liq` is n/a for a settlement asset: CACAO's liquidity role is the
 protocol leg of a *symmetric* add, tracked in `docs/TODO.md` *Next up* item 1.
 Unlike the UTXO coins, CACAO is the *native* asset of MayaChain, a
@@ -40,9 +41,10 @@ destination, so neither is rediscovered mid-money-path. It mirrors
 - **The full wallet side is a RUNE-class effort**, not a UTXO one — a Cosmos-SDK
   chain adapter with protobuf `MsgSend` / `MsgDeposit` signing. Tractable (no
   exotic-signature blocker like Zcash), but a meaningful chunk + a new
-  dependency, and — like every spend path here — it would ship unexercised on
-  mainnet (no easy Maya testnet faucet). Roadmap-flagged **niche / low
-  priority**.
+  dependency, and it would ship unexercised on mainnet (no easy Maya testnet
+  faucet). Roadmap-flagged **niche / low priority**. *(Written as scoping,
+  before any of it existed. It has since been built, and the `MsgDeposit` half
+  has broadcast for real — see the Status note at the top.)*
 
 ## The 1e10-decimals landmine (fixed for the destination path)
 
@@ -99,8 +101,10 @@ question.
 
 ## Testability caveat
 
-Same as DASH/ZEC: the spend side would ship **unexercised on mainnet** (no easy
-Maya testnet faucet). Derivation, balance parsing, the `MsgSend`/`MsgDeposit`
+Written before the wallet side existed, and largely overtaken: the
+`MsgDeposit` sign-and-broadcast loop **has** now run on mainnet
+(`docs/live-session-2026-08-16.md`). `MsgSend` has not. There is still no easy
+Maya testnet faucet, so the gap below is the standing shape of the problem. Derivation, balance parsing, the `MsgSend`/`MsgDeposit`
 assembly, and the verify gate are unit-testable offline; the sign-and-broadcast
 loop is not, without funded mainnet CACAO. Plan units + an opt-in mainnet
 broadcast test gated on a funded secret, mirroring the Nile TRC-20 loop.
@@ -126,7 +130,10 @@ broadcast test gated on a funded secret, mirroring the Nile TRC-20 loop.
   fee/gas convention (currently empty fee coins + gas 2e6, letting the chain
   charge its fixed native fee) — is unexercised on mainnet. Sweep (`--amount
   max`) is intentionally refused (fixed fee is charged separately).
-- **Phase 3 — From (swap source). DONE (broadcast unproven on mainnet).**
+- **Phase 3 — From (swap source). DONE.** The underlying `MsgDeposit`
+  build/sign/broadcast is mainnet-proven (via the symmetric LP leg, which shares
+  `_prepare_deposit`); the swap variant's own memo/destination binding has not
+  itself broadcast.
   `swap --from CACAO` builds a `types.MsgDeposit` (memo-driven, **no inbound
   vault** — confirmed against a live quote, which returns `inbound_address:
   null`) carrying the CACAO coin at 1e10, signs it (reusing the Phase-2

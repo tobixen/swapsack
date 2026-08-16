@@ -11,32 +11,35 @@ globally paused (`PAUSELP=1`, and `PAUSELPDEPOSIT-ETH-USDC-…=1`, checked
 2026-08-16), so its `ETH.USDC` pool is not an option and no THORChain/RUNE work
 is on this path. Maya is open: `PAUSELP`/`PAUSELPETH`/`PAUSELPARB` are all `0`,
 both pools are `Available`, and Maya publishes a router for both `ETH`
-(`0xe3985E6b…`) and `ARB` (`0x700E97ef…`). **Both pools are now reachable in
-code** — `add-liquidity --symmetric` plus `chains/arb.py` — so what is left is
-no longer implementation but the mainnet step in item 1.
+(`0xe3985E6b…`) and `ARB` (`0x700E97ef…`). **`ETH.USDC` is delivered and proven
+on mainnet** (`docs/live-session-2026-08-16.md`); `ARB.USDC` is implemented but
+has never broadcast on Arbitrum, which is item 1.
 
-1. **Prove the spend paths on mainnet before the first real add.**
-   Everything below is implemented, gated and unit-tested; none of it has ever
-   broadcast against mainnet. Two separate unproven surfaces, and the symmetric
-   add uses *both at once*:
-   - **The CACAO leg.** Like every CACAO spend path, unproven (no Maya
-     testnet). A small plain `send --asset CACAO` is the cheap way to find a
-     protobuf/signing bug; finding one as the irreversible first half of a
-     two-leg add is the worst available place.
+1. **Prove Arbitrum on mainnet before the first `ARB.USDC` add.**
+   **`ETH.USDC` is done** — a real symmetric position was
+   added on 2026-08-16, which also made the CACAO `MsgDeposit` and the two-leg
+   orchestration mainnet-proven. Evidence:
+   `docs/live-session-2026-08-16.md`. What remains for `ARB.USDC` is the one
+   surface that is still untouched:
+
    - **Arbitrum.** The adapter is a `chains/bsc.py`-shaped subclass and its
      read paths are covered by live tests (balance decoding, and the chain id
-     asked of the node rather than trusted), but no ARB transaction has been
-     signed and broadcast. Do a minimal `send --asset ETH-ARB` first.
+     asked of the node rather than trusted), but **no ARB transaction has ever
+     been signed and broadcast**. Do a minimal `send --asset ETH-ARB` first —
+     and note the wallet holds **0 ETH on Arbitrum**, so it needs gas there
+     before it can send anything at all. A `swap --from CACAO --to ETH-ARB`
+     both funds that gas and rehearses `MsgDeposit`, and its floor is only
+     ~4.31 CACAO because Maya's ARB outbound fee is 12× cheaper than ETH's.
 
-   Sourcing the CACAO needs no new code — `swap --to CACAO --dest maya1…` works
+   Do **not** substitute `send --asset CACAO` for a `MsgDeposit` rehearsal: it
+   builds a `MsgSend`, a different protobuf message that shares none of
+   `_prepare_deposit` with the LP leg. An earlier version of this item got that
+   wrong; see the live-session note.
+
+   Sourcing CACAO needs no new code — `swap --to CACAO --dest maya1…` works
    today, and at the 2026-08-16 ratio both USDC pools price CACAO at ~$0.113
    (~8.85 CACAO per USDC), so the pair leg is roughly dollar-for-dollar with the
    asset leg.
-
-   Then do a minimum-size real `ETH.USDC` add end to end and record it the way
-   `docs/live-session-2026-07-24.md` records the swap paths. **Do `ETH.USDC`
-   first, not `ARB.USDC`**: same code path, deeper pool, and one unproven
-   surface instead of two.
 
 2. **Size the `ARB.USDC` position against its depth, not your intent.**
    Maya's `ARB.USDC` pool is ~8.9k USDC / ~78.7k CACAO (2026-08-16), against
@@ -78,9 +81,11 @@ no longer implementation but the mainnet step in item 1.
 
 ## Known bugs (found, diagnosed, not yet fixed)
 
-Both surfaced during a real 2026-08-16 session. Neither risks funds — they are
-*reporting* defects — but both tell the user something false about their money,
-which is why they sit above the feature work rather than in *Other known gaps*.
+All four surfaced during a real 2026-08-16 session
+(`docs/live-session-2026-08-16.md`). None risks funds — every one is a
+*reporting* defect over a money path that was correct — but each tells the user
+something false about their money, which is why they sit above the feature work
+rather than in *Other known gaps*.
 
 ### `status` reports a **completed** swap as "not observed"
 
@@ -211,7 +216,8 @@ naming would trade one confusion for a worse one.
 
 ## Symmetric liquidity — the standing risk notes
 
-`add-liquidity --symmetric` is implemented (ETH-chain assets); the items above
+`add-liquidity --symmetric` is implemented (EVM assets) and proven on mainnet
+for `ETH.USDC`; the items above
 are what is left. These are the general properties of a symmetric add, which
 outlive any particular pool, and none of them are closed by having shipped the
 code. A symmetric add is two *linked* deposits: the asset leg
@@ -366,8 +372,9 @@ labels, not lookups.
   what *isn't* there — the ARB **token** pool (`ARB.ARB`) is `Staged`, not
   tradeable, so "ARB" as a destination means native ETH on Arbitrum.
   CACAO's **full wallet side is done** — hold, balance, `send` (`MsgSend`) and
-  swap-**from** (`MsgDeposit`) all ship, mainnet-unproven, via
-  `chains/cosmos.py` + `chains/maya.py`. (An earlier version of this line, and
+  swap-**from** (`MsgDeposit`) all ship via `chains/cosmos.py` +
+  `chains/maya.py`. The `MsgDeposit` build/sign/broadcast is mainnet-proven
+  (`docs/live-session-2026-08-16.md`); `MsgSend` has still never broadcast. (An earlier version of this line, and
   the status header of `docs/cacao.md`, called it "not started"; both were
   stale. `docs/cacao.md`'s own phasing section was correct.) So *Next up* item
   1's CACAO leg needs no new chain work. (CACAO needs `thorchain.asset_unit` to
@@ -480,16 +487,26 @@ README — both copies would need the column.)
   can go; the limitation itself is THORChain's and is not ours to close. Recorded
   here so it is not rediscovered as a bug. If THORChain ever adds tag support the
   memo format will change, and that is the trigger to revisit.
-- **Broadcast is still unproven on mainnet for DASH, ZEC and TRON.** The
-  2026-07-24 run-through (`docs/live-session-2026-07-24.md`) spent real funds and
-  proved the BTC send + BTC/ETH/ERC-20 swap paths (THORChain, Maya and CoW), but
-  DASH and ZEC ship mainnet-unproven — their opt-in broadcast loops are gated on
-  a funded `SWAPSACK_DASH_MNEMONIC` / `SWAPSACK_ZEC_MNEMONIC` (seeds in
-  `docs/testnet.md`) — and no TRX/USDT-TRON transaction has ever been broadcast.
-  A plain ETH `send` (as opposed to a swap) has also not been exercised live.
-  Both DASH and ZEC are otherwise feature-complete (hold/balance/send/sweep/
-  swap-from/LP); proving the broadcasts is all that remains. See `docs/dash.md`,
-  `docs/zcash.md`.
+- **Broadcast is still unproven on mainnet for DASH, ZEC, ARB and RUNE.** Two
+  run-throughs have spent real funds: `docs/live-session-2026-07-24.md` proved
+  the BTC send + BTC/ETH/ERC-20 swap paths (THORChain, Maya and CoW), and
+  `docs/live-session-2026-08-16.md` proved a **TRX** swap-from, the Cosmos
+  `MsgDeposit` on Maya (CACAO), and the two-leg symmetric add. What is left:
+  - **DASH and ZEC** — opt-in broadcast loops gated on a funded
+    `SWAPSACK_DASH_MNEMONIC` / `SWAPSACK_ZEC_MNEMONIC` (seeds in
+    `docs/testnet.md`). Otherwise feature-complete (hold/balance/send/sweep/
+    swap-from/LP); proving the broadcasts is all that remains. See
+    `docs/dash.md`, `docs/zcash.md`.
+  - **ARB** — nothing has been broadcast on Arbitrum at all (*Next up* item 1).
+  - **RUNE** — no THORChain native tx; its LP is paused and no RUNE swap has
+    been made. CACAO's proof does **not** transfer: same code, different chain,
+    chain-id and fee.
+  - **`MsgSend` (CACAO/RUNE `send`)** — only `MsgDeposit` has broadcast. These
+    are different protobuf messages; one proves nothing about the other.
+  - **swap-`--from` CACAO** — both live attempts aborted at the quote, so
+    nothing was built. It shares `_prepare_deposit` with the proven LP leg, but
+    its own swap-memo/destination binding has not run.
+  - **USDT-TRON**, and a plain ETH `send` (as opposed to a swap).
 - **The offline guard covers Python sockets and grpc — not every possible
   transport.** `tests/conftest.py` now refuses `socket.connect`/`connect_ex`/
   `create_connection` and the grpc channel factories for any test without the
