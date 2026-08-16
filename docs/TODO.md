@@ -118,6 +118,41 @@ depending on which flags a given thornode version happens to emit — and Maya, 
 older fork, still emits `started`, so the two node families must both be handled.
 Worth a regression test built on both real response shapes, captured above.
 
+### `balance` does not show a **symmetric** LP position at all
+
+The worst of the four: the wallet silently under-reports funds. Confirmed on a
+real position 2026-08-16 — a live `ETH.USDC` symmetric
+add produced **no `+LP maya ETH.USDC-…` line whatsoever**, while single-sided
+positions in the same run (`BTC.BTC`, `ETH.ETH`, `ETH.USDT`, `ZEC.ZEC`) all
+printed correctly.
+
+Cause: Maya keys a **symmetric** LP record by the **protocol (CACAO) address**,
+not the asset address. Same pool, same session:
+
+| queried by | `units` | `cacao_address` |
+|---|---|---|
+| our `maya1…` (CACAO addr) | non-zero | present |
+| our `0x…` (asset addr) | `0` | present-but-empty stub |
+
+A single-sided record is the other way round — `ETH.ETH` queried by the asset
+address returned a non-zero `units` with **no** `cacao_address`. So the
+presence of `cacao_address` is the clean discriminator between the two shapes.
+
+`_report_liquidity` (`cli.py:557`) probes only the addresses on the chain's own
+`BalanceReport` — the ETH address for ETH pools — and never the `maya1`/`thor1`
+address. Maya answers that query HTTP 200 with a zeros stub, which
+`parse_liquidity_provider` correctly collapses to `None` (it cannot distinguish
+"no position" from "position filed elsewhere"), so the line is dropped and the
+position is invisible rather than merely wrong.
+
+**Fix**: probe the protocol-chain address alongside the asset addresses for each
+pool — one extra lookup per backend per pool. Guard against double-reporting a
+position that answers on both keys; today the asset-address stub collapses to
+`None` so there is no double count, but that is Maya's behaviour, not a
+guarantee. Note this makes the *existing* warning under *Cache LP provider
+addresses* concrete: coverage must only ever **extend**, and here it silently
+shrank the moment symmetric adds became possible.
+
 ### A tolerance rejection is only explained when **THORChain** phrases it
 
 `_explain_quote_error` (`swap.py:43`) turns the "your swap costs more than your
