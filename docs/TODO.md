@@ -118,6 +118,38 @@ depending on which flags a given thornode version happens to emit — and Maya, 
 older fork, still emits `started`, so the two node families must both be handled.
 Worth a regression test built on both real response shapes, captured above.
 
+### A tolerance rejection is only explained when **THORChain** phrases it
+
+`_explain_quote_error` (`swap.py:43`) turns the "your swap costs more than your
+slippage tolerance" rejection into an actionable message — send more, stream it,
+or raise `--tolerance-bps`. It fires on `if "price limit" in msg`, which is
+THORChain's wording. **Maya words the identical condition differently**, so on
+`--backend maya` the user gets the raw node error and no guidance:
+
+```
+* outbound amount does not meet requirements (2323009/2326360)
+```
+
+The two numbers are `emitted/limit` in 1e8 — everything needed to say *how far
+short* the user is, which the current message could not say even if it fired.
+
+Observed 2026-08-16: `swap --from CACAO --to ETH --amount 400 --backend maya`
+refused at the 300 bps default. The swap's real cost was **303 bps** — rejected
+by three basis points, with nothing on screen to suggest that `--tolerance-bps
+400` was the entire fix. (Confirmed against the live quote API: identical
+`expected_amount_out` at 300/400/500/1000 bps; tolerance only sets the memo's
+min-out limit, never the price obtained.)
+
+**Fix**: match Maya's phrasing as well as THORChain's, and parse the
+`(emitted/limit)` pair to name the shortfall and the tolerance that would clear
+it. Do not match on the numbers alone — an `internal error` line accompanies it,
+and the wrapper must not start explaining unrelated failures as slippage.
+
+Second, smaller defect in the same string: the message is hardcoded
+`"THORChain rejected the quote"` regardless of backend, so a Maya rejection is
+attributed to THORChain. That is what the user sees while explicitly passing
+`--backend maya`.
+
 ### `balance` prints two indistinguishable `ETH` rows
 
 Introduced with the Arbitrum adapter (`91228b2`). `EthAdapter.wallet_balance`
