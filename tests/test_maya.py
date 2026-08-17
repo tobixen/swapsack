@@ -18,6 +18,7 @@ from swapsack.chains.cosmos import (  # noqa: E402
     parse_balances,
 )
 from swapsack.chains.maya import MayaAdapter  # noqa: E402
+from swapsack.report import balance_row
 
 # Standard BIP39 test mnemonic -> its maya1 address at m/44'/931'/0'/0/0.
 TEST_MNEMONIC = (
@@ -84,7 +85,7 @@ def test_wallet_balance_reports_cacao_at_1e10(monkeypatch):
     assert report.confirmed == 27_983_000_000_000
     assert report.addresses == (GOLDEN_MAYA_ADDRESS,)
     # 27_983_000_000_000 / 1e10 == 2798.3 CACAO
-    assert "2798.30000000" in report.format()
+    assert balance_row(report).amount == pytest.approx(2798.3)
 
 
 def test_build_and_verify_send_passes_gate_and_signs_validly(monkeypatch):

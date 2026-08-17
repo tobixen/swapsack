@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("bitcoinlib")
 
 from swapsack.chains.thor import ThorAdapter  # noqa: E402
+from swapsack.report import balance_row
 
 TEST_MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon abandon "
@@ -36,7 +37,7 @@ def test_wallet_balance_reports_rune_at_1e8(monkeypatch):
     assert report.symbol == "RUNE"
     assert report.decimals == 8
     assert report.addresses == (GOLDEN_THOR_ADDRESS,)
-    assert "12.50000000" in report.format()  # 1_250_000_000 / 1e8
+    assert balance_row(report).amount == pytest.approx(12.5)  # 1_250_000_000 / 1e8
 
 
 def test_build_and_verify_send_signs_validly_for_rune(monkeypatch):

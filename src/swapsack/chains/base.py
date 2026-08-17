@@ -39,15 +39,6 @@ class BalanceReport:
     # liquidity positions without re-deriving/re-scanning (BTC is multi-address).
     addresses: tuple[str, ...] = ()
 
-    def format(self) -> str:
-        amount = self.confirmed / 10**self.decimals
-        line = f"{self.symbol}: {amount:.8f}"
-        if self.pending:
-            line += f" (+{self.pending / 10**self.decimals:.8f} pending)"
-        if self.note:
-            line += f"  {self.note}"
-        return line
-
 
 @runtime_checkable
 class ChainAdapter(Protocol):

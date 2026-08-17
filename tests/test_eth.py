@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("bitcoinlib")
 
 from swapsack.chains.eth import EthAdapter, to_checksum_address  # noqa: E402
+from swapsack.report import balance_row
 
 MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon "
@@ -103,8 +104,8 @@ def test_eth_token_balances_report_tracked_tokens(monkeypatch):
     reports = adapter.token_balances(MNEMONIC)
     assert [r.symbol for r in reports] == ["USDT-ETH", "USDC-ETH"]
     assert all(r.decimals == 6 and r.confirmed == 2_500_000 for r in reports)
-    assert reports[0].format().startswith("USDT-ETH: 2.50")
-    assert reports[1].format().startswith("USDC-ETH: 2.50")
+    assert balance_row(reports[0]).amount == pytest.approx(2.5)
+    assert balance_row(reports[1]).amount == pytest.approx(2.5)
 
 
 def test_eth_build_and_verify_clean():

@@ -8,6 +8,7 @@ import pytest
 pytest.importorskip("eth_account")
 
 from swapsack.chains.tron import TronAdapter, base58check_encode  # noqa: E402
+from swapsack.report import balance_row
 
 MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon "
@@ -126,7 +127,7 @@ def test_tron_token_balances_reports_usdt(monkeypatch):
     assert [r.symbol for r in reports] == ["USDT-TRON"]
     assert reports[0].decimals == 6
     assert reports[0].confirmed == 3_000_000
-    assert reports[0].format().startswith("USDT-TRON: 3.0")
+    assert balance_row(reports[0]).amount == pytest.approx(3.0)
 
 
 # --- spending FROM Tron (1e8 -> sun, build/verify wiring) ---

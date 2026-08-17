@@ -8,6 +8,29 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **`balance` is one aligned sheet, valued and totalled.** Every row lines up,
+  each carries what it is worth, and the bottom adds it up — in EUR by default,
+  or `--unit BTC/USD/USDT/USDC/ETH/SATS`. Rows print together at the end
+  instead of trickling out per chain (which is what made aligning them
+  impossible); progress moves to stderr.
+  - **Liquidity is totalled separately from spendable funds** — an LP position
+    is not liquid and its redeemable figure is gross of exit fees, so it is
+    never folded into a single number that reads like cash. A `~` marks an
+    amount that includes the RUNE/CACAO side repriced at the pool rate.
+  - **A row that cannot be priced is named, not silently counted as zero.**
+  - **A chain that fails to answer is named too**, and the total says
+    `INCOMPLETE`. Its row stays on the sheet with `?` for an amount: a chain
+    that could not be reached is not a chain holding nothing, and a warning on
+    stderr is too easy to lose to a redirect.
+  - **Rows worth nothing collapse** into one `zero:` line naming them, so a
+    chain never just disappears; `--zeros` gives each its own row again.
+  - `--no-price-check` (already on the other commands) makes **no** price
+    request at all: one lookup would tell a third party every asset this wallet
+    holds. A feed that fails costs the value column and nothing else.
+  - Liquidity rows now name their pool without its 42-character contract
+    suffix (`+LP maya ETH.USDC`), and sit directly under the balance row of the
+    token they belong to.
+
 - **Arbitrum is now a chain you can spend from, not just pay to.** `ETH-ARB`
   (native ETH on Arbitrum) and `USDC-ARB` gain hold, balance, `send`/sweep,
   `swap --from`, and liquidity — single- and two-sided. Your Arbitrum address

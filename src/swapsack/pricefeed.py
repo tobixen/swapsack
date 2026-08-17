@@ -14,6 +14,8 @@ they can be unit-tested against a recorded response.
 
 from __future__ import annotations
 
+import dataclasses
+
 from swapsack.net import HttpClient
 
 DEFAULT_COINGECKO = "https://api.coingecko.com/api/v3"
@@ -46,7 +48,53 @@ COINGECKO_IDS: dict[str, str] = {
     # Same dollar, cheaper chain — one price for all three.
     "USDC-AVAX": "usd-coin",
     "USDC-ARB": "usd-coin",
+    # BSC is hold+balance only (nothing trades it), so these have no ASSET entry
+    # — but `balance` prints the rows, and an unpriceable row it cannot value is
+    # named in the sheet's footer every single run if they are missing here.
+    "USDT-BSC": "tether",
+    "USDC-BSC": "usd-coin",
 }
+
+
+@dataclasses.dataclass(frozen=True)
+class Unit:
+    """A unit the `balance` sheet can be denominated in.
+
+    ``vs`` is CoinGecko's ``vs_currencies`` name, which is *not* always the name
+    the user types: it has no ``usdt``/``usdc``, so the dollar stablecoins have
+    to mean ``usd`` — near enough for a display total, and far better than a
+    flag that silently prices nothing.
+    """
+
+    name: str
+    vs: str
+    prefix: str = ""
+    suffix: str = ""
+    decimals: int = 2
+
+    def format(self, value: float) -> str:
+        return f"{self.prefix}{value:,.{self.decimals}f}{self.suffix}".replace(",", "")
+
+
+UNITS: dict[str, Unit] = {
+    "EUR": Unit("EUR", "eur", prefix="€"),
+    "USD": Unit("USD", "usd", prefix="$"),
+    "USDT": Unit("USDT", "usd", prefix="$"),
+    "USDC": Unit("USDC", "usd", prefix="$"),
+    "BTC": Unit("BTC", "btc", prefix="₿", decimals=8),
+    "ETH": Unit("ETH", "eth", prefix="Ξ", decimals=6),
+    "SATS": Unit("SATS", "sats", suffix=" sats", decimals=0),
+}
+
+
+def unit_for(name: str) -> Unit:
+    """Look up a ``--unit`` value, case-insensitively."""
+    try:
+        return UNITS[name.upper()]
+    except KeyError:
+        raise ValueError(
+            f"unknown unit {name!r}; choose from {', '.join(UNITS)}"
+        ) from None
 
 
 def parse_prices(payload: dict) -> dict[str, dict[str, float]]:

@@ -864,11 +864,12 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
     import swapsack.backends as backends_mod
     import swapsack.cli as cli
 
-    class FakeReport:
-        addresses = ("addr1",)
+    def FakeReport():  # noqa: N802 (a factory named like the class it replaces)
+        from swapsack.chains.base import BalanceReport
 
-        def format(self):
-            return "X: 1.0"
+        return BalanceReport(
+            symbol="X", confirmed=100_000_000, decimals=8, addresses=("addr1",)
+        )
 
     class FakeAdapter:
         def __init__(self, chain, lp_backends=None):
@@ -889,7 +890,7 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
     monkeypatch.setattr(
         cli,
         "_report_liquidity",
-        lambda backends, asset, addrs, protocol=None: probed.append(asset),
+        lambda backends, asset, addrs, protocol=None, rows=None: probed.append(asset),
     )
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
     monkeypatch.setattr(
@@ -911,11 +912,15 @@ def test_balance_probes_maya_only_chains_on_maya_only(monkeypatch):
     import swapsack.cli as cli
     from swapsack.chains.dash import DashAdapter
 
-    class FakeReport:
-        addresses = ("XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5",)
+    def FakeReport():  # noqa: N802 (a factory named like the class it replaces)
+        from swapsack.chains.base import BalanceReport
 
-        def format(self):
-            return "DASH: 1.0"
+        return BalanceReport(
+            symbol="DASH",
+            confirmed=100_000_000,
+            decimals=8,
+            addresses=("XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5",),
+        )
 
     class FakeClient:
         def close(self):
@@ -945,7 +950,7 @@ def test_balance_probes_maya_only_chains_on_maya_only(monkeypatch):
     monkeypatch.setattr(
         cli,
         "_report_liquidity",
-        lambda backends, asset, addrs, protocol=None: probed.append(
+        lambda backends, asset, addrs, protocol=None, rows=None: probed.append(
             (asset, tuple(b.name for b in backends))
         ),
     )
@@ -989,11 +994,12 @@ def test_balance_probes_rune_pool_on_maya(monkeypatch):
     import swapsack.cli as cli
     from swapsack.chains.thor import ThorAdapter
 
-    class FakeReport:
-        addresses = ("thor1abc",)
+    def FakeReport():  # noqa: N802 (a factory named like the class it replaces)
+        from swapsack.chains.base import BalanceReport
 
-        def format(self):
-            return "RUNE: 1.0"
+        return BalanceReport(
+            symbol="RUNE", confirmed=100_000_000, decimals=8, addresses=("thor1abc",)
+        )
 
     class FakeThorAdapter:
         chain = "THOR"
@@ -1013,9 +1019,9 @@ def test_balance_probes_rune_pool_on_maya(monkeypatch):
     monkeypatch.setattr(
         cli,
         "_report_liquidity",
-        lambda backends, asset, addrs, protocol=None: probed.append(asset),
+        lambda backends, asset, addrs, protocol=None, rows=None: probed.append(asset),
     )
-    monkeypatch.setattr(cli, "_report_token_balances", lambda a, m: None)
+    monkeypatch.setattr(cli, "_token_rows_with_pools", lambda a, m: [])
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
     monkeypatch.setattr(cli, "_wallet_adapters", lambda args, p="": [FakeThorAdapter()])
     monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
@@ -3294,14 +3300,16 @@ def test_report_liquidity_finds_symmetric_position_via_protocol_address(capsys):
             PROTOCOL_ADDRESS: SYMMETRIC_BY_PROTOCOL_ADDRESS,
         }
     )
+    rows = []
     cli._report_liquidity(
         [_FakeLpBackend("maya", client)],
         USDC_POOL,
         (EVM_ADDRESS,),
         {"maya": PROTOCOL_ADDRESS},
+        rows,
     )
-    out = capsys.readouterr().out
-    assert f"+LP maya {USDC_POOL}" in out
+    assert [r.label.strip() for r in rows] == ["+LP maya ETH.USDC"]
+    assert rows[0].lp and rows[0].asset == "USDC-ETH"  # …and it can be valued
     # The asset address is still probed (single-sided positions live there); the
     # protocol address is the addition.
     assert client.queried == [EVM_ADDRESS, PROTOCOL_ADDRESS]
@@ -3336,13 +3344,15 @@ def test_report_liquidity_does_not_double_count_a_position(capsys):
             PROTOCOL_ADDRESS: SYMMETRIC_BY_PROTOCOL_ADDRESS,
         }
     )
+    rows = []
     cli._report_liquidity(
         [_FakeLpBackend("maya", client)],
         USDC_POOL,
         (EVM_ADDRESS,),
         {"maya": PROTOCOL_ADDRESS},
+        rows,
     )
-    assert capsys.readouterr().out.count("+LP maya") == 1
+    assert len(rows) == 1
 
 
 def test_report_liquidity_skips_a_protocol_address_already_scanned(capsys):
@@ -3368,11 +3378,12 @@ def test_balance_passes_the_derived_protocol_addresses(monkeypatch):
     from swapsack.chains.maya import MayaAdapter
     from swapsack.chains.thor import ThorAdapter
 
-    class FakeReport:
-        addresses = (EVM_ADDRESS,)
+    def FakeReport():  # noqa: N802 (a factory named like the class it replaces)
+        from swapsack.chains.base import BalanceReport
 
-        def format(self):
-            return "ETH: 1.0"
+        return BalanceReport(
+            symbol="ETH", confirmed=10**18, decimals=18, addresses=(EVM_ADDRESS,)
+        )
 
     class FakeEthAdapter:
         chain = "ETH"
@@ -3391,11 +3402,11 @@ def test_balance_passes_the_derived_protocol_addresses(monkeypatch):
     monkeypatch.setattr(
         cli,
         "_report_liquidity",
-        lambda backends, asset, addrs, protocol_addresses=None: seen.append(
+        lambda backends, asset, addrs, protocol_addresses=None, rows=None: seen.append(
             protocol_addresses
         ),
     )
-    monkeypatch.setattr(cli, "_report_token_balances", lambda a, m: None)
+    monkeypatch.setattr(cli, "_token_rows_with_pools", lambda a, m: [])
     monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
     monkeypatch.setattr(cli, "_wallet_adapters", lambda args, p="": [FakeEthAdapter()])
     monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
@@ -3629,3 +3640,244 @@ def test_symmetric_add_refuses_wrong_backend_before_touching_the_keystore(
     assert args.backend == "thorchain"  # the default that makes this reachable
     assert cli.cmd_add_liquidity(args) == 2
     assert "ARB liquidity exists only on maya" in capsys.readouterr().err
+
+
+# --- `balance` renders one aligned, valued sheet ----------------------------
+
+
+def _fake_sheet_adapters(monkeypatch, *, reports):
+    """Wire cmd_balance at fake adapters returning the given BalanceReports."""
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
+
+    class FakeAdapter:
+        def __init__(self, report):
+            self.report = report
+            self.chain = report.symbol
+            self.asset = f"{report.symbol}.{report.symbol}"
+            self.lp_backends = ()  # no LP probing in this fixture
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wallet_balance(self, mnemonic):
+            return self.report
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
+    monkeypatch.setattr(cli, "_token_rows_with_pools", lambda a, m: [])
+    monkeypatch.setattr(
+        cli, "_wallet_adapters", lambda args, p="": [FakeAdapter(r) for r in reports]
+    )
+    monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
+
+
+def test_balance_prints_an_aligned_sheet_with_a_total(monkeypatch, capsys):
+    import swapsack.cli as cli
+    from swapsack.chains.base import BalanceReport
+
+    _fake_sheet_adapters(
+        monkeypatch,
+        reports=[
+            BalanceReport(symbol="BTC", confirmed=100_000_000, decimals=8),
+            BalanceReport(symbol="ETH", confirmed=10**18, decimals=18),
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "_sheet_prices",
+        lambda args, rows: (cli_unit(), {"BTC": 100.0, "ETH": 10.0}),
+    )
+    args = build_parser().parse_args(["balance"])
+    assert cli.cmd_balance(args) == 0
+    out = capsys.readouterr().out
+    assert "€100.00" in out and "€10.00" in out
+    assert "total" in out and "€110.00" in out
+    # The value column lines up (right-aligned numbers end in one column).
+    import re
+
+    ends = {
+        m.end() for line in out.splitlines() for m in [re.search(r"€[\d.]+", line)] if m
+    }
+    assert len(ends) == 1
+
+
+def cli_unit():
+    from swapsack.pricefeed import UNITS
+
+    return UNITS["EUR"]
+
+
+def test_balance_no_price_check_makes_no_price_request(monkeypatch, capsys):
+    """--no-price-check must suppress the *request*: one lookup of the whole
+    sheet tells a third party every asset this IP holds."""
+    import swapsack.cli as cli
+    from swapsack.chains.base import BalanceReport
+
+    _fake_sheet_adapters(
+        monkeypatch, reports=[BalanceReport(symbol="BTC", confirmed=1, decimals=8)]
+    )
+
+    def boom(*a, **kw):
+        raise AssertionError("the price feed must not be consulted")
+
+    monkeypatch.setattr("swapsack.pricefeed.PriceFeed.spot", boom)
+    args = build_parser().parse_args(["balance", "--no-price-check"])
+    assert cli.cmd_balance(args) == 0
+    out = capsys.readouterr().out
+    assert "0.00000001" in out  # the balances still print…
+    assert "€" not in out and "total" not in out  # …just unvalued
+
+
+def test_balance_unit_flag_selects_the_currency(monkeypatch):
+    import swapsack.cli as cli
+
+    seen = {}
+
+    class FakeFeed:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def spot(self, ids, *, vs):
+            seen.update(ids=ids, vs=vs)
+            return {"bitcoin": {"btc": 1.0}}
+
+    monkeypatch.setattr("swapsack.pricefeed.PriceFeed", lambda *a, **kw: FakeFeed())
+    args = build_parser().parse_args(["balance", "--unit", "btc"])
+    from swapsack.report import Row
+
+    unit, prices = cli._sheet_prices(args, [Row(label="BTC", amount=1.0, asset="BTC")])
+    assert unit.name == "BTC"
+    assert seen["vs"] == ("btc",) and seen["ids"] == ["bitcoin"]
+    assert prices == {"BTC": 1.0}
+
+
+def test_balance_survives_a_dead_price_feed(monkeypatch, capsys):
+    """A courtesy lookup must never cost the user their balances."""
+    import niquests
+
+    import swapsack.cli as cli
+    from swapsack.report import Row
+
+    def boom(*a, **kw):
+        raise niquests.exceptions.ConnectionError("coingecko down")
+
+    monkeypatch.setattr("swapsack.pricefeed.PriceFeed.spot", boom)
+    args = build_parser().parse_args(["balance"])
+    unit, prices = cli._sheet_prices(args, [Row(label="BTC", amount=1.0, asset="BTC")])
+    assert unit is None and prices == {}
+    assert "price" in capsys.readouterr().err.lower()
+
+
+def test_balance_names_a_chain_that_did_not_answer(monkeypatch, capsys):
+    """A chain whose lookup raises must not silently vanish from the sheet.
+
+    It used to be `continue`d with only a stderr line, so stdout carried an
+    authoritative `total` computed as if that chain held nothing — the exact
+    thing report.py's docstring forbids ("may not quietly overstate what you
+    have or understate what it does not know"). Stderr is easy to lose.
+    """
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
+    from swapsack.chains.base import BalanceReport
+
+    class FakeAdapter:
+        def __init__(self, symbol, *, fail=False):
+            self.chain = symbol
+            self.asset = f"{symbol}.{symbol}"
+            self.lp_backends = ()
+            self._fail = fail
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wallet_balance(self, mnemonic):
+            if self._fail:
+                raise RuntimeError("upstream 502")
+            return BalanceReport(symbol=self.chain, confirmed=10**8, decimals=8)
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
+    monkeypatch.setattr(cli, "_token_rows_with_pools", lambda a, m: [])
+    monkeypatch.setattr(
+        cli,
+        "_wallet_adapters",
+        lambda args, p="": [FakeAdapter("BTC"), FakeAdapter("ZEC", fail=True)],
+    )
+    monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
+    monkeypatch.setattr(
+        cli, "_sheet_prices", lambda args, rows: (cli_unit(), {"BTC": 100.0})
+    )
+    args = build_parser().parse_args(["balance"])
+    assert cli.cmd_balance(args) == 0
+    out = capsys.readouterr().out
+    assert "ZEC" in out, "the chain that failed must still appear on the sheet"
+    assert "did not answer" in out
+    # The total is still printed (it is useful) but must not read as complete.
+    assert "total" in out
+    assert "INCOMPLETE" in out
+    # …and the failed chain's unknown amount is not silently counted as zero.
+    assert "€100.00" in out
+
+
+def test_balance_keeps_each_lp_row_under_its_own_token(monkeypatch, capsys):
+    """A token's LP row must follow that token's balance row, not another's.
+
+    The sheet indents an LP line under the row above it and keeps that row
+    alive at zero so the position does not dangle. Emitting every token balance
+    and then every token pool position files each position under the wrong
+    token, so the wrong row is the one protected from collapsing.
+    """
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
+    from swapsack.chains.base import BalanceReport
+    from swapsack.report import Row
+
+    class FakeEth:
+        chain = "ETH"
+        asset = "ETH.ETH"
+        token_suffix = "ETH"
+        lp_backends = None
+        tracked_tokens = (("USDT", "0xdac17f", 6), ("USDC", "0xa0b869", 6))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wallet_balance(self, mnemonic):
+            return BalanceReport(symbol="ETH", confirmed=0, decimals=18)
+
+        def token_balances(self, mnemonic):
+            return [
+                BalanceReport(symbol="USDT-ETH", confirmed=0, decimals=6),
+                BalanceReport(symbol="USDC-ETH", confirmed=0, decimals=6),
+            ]
+
+    def fake_lp(backends, asset, addrs, protocol_addresses=None, rows=None):
+        # Only the USDC pool holds a position.
+        if asset.startswith("ETH.USDC"):
+            rows.append(Row(label="  +LP maya ETH.USDC", amount=5.0, lp=True))
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
+    monkeypatch.setattr(cli, "_report_liquidity", fake_lp)
+    monkeypatch.setattr(cli, "_wallet_adapters", lambda args, p="": [FakeEth()])
+    monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
+    monkeypatch.setattr(cli, "_sheet_prices", lambda args, rows: (None, {}))
+    args = build_parser().parse_args(["balance"])
+    assert cli.cmd_balance(args) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    labels = [ln.split()[0] for ln in lines]
+    assert "+LP" in lines[labels.index("USDC-ETH") + 1], (
+        f"the LP row must sit directly under USDC-ETH, got: {lines}"
+    )
+    # …and USDT-ETH, which has no position, is free to collapse into `zero:`.
+    assert "USDT-ETH" not in " ".join(ln for ln in lines if not ln.startswith("zero:"))

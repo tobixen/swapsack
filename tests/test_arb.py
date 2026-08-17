@@ -11,6 +11,7 @@ import pytest
 
 from swapsack.chains.arb import ARB_CHAIN_ID, ARB_TRACKED_TOKENS, ArbAdapter
 from swapsack.chains.eth import EthAdapter
+from swapsack.report import balance_row
 
 MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon "
@@ -48,7 +49,7 @@ def test_arb_wallet_balance_reports_eth(monkeypatch):
     # *balance row* is chain-qualified — see the next test for why.
     assert report.symbol == "ETH-ARB"
     assert report.decimals == 18
-    assert report.format().startswith("ETH-ARB: 2.58")
+    assert balance_row(report).amount == pytest.approx(2.58)
 
 
 def test_arb_native_row_is_distinguishable_from_ethereums(monkeypatch):
@@ -59,7 +60,8 @@ def test_arb_native_row_is_distinguishable_from_ethereums(monkeypatch):
     for adapter in (arb, eth):
         monkeypatch.setattr(adapter, "fetch_balance", lambda address: 10**18)
     assert (
-        arb.wallet_balance(MNEMONIC).format() != eth.wallet_balance(MNEMONIC).format()
+        balance_row(arb.wallet_balance(MNEMONIC)).label
+        != balance_row(eth.wallet_balance(MNEMONIC)).label
     )
     assert eth.wallet_balance(MNEMONIC).symbol == "ETH"  # unchanged
 
@@ -85,7 +87,7 @@ def test_arb_usdc_is_six_decimals(monkeypatch):
     reports = adapter.token_balances(MNEMONIC)
     assert [r.symbol for r in reports] == ["USDC-ARB"]
     assert reports[0].decimals == 6
-    assert reports[0].format().startswith("USDC-ARB: 2.50")
+    assert balance_row(reports[0]).amount == pytest.approx(2.5)
 
 
 def test_arb_token_decimals_use_trusted_constant():

@@ -4,6 +4,7 @@ import pytest
 
 from swapsack.chains.bsc import BSC_TRACKED_TOKENS, BscAdapter
 from swapsack.chains.eth import EthAdapter
+from swapsack.report import balance_row
 
 MNEMONIC = (
     "abandon abandon abandon abandon abandon abandon "
@@ -35,7 +36,7 @@ def test_bsc_wallet_balance_reports_bnb(monkeypatch):
     report = adapter.wallet_balance(MNEMONIC)
     assert report.symbol == "BNB"
     assert report.decimals == 18
-    assert report.format().startswith("BNB: 2.58")
+    assert balance_row(report).amount == pytest.approx(2.58)
     # A subclass that overrides only native_symbol must still be labelled by it:
     # the chain-qualified label exists for chains whose native coin is *ether*
     # (Arbitrum), and must not leak Ethereum's name onto BNB.
@@ -51,8 +52,8 @@ def test_bsc_token_balances_are_18_decimals(monkeypatch):
     reports = adapter.token_balances(MNEMONIC)
     assert [r.symbol for r in reports] == ["USDT-BSC", "USDC-BSC"]
     assert all(r.decimals == 18 for r in reports)
-    assert reports[0].format().startswith("USDT-BSC: 2.50")
-    assert reports[1].format().startswith("USDC-BSC: 2.50")
+    assert balance_row(reports[0]).amount == pytest.approx(2.5)
+    assert balance_row(reports[1]).amount == pytest.approx(2.5)
 
 
 def test_bsc_token_decimals_use_trusted_constant():

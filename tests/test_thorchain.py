@@ -6,6 +6,7 @@ Fixtures are trimmed real responses captured from the live API; see README.
 import niquests
 import pytest
 
+from swapsack.report import lp_row
 from swapsack.thorchain import (
     ThorchainClient,
     ThorchainError,
@@ -317,17 +318,19 @@ def test_parse_liquidity_provider_maya_uses_cacao_field():
     assert pos.protocol_deposit_value == 3727448215686  # from cacao_deposit_value
 
 
-def test_liquidity_position_format_deposit_is_asset_equiv_not_raw_cacao():
+def test_liquidity_position_row_deposit_is_asset_equiv_not_raw_cacao():
     # The protocol-side deposit (cacao) must never surface as a raw "+ N CACAO"
     # the user can't add to ETH; it's converted to asset and folded in. With
     # price 2e-8: deposited = 63200 + 3727448215686*2e-8 = 137748.96 -> 0.00137749.
-    line = parse_liquidity_provider(MAYA_LP).format(
-        "maya", protocol="CACAO", protocol_price_in_asset=2e-8
+    row = lp_row(
+        parse_liquidity_provider(MAYA_LP),
+        source="maya",
+        protocol="CACAO",
+        protocol_price_in_asset=2e-8,
     )
-    assert "deposited ~0.00137749" in line
-    assert "CACAO" in line  # appears only as the in-asset breakdown ("via CACAO")
-    assert line.count("CACAO") == 1
-    assert "via CACAO" in line
+    assert "deposited ~0.00137749" in row.note
+    assert row.note.count("CACAO") == 1  # only as the in-asset breakdown
+    assert "via CACAO" in row.note
 
 
 def test_parse_liquidity_provider_no_position_is_none():
@@ -351,37 +354,40 @@ def test_parse_liquidity_provider_pending_only_is_reported():
     assert pos.pending_asset == 12345
 
 
-def test_liquidity_position_format_without_price_flags_uncounted_side():
+def test_liquidity_position_row_without_price_flags_uncounted_side():
     # No pool price available -> fall back to asset side only, but say so rather
     # than silently dropping the protocol side.
-    line = parse_liquidity_provider(THOR_LP).format("thorchain")
-    assert "thorchain BTC.BTC" in line
-    assert "0.00190000" in line  # asset_redeem_value / 1e8
-    assert "RUNE" in line and "not counted" in line
+    row = lp_row(parse_liquidity_provider(THOR_LP), source="thorchain")
+    assert row.label.strip() == "+LP thorchain BTC.BTC"
+    assert row.amount == pytest.approx(0.0019)  # asset_redeem_value / 1e8
+    assert "RUNE" in row.note and "not counted" in row.note
+    assert not row.approx  # nothing was estimated into it
 
 
-def test_liquidity_position_format_with_price_shows_total_value():
+def test_liquidity_position_row_with_price_totals_both_sides():
     # protocol_price_in_asset = asset per 1 protocol unit. The RUNE side
     # (5_000_000) is worth 5_000_000 * 0.01 = 50_000 -> total 240_000 (0.0024).
     # The CACAO/RUNE side is converted to asset *before* summing, so the total
     # is a single clean asset figure (you can't add raw RUNE to BTC).
-    line = parse_liquidity_provider(THOR_LP).format(
-        "thorchain", protocol_price_in_asset=0.01
+    row = lp_row(
+        parse_liquidity_provider(THOR_LP),
+        source="thorchain",
+        protocol_price_in_asset=0.01,
     )
-    assert "0.00240000 redeemable" in line  # asset + RUNE side, in BTC
-    assert "0.00190000" in line  # asset-side breakdown
-    assert "0.00050000" in line  # RUNE side valued in BTC
-    assert "not counted" not in line  # it IS counted now
+    assert row.amount == pytest.approx(0.0024)  # asset + RUNE side, in BTC
+    assert row.approx  # …half of which is a repricing, so it says so
+    assert "0.00050000 via RUNE" in row.note  # RUNE side valued in BTC
+    assert "not counted" not in row.note  # it IS counted now
     # cost basis as one asset-equiv figure (asset_deposit 180000, no rune leg)
-    assert "deposited ~0.00180000" in line
+    assert "deposited ~0.00180000" in row.note
 
 
-def test_liquidity_position_format_maya_labels_cacao_and_pending():
+def test_liquidity_position_row_maya_labels_cacao_and_pending():
     payload = {**MAYA_LP, "pending_asset": "1000000"}
-    line = parse_liquidity_provider(payload).format("maya", protocol="CACAO")
-    assert "maya BTC.BTC" in line
-    assert "0.01000000 pending" in line
-    assert "CACAO" in line
+    row = lp_row(parse_liquidity_provider(payload), source="maya", protocol="CACAO")
+    assert row.label.strip() == "+LP maya BTC.BTC"
+    assert "0.01000000 pending" in row.note
+    assert "CACAO" in row.note
 
 
 def test_liquidity_provider_client_builds_url(monkeypatch):

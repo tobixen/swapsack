@@ -224,56 +224,6 @@ class LiquidityPosition:
     asset_deposit_value: int = 0
     protocol_deposit_value: int = 0
 
-    def format(
-        self,
-        source: str,
-        *,
-        protocol: str = "RUNE",
-        protocol_price_in_asset: float | None = None,
-    ) -> str:
-        """A one-line LP summary for ``balance``; ``source`` is the backend name.
-
-        With ``protocol_price_in_asset`` (asset units per 1 RUNE/CACAO) the RUNE/
-        CACAO side is valued and folded into an estimated total; the figure is
-        gross of the exit slip/fees a real withdraw would pay, hence ``~``. The
-        deposit is shown the same way (one asset-equivalent number, both legs
-        repriced at the *current* pool price) — an estimate of cost basis, not an
-        exact deposit-time figure.
-        """
-
-        def in_asset(value: int) -> float:
-            return value * (protocol_price_in_asset or 0.0) / THORCHAIN_UNIT
-
-        asset_side = self.asset_redeem_value / THORCHAIN_UNIT
-        if protocol_price_in_asset is not None and self.protocol_redeem_value:
-            side = in_asset(self.protocol_redeem_value)
-            total = asset_side + side
-            head = (
-                f"~{total:.8f} redeemable "
-                f"({asset_side:.8f} asset + {side:.8f} via {protocol})"
-            )
-        elif self.protocol_redeem_value:
-            head = (
-                f"{asset_side:.8f} redeemable "
-                f"(plus a {protocol}-side value not counted)"
-            )
-        else:
-            head = f"{asset_side:.8f} redeemable"
-        line = f"  +LP {source} {self.pool}: {head}"
-        extras = []
-        if protocol_price_in_asset is not None and (
-            self.asset_deposit_value or self.protocol_deposit_value
-        ):
-            deposited = self.asset_deposit_value / THORCHAIN_UNIT + in_asset(
-                self.protocol_deposit_value
-            )
-            extras.append(f"deposited ~{deposited:.8f}")
-        if self.pending_asset:
-            extras.append(f"+{self.pending_asset / THORCHAIN_UNIT:.8f} pending")
-        if extras:
-            line += "; " + "; ".join(extras)
-        return line
-
 
 def parse_liquidity_provider(payload: dict[str, Any]) -> LiquidityPosition | None:
     """Parse a ``liquidity_provider`` response, or ``None`` when nothing's worth

@@ -93,6 +93,16 @@ ASSET = {
     "RUNE": "THOR.RUNE",  # THORChain native asset (Cosmos MsgSend/MsgDeposit)
 }
 
+# Pool asset -> the wallet key that prices it ("ETH.USDC-0X…" -> "USDC-ETH"),
+# so `balance` can value an LP position. Derived from ASSET rather than typed
+# out again: a second table is a second thing to forget to update.
+_POOL_ASSET_KEYS: dict[str, str] = {pool: key for key, pool in ASSET.items()}
+
+# `balance --unit` choices. Named here (not imported at module scope) because
+# argparse needs them while building the parser; pricefeed.unit_for does the
+# actual resolution.
+_UNIT_NAMES = ("EUR", "USD", "USDT", "USDC", "BTC", "ETH", "SATS")
+
 
 # --- config helpers ---------------------------------------------------------
 
@@ -476,20 +486,30 @@ def cmd_address(args: argparse.Namespace) -> int:
 
 
 def cmd_balance(args: argparse.Namespace) -> int:
+    """Collect every row first, then print one aligned (and priced) sheet.
+
+    Rows used to print as they arrived, which is why they could not be aligned:
+    the column widths — and the total — are only known once every chain has
+    answered. The wait is the same; progress moves to stderr so the sheet on
+    stdout stays a sheet.
+    """
+    from swapsack.backends import default_backends
+    from swapsack.report import Row, balance_row, render
+
     print(
-        "checking balances (the BTC address scan can take ~10s)...",
+        "checking balances (the BTC address scan can take ~10s):",
         file=sys.stderr,
         flush=True,
     )
     mnemonic, passphrase = _load_mnemonic(args)
-    from swapsack.backends import default_backends
-
     backends = default_backends()
     # Derived once, then handed to every LP probe: a symmetric position is filed
     # under the protocol-chain address, not the asset address (see below).
     protocol_addresses = _protocol_lp_addresses(mnemonic, passphrase)
+    rows: list = []
     try:
         for adapter in _wallet_adapters(args, passphrase):
+            print(f" {adapter.chain}", end="", file=sys.stderr, flush=True)
             with adapter:
                 try:
                     report = adapter.wallet_balance(mnemonic)
@@ -501,10 +521,23 @@ def cmd_balance(args: argparse.Namespace) -> int:
                     IndexError,
                 ) as exc:
                     print(
-                        f"{adapter.chain}: balance unavailable ({exc})", file=sys.stderr
+                        f"\n{adapter.chain}: balance unavailable ({exc})",
+                        file=sys.stderr,
+                    )
+                    # Keep the chain on the sheet with an unknown amount rather
+                    # than dropping it: stdout would otherwise carry a total
+                    # computed as if it held nothing, and stderr is easy to
+                    # lose to a redirect or scrollback.
+                    rows.append(
+                        Row(
+                            label=adapter.chain,
+                            amount=0.0,
+                            note=f"balance unavailable ({exc})",
+                            unavailable=True,
+                        )
                     )
                     continue
-                print(report.format())
+                rows.append(balance_row(report))
                 # Adapters flag where their pools live: () = pool-less (BSC: no
                 # pools anywhere; CACAO: the settlement asset has no pool of
                 # itself), a backend-name tuple = only there (DASH: Maya-only —
@@ -519,17 +552,73 @@ def cmd_balance(args: argparse.Namespace) -> int:
                         else [b for b in backends if b.name in lp_backends]
                     )
                     _report_liquidity(
-                        probed, adapter.asset, report.addresses, protocol_addresses
+                        probed,
+                        adapter.asset,
+                        report.addresses,
+                        protocol_addresses,
+                        rows,
                     )
-                    for pool_asset in _token_pool_assets(adapter):
+                # A token's balance and that token's LP position are emitted
+                # together, in that order. The sheet indents an LP line under
+                # the row above it and keeps that row alive at zero so the
+                # position never dangles — so emitting every balance and then
+                # every position would file each position under the wrong
+                # token, and protect the wrong row from collapsing.
+                for token_row, pool_asset in _token_rows_with_pools(adapter, mnemonic):
+                    if token_row is not None:
+                        rows.append(token_row)
+                    if lp_backends != ():
                         _report_liquidity(
-                            probed, pool_asset, report.addresses, protocol_addresses
+                            probed,
+                            pool_asset,
+                            report.addresses,
+                            protocol_addresses,
+                            rows,
                         )
-                _report_token_balances(adapter, mnemonic)
     finally:
+        print(file=sys.stderr, flush=True)  # close the progress line
         for backend in backends:
             backend.client.close()
+    unit, prices = _sheet_prices(args, rows)
+    for line in render(
+        rows, unit=unit, prices=prices, show_zeros=getattr(args, "zeros", False)
+    ):
+        print(line)
     return 0
+
+
+def _sheet_prices(  # noqa: ANN202 (tuple[pricefeed.Unit | None, dict[str, float]])
+    args: argparse.Namespace, rows: list
+):
+    """``(unit, {asset: price})`` for the sheet, or ``(None, {})`` when unpriced.
+
+    One request for every asset on the sheet — which is also why
+    ``--no-price-check`` has to suppress it rather than merely hide the column:
+    a single lookup tells a third party the whole list of assets this IP holds.
+    A feed that fails costs the user the value column and nothing else.
+    """
+    from swapsack.pricefeed import COINGECKO_IDS, PriceFeed, unit_for
+
+    if not getattr(args, "price_check", True):
+        return None, {}
+    unit = unit_for(getattr(args, "unit", "EUR"))
+    ids = {row.asset: COINGECKO_IDS.get(row.asset) for row in rows if row.asset}
+    wanted = sorted({coin_id for coin_id in ids.values() if coin_id})
+    if not wanted:
+        return unit, {}
+    try:
+        with PriceFeed() as feed:
+            spot = feed.spot(wanted, vs=(unit.vs,))
+    # Deliberately broad, as everywhere the price feed is consulted: nothing it
+    # can do may sink a command that has already fetched the balances.
+    except (*HTTP_ERRORS, OSError, KeyError, ValueError, TypeError) as exc:
+        print(f"price lookup failed ({exc}); showing amounts only", file=sys.stderr)
+        return None, {}
+    return unit, {
+        asset: spot[coin_id][unit.vs]
+        for asset, coin_id in ids.items()
+        if coin_id in spot and unit.vs in spot[coin_id]
+    }
 
 
 def _token_pool_assets(adapter) -> list[str]:  # noqa: ANN001 (ChainAdapter)
@@ -543,22 +632,41 @@ def _token_pool_assets(adapter) -> list[str]:  # noqa: ANN001 (ChainAdapter)
     ]
 
 
-def _report_token_balances(adapter, mnemonic: str) -> None:  # noqa: ANN001 (ChainAdapter)
-    """Print any ERC-20/TRC-20 token balances the adapter tracks (e.g. USDT).
+def _token_rows_with_pools(adapter, mnemonic: str) -> list[tuple[object, str]]:  # noqa: ANN001 (ChainAdapter)
+    """``(balance row or None, pool asset)`` per tracked token, in table order.
+
+    The two travel together so the caller can keep a token's LP row directly
+    under that token's own balance row; see the comment at the call site for
+    why the order matters to the rendered sheet.
 
     Token balances are separate network calls from the native balance, so a
-    failure here is reported but does not sink the rest of the `balance` output.
+    failure here is reported but does not sink the rest of the `balance` output
+    — and crucially does not skip the *pool* probes, since a position can exist
+    whether or not the balance RPC answered. ``token_balances`` builds its
+    reports from the same ``tracked_tokens`` tuple in the same order, which is
+    what makes the pairing positional; a short answer drops the pairing rather
+    than risk filing a position under the wrong token.
     """
+    from swapsack.report import balance_row
+
+    pools = _token_pool_assets(adapter)
+    if not pools:
+        return []
     token_balances = getattr(adapter, "token_balances", None)
-    if token_balances is None:
-        return
-    try:
-        reports = token_balances(mnemonic)
-    except (*HTTP_ERRORS, RuntimeError, KeyError, ValueError, IndexError) as exc:
-        print(f"{adapter.chain}: token balances unavailable ({exc})", file=sys.stderr)
-        return
-    for report in reports:
-        print(report.format())
+    reports: list = []
+    if token_balances is not None:
+        try:
+            reports = token_balances(mnemonic)
+        except (*HTTP_ERRORS, RuntimeError, KeyError, ValueError, IndexError) as exc:
+            print(
+                f"\n{adapter.chain}: token balances unavailable ({exc})",
+                file=sys.stderr,
+            )
+    if len(reports) != len(pools):
+        return [(None, pool) for pool in pools]
+    return [
+        (balance_row(report), pool) for report, pool in zip(reports, pools, strict=True)
+    ]
 
 
 def _protocol_lp_addresses(mnemonic: str, passphrase: str) -> dict[str, str]:
@@ -583,8 +691,9 @@ def _report_liquidity(
     asset: str,
     addresses: tuple[str, ...],
     protocol_addresses: dict[str, str] | None = None,
+    rows: list | None = None,
 ) -> None:
-    """Print any LP positions the wallet's addresses hold in ``asset``'s pool.
+    """Append a row for any LP position the wallet's addresses hold in ``asset``.
 
     Liquidity can sit on either backend, so every address is probed against all
     of them. A position is keyed by the L1 sender; for BTC that's not knowable
@@ -600,6 +709,10 @@ def _report_liquidity(
     backend). Positions are de-duplicated by (pool, asset address, units), since
     "only one key answers" is the protocol's current behaviour, not a promise.
     """
+    from swapsack.report import lp_row
+
+    rows = [] if rows is None else rows
+    asset_key = _POOL_ASSET_KEYS.get(asset, "")
     for backend in backends:
         protocol = "CACAO" if backend.name == "maya" else "RUNE"
         price: float | None = None  # asset per RUNE/CACAO; fetched once, lazily
@@ -614,7 +727,8 @@ def _report_liquidity(
                 position = backend.client.liquidity_provider(asset, address)
             except HTTP_ERRORS as exc:
                 print(
-                    f"{backend.name} {asset}: LP lookup failed ({exc})", file=sys.stderr
+                    f"\n{backend.name} {asset}: LP lookup failed ({exc})",
+                    file=sys.stderr,
                 )
                 break  # backend unreachable: don't hammer it for every address
             if position is None:
@@ -629,9 +743,13 @@ def _report_liquidity(
                     price = backend.client.pool(asset).asset_per_protocol
                 except HTTP_ERRORS:
                     price = None  # fall back to flagging the side as uncounted
-            print(
-                position.format(
-                    backend.name, protocol=protocol, protocol_price_in_asset=price
+            rows.append(
+                lp_row(
+                    position,
+                    source=backend.name,
+                    asset_key=asset_key,
+                    protocol=protocol,
+                    protocol_price_in_asset=price,
                 )
             )
 
@@ -2941,6 +3059,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--zec-lwd", help="Zcash lightwalletd host:port ($SWAPSACK_ZEC_LWD)")
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
     s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
+    s.add_argument(
+        "--unit",
+        type=str.upper,
+        default="EUR",
+        choices=list(_UNIT_NAMES),
+        help="denominate the value column and the total in this unit "
+        "(USDT/USDC price in USD — CoinGecko has no stablecoin rate); "
+        "default EUR",
+    )
+    s.add_argument(
+        "--zeros",
+        action="store_true",
+        help="show rows worth nothing instead of naming them on one line",
+    )
+    _add_price_check_args(s)
     s.set_defaults(func=cmd_balance)
 
     s = sub.add_parser("quote", help="show a THORChain swap quote")

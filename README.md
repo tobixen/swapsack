@@ -51,7 +51,7 @@ The wallet is still under rapid development as of 2026-07-10.  Missing features 
 ### Features explained
 
 * **Hold** — derive an `address`, hold a balance, receive funds
-* **Bal**  — show the `balance` (native, tracked tokens like USDT, and any THORChain/Maya liquidity positions)
+* **Bal**  — show the `balance`: one aligned sheet of native coins, tracked tokens like USDT, and any THORChain/Maya liquidity positions, each row valued and totalled (see below)
 * **To**   — use as a `swap` *destination* (for a currency whose address the wallet can't derive yet, give an external one via `--dest`)
 * **From** — use as a `swap` *source* (the asset you spend). ◑ = the native swap-from for CACAO/RUNE (a Cosmos `MsgDeposit`, no inbound vault) is implemented + gated + unit-tested, and the underlying `MsgDeposit` build/sign/broadcast is now **mainnet-proven** on Maya (the symmetric LP leg of [docs/live-session-2026-08-16.md](docs/live-session-2026-08-16.md)) — but the swap variant's own memo/destination binding has not itself broadcast, and nothing RUNE has; there is no Maya/THORChain testnet wired up. The same ◑ covers ARB (implemented, never broadcast) and DASH and ZEC (vault + OP_RETURN memo, Maya-only, no testnet; ZEC over its bespoke signer)
 * **Send** — `send` to an external address (a plain transfer, no swap). ✅ = implemented and tested; ◑ = USDC-ETH rides the *same* ERC-20 send path as USDT-ETH (only the contract/decimals differ) but isn't separately covered by a test; the native CACAO/RUNE Cosmos `MsgSend` is implemented + unit-tested (protobuf byte-exact vs cosmpy, signature verified) but its broadcast is **unproven on mainnet** — there is no Maya/THORChain testnet wired up; and the DASH legacy send shares the BTC build/gate/sign path and is unit-tested (signatures verified) but its broadcast is likewise **unproven on mainnet** (no Dash testnet — an opt-in mainnet self-sweep test exists, see docs/testnet.md); ZEC rides a bespoke v4/ZIP-243 signer (bitcoinlib can't sign Zcash) whose sighash is verified against a real mainnet transaction's signature, with the same unproven-broadcast caveat
@@ -65,9 +65,39 @@ Other features:
 * `--backend auto` — compares **THORChain + Maya + CoW** (CoW only quotes same-chain ETH-token pairs) and routes to the best price (`quote`, `swap`). `--backend cow` forces it: a same-chain USDT-ETH/USDC-ETH/ETH swap settles via a signed EIP-712 order (no vault, no memo) instead of THORChain/Maya's two-pool-leg route — see [docs/backends.md](docs/backends.md). `status <order-uid>` tracks a submitted CoW order (auto-detected by its 56-byte uid shape, vs. a chain txid).
 * `swap --tolerance-bps N` — raise the slippage/fee tolerance (default 300 = 3%). Small or thinly-traded swaps whose fees exceed the default are *refused* by THORChain; the wallet aborts with a clear message instead of a traceback, and you can opt into a wider tolerance here.
 * **cost breakdown** — `quote` and `swap` itemise what you lose: the slip/swap (liquidity) fee, the flat outbound fee, and the quoted total (with `bps`), plus the inbound (source-chain) tx fee shown separately. On THORChain the *liquidity fee is the slippage* — the two are one number, not two.
-* **`Market:` block** — by default `quote`/`swap` also compare the quoted output against a public spot price (CoinGecko), surfacing the *total* realised cost including the pool-vs-market spread arbitrageurs capture (which the protocol's own fee fields don't include). Three lines: a source header, the per-asset comparison (`~X DEST at spot → ~N bps total vs market`), and the estimated absolute loss in **EUR**. Best-effort: silently dropped if the feed is unreachable or the asset isn't mapped (the EUR line is dropped if the feed has no EUR price). Disable with `--no-price-check`, which is accepted by every command that prices anything (`quote`, `swap`, `send`, `add-liquidity`, `withdraw-liquidity`, `status`) and suppresses the request itself, not merely its output — the lookup would otherwise tell a third party that you are about to spend that asset.
+* **`Market:` block** — by default `quote`/`swap` also compare the quoted output against a public spot price (CoinGecko), surfacing the *total* realised cost including the pool-vs-market spread arbitrageurs capture (which the protocol's own fee fields don't include). Three lines: a source header, the per-asset comparison (`~X DEST at spot → ~N bps total vs market`), and the estimated absolute loss in **EUR**. Best-effort: silently dropped if the feed is unreachable or the asset isn't mapped (the EUR line is dropped if the feed has no EUR price). Disable with `--no-price-check`, which is accepted by every command that prices anything (`quote`, `swap`, `send`, `add-liquidity`, `withdraw-liquidity`, `status`, `balance`) and suppresses the request itself, not merely its output — the lookup would otherwise tell a third party that you are about to spend that asset.
 * **Streaming swaps** — `swap`/`quote --stream-interval N [--stream-quantity M]` spreads the trade over blocks (sub-swaps) so each hits the pool smaller, sharply cutting slippage on large or thinly-pooled swaps (e.g. a 0.05 BTC→DASH that's refused at the default tolerance clears at ~20 bps when streamed). `N` = blocks between sub-swaps; `M` = number of sub-swaps (omit to let the network pick). Streaming manages slippage itself, so it overrides `--tolerance-bps` (the memo's limit is set to 0). The tradeoff: the swap settles over more blocks (`quote` prints the estimated duration), during which your funds are in-flight and exposed to price movement. See [docs/streaming.md](docs/streaming.md) for the mechanics and the streaming-vs-tolerance interaction.
 * Transaction listings are not supported yet.
+
+**The balance sheet.** `balance` prints one aligned table once every chain has
+answered (progress goes to stderr, so the table on stdout stays a table):
+
+```
+BTC                       0.00000000      €0.00  2 used addresses
+  +LP maya BTC.BTC       ~0.00162822    €159.57  deposited ~0.00162545; 0.00001600 via CACAO
+ETH                       0.05606159    €173.79  0x…
+USDC-ETH                 40.94348000     €35.21
+
+spendable                               €217.60
+liquidity                             €10879.47  not spendable; gross of exit fees
+total                                 €11097.07
+zero: USDT-ETH, ETH-ARB, USDC-ARB, BNB, DASH, RUNE
+```
+
+* **Liquidity is totalled apart from spendable funds.** An LP position is not
+  liquid and its redeemable figure is gross of exit fees, so it is never folded
+  into one number that reads like cash. A `~` marks an amount that includes the
+  RUNE/CACAO side repriced at the current pool rate.
+* **A row that cannot be priced is named, never counted as zero** — a total that
+  quietly omits something is worse than no total.
+* **Rows worth nothing collapse** into the trailing `zero:` line, so nothing
+  vanishes without being named. `--zeros` gives each its own row.
+* `--unit` denominates the value column and the total (`EUR` `USD` `USDT` `USDC`
+  `BTC` `ETH` `SATS`; the dollar stablecoins price in USD, as CoinGecko has no
+  stablecoin rate). `--no-price-check` makes **no** price request at all — one
+  lookup would otherwise tell a third party every asset this wallet holds — and
+  prints the amounts alone. A price feed that fails costs you the value column
+  and nothing else.
 
 **Liquidity (experimental).** `add-liquidity` / `withdraw-liquidity` add or
 remove liquidity on a THORChain pool.  By adding liquidity one will earn a share of that pool's swap fees, but it's not without risks.  As of 2026-06-28 THORChain rejects new liquidity for all assets, probably due to a switch to protocol-owned liquidity (POL).  It's still possible to use `add-liquidity --backend maya`.
@@ -173,7 +203,9 @@ swapsack init                                # create encrypted keystore
 swapsack add-hd --label main                 # import seed (prompted), or:
 swapsack add-hd --label test --generate      # generate a fresh seed
 swapsack address                             # BTC / ETH / TRON addresses
-swapsack balance                             # balances across chains
+swapsack balance                             # balances across chains, valued in EUR
+swapsack balance --unit BTC                  # …or in BTC / USD / USDT / ETH / SATS
+swapsack balance --zeros --no-price-check    # every row, no external price request
 swapsack quote --from ETH --to USDT-TRON --amount 0.02
 swapsack swap  --from ETH --to BTC --amount max          # DRY RUN (sweep)
 swapsack swap  --from BTC --to USDT-TRON --amount 0.001 --confirm
