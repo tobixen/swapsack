@@ -117,10 +117,29 @@ protocol's current behaviour rather than a promise).
 
 ## Withdraw
 
-A symmetric position is withdrawn with the ordinary `-:POOL:<bps>` trigger from
-either owned address; the protocol returns both sides proportionally. The
-existing single-sided withdraw path already builds this memo — symmetric
-withdraw mainly needs the trigger to come from an owned address on either side.
+**Not** with the memo the single-sided path builds. An earlier version of this
+section said a symmetric position withdraws "with the ordinary `-:POOL:<bps>`
+trigger from either owned address"; Maya's source says otherwise, and
+`withdraw-liquidity` therefore cannot exit one of these positions today (a
+Known bug in `docs/TODO.md`).
+
+The withdraw memo has five fields — `-:POOL:BPS:WITHDRAWAL_ASSET:PAIR_ADDRESS`
+— and the last two are what matter here
+(`x/mayachain/handler.go:getMsgWithdrawFromMemo`, `handler_withdraw.go`):
+
+- The LP record is looked up by the **observed sender**, so an asset-chain
+  trigger looks under the `0x…` address — where a symmetric position has no
+  units, the same zeros-stub lookup that hid it from `balance`. Field 5 (a
+  `maya1…` *pair address*) replaces the lookup key, and Maya then additionally
+  requires the LP's asset address to equal the tx sender.
+- Field 4 empty = **proportional, both-sides withdraw** (asset to the `0x…`,
+  CACAO to the `maya1…`). Naming an asset there takes it all on one side
+  instead; Maya refuses that while the pool is not `Available`.
+
+So a symmetric exit is either a CACAO-side `MsgDeposit` carrying
+`-:POOL:BPS` — which is how **70 of 70** two-sided payouts in 300 recent Maya
+withdraws were triggered (Midgard, 2026-08-17), with no asset-chain trigger ever
+producing one — or an asset-chain trigger carrying `-:POOL:BPS::maya1…`.
 
 ## See also
 

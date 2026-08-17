@@ -83,10 +83,52 @@ has never broadcast on Arbitrum, which is item 1.
 
 Four surfaced during a real 2026-08-16 session
 (`docs/live-session-2026-08-16.md`); **the two `balance` ones are fixed** (see
-`CHANGELOG.md`), and the two below remain. None risks funds — every one is a
-*reporting* defect over a money path that was correct — but each tells the user
+`CHANGELOG.md`), and the two below remain. Neither risks funds — both are
+*reporting* defects over a money path that was correct — but each tells the user
 something false about their money, which is why they sit above the feature work
-rather than in *Other known gaps*.
+rather than in *Other known gaps*. The third entry below is different in kind
+and worse: it is a **spend** that cannot work.
+
+### `withdraw-liquidity` cannot withdraw a **symmetric** position
+
+Found 2026-08-17 while explaining the fixed `balance` bug — same root cause
+(which address a symmetric LP record is keyed by), but this one wastes a real
+transaction rather than merely mis-printing.
+
+`cmd_withdraw_liquidity` always triggers from the **asset** chain with
+`withdraw_liquidity_memo` → `-:POOL:BPS`. Read Maya's own handling of that
+(`x/mayachain/handler.go:getMsgWithdrawFromMemo`, `handler_withdraw.go`):
+
+- `WithdrawAddress` — the key the LP record is looked up by — is the observed
+  sender, i.e. our `0x…`, **unless** the memo carries a *pair address* in field
+  5 that is a BASE-chain (`maya1…`) address, in which case that replaces it.
+- A symmetric position holds **no units** under the asset address (this is the
+  same zeros-stub lookup that made it invisible in `balance`), so the withdraw
+  resolves to an empty provider.
+
+Two shapes work, and both are visible in real traffic — of 300 recent Maya
+withdraws (Midgard, 2026-08-17), **every** two-sided payout (70/70) was
+triggered from `maya1…`, and **no** asset-chain trigger ever produced one:
+
+1. **Trigger from the CACAO side**: a native `MsgDeposit` carrying dust with
+   memo `-:POOL:BPS`. This needs no new chain work —
+   `CosmosAdapter.build_and_verify_native_deposit` is the symmetric add's
+   protocol leg and is mainnet-proven; what is missing is routing
+   `withdraw-liquidity` to it and gating it.
+2. **Keep the asset-chain trigger and name the pair address**:
+   `-:POOL:BPS::maya1…` (field 4, the withdrawal asset, left empty). Maya then
+   also requires `lp.AssetAddress == tx.FromAddress`, which holds for us.
+   `withdraw_liquidity_memo` would grow an optional `pair_address`.
+
+Note field 4 while you are there: **empty means a proportional, both-sides
+withdraw** (asset to the `0x…`, CACAO to the `maya1…`) — the "balanced
+withdraw" — and naming an asset there takes everything on one side instead.
+Maya refuses a non-empty field 4 while the pool is not `Available`.
+
+Whichever is built, the CLI must first *know* which shape the position is
+(`cacao_address` present in the LP record is the discriminator) and refuse
+rather than broadcast a trigger that cannot match. A withdraw that silently
+does nothing costs a tx fee and leaves the user believing they exited.
 
 ### `status` reports a **completed** swap as "not observed"
 
@@ -155,6 +197,73 @@ Second, smaller defect in the same string: the message is hardcoded
 `"THORChain rejected the quote"` regardless of backend, so a Maya rejection is
 attributed to THORChain. That is what the user sees while explicitly passing
 `--backend maya`.
+
+## `balance` presentation (owner-requested, 2026-08-17)
+
+Both are about reading the output, not about what it reports. They interact —
+the value column is one more column to align — so whoever does one should look
+at the other.
+
+### A value beside each row, and an approximate total at the bottom
+
+Wanted: every row annotated with its approximate worth, and a total under the
+lot; the unit selectable by flag (EUR, BTC, USDT, …).
+
+Most of the machinery exists — build on it rather than beside it:
+
+- `pricefeed.PriceFeed.spot(ids, vs=(…))` already takes **many ids and many
+  currencies in one request**, so the whole balance sheet is one HTTP call, not
+  one per row. `COINGECKO_IDS` maps wallet asset keys (`BTC`, `USDT-ETH`,
+  `ETH-ARB`, `CACAO`, …) to coin ids and is nearly complete already.
+- `_eur_price` / `_eur_suffix` in `cli.py` are the display helpers, hardcoded to
+  EUR. **Generalize the currency through them**; a second copy that formats a
+  different unit is how the two drift apart.
+- CoinGecko's `vs_currencies` accepts crypto as well as fiat (`btc`, `eth`,
+  `sats`), so `--unit BTC` costs nothing extra. It does **not** accept `usdt` /
+  `usdc` — map those to `usd` and say so in the help, or the flag will silently
+  price nothing.
+- `balance` has no `--price-check/--no-price-check` yet; adding prices means
+  adding it. The privacy argument is *stronger* here than on a fee line: one
+  lookup tells a third party which assets this IP holds, all of them, in a
+  single query.
+
+Two things the total must not do, both the same failure this file already
+records under the fixed `balance` bugs:
+
+- **An unpriceable row must be named, not counted as zero** — a silent 0 for a
+  row we could not price under-reports the total, and the user cannot see that
+  it happened.
+- **LP redeem values are not spendable** and are gross of exit fees. They can be
+  in the total, but the total has to say it includes them; folding them into one
+  number indistinguishable from cash is exactly what the `+LP` lines were kept
+  separate to avoid. Pricing them also needs pool-asset (`ETH.USDC-0X…`) →
+  wallet key, which is `ASSET` reversed — derive it from `ASSET`, don't type a
+  second table.
+
+Keep `_eur_suffix`'s `<€0.01` convention for dust: `~0.00` reads as "free".
+
+### Aligned columns
+
+Wanted: the amounts (and the value column above) lined up, so the sheet can be
+read down rather than parsed per line.
+
+The constraint to design around: `cmd_balance` prints each row **as it
+arrives**, chain by chain, and the BTC scan alone takes ~10s — that streaming is
+why the output starts appearing immediately. Alignment needs the widest value,
+which is only known at the end. So either
+
+- buffer every row and print the table once at the end (simplest, and the total
+  line wants that anyway — but the user then stares at the "checking
+  balances…" line for the whole run), or
+- keep streaming with **fixed** column widths wide enough for the plausible
+  range, accepting that an unusually large balance pushes its row out.
+
+Either way `BalanceReport.format()` is the wrong seam for a table — it renders
+one line in isolation. Give it a way to yield its *fields* (symbol, amount,
+note) and let the caller lay them out, or the alignment logic ends up split
+across `BalanceReport`, `LiquidityPosition.format` and the token rows. Mind that
+`+LP` lines are sub-rows of the asset above them (they indent today) and that
+token rows currently print *after* an asset's LP lines.
 
 ## Symmetric liquidity — the standing risk notes
 

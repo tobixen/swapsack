@@ -114,6 +114,12 @@ What you get and what it costs:
   **Maya** (asset + CACAO) today; the CLI aborts with the mimir key if you aim
   it at a paused pool.  On **RUNE** the protocol leg is unproven — no THORChain
   native transaction has ever been broadcast.
+* **`withdraw-liquidity` cannot exit one of these positions yet.**  A symmetric
+  position is filed under your `maya1…` address, and the trigger this CLI
+  builds is looked up under your asset address, where it finds nothing.
+  Withdrawing needs either a CACAO-side trigger or the memo's pair-address
+  field; until that ships, exiting means another tool (e.g. Maya's own web UI).
+  See *Known bugs* in [docs/TODO.md](docs/TODO.md).
 
 See [docs/liquidity-symmetric.md](docs/liquidity-symmetric.md) for the
 mechanics and the full safety protocol.
