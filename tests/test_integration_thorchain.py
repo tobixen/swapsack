@@ -87,6 +87,37 @@ def test_liquidity_provider_no_position_is_none_live():
         assert thor.liquidity_provider("BTC.BTC", BTC_DEST) is None
 
 
+def test_symmetric_position_answers_only_on_the_protocol_address_live():
+    """The premise `balance` now relies on: a **symmetric** position is filed
+    under the CACAO address, and the asset address answers a zeros stub — not an
+    error, so nothing downstream can tell it from "no position". If Maya ever
+    starts answering on both keys, this test fails and the de-duplication in
+    `_report_liquidity` becomes load-bearing instead of belt-and-braces.
+
+    Uses a third party's public position (the pool's own LP list), so it needs
+    no wallet and moves no funds.
+    """
+    from swapsack.backends import DEFAULT_MAYANODE
+
+    pool = ASSET["USDC-ETH"]
+    with ThorchainClient(DEFAULT_MAYANODE, path_prefix="mayachain") as maya:
+        providers = maya._get_with_fallback(
+            f"{maya.path_prefix}/pool/{pool}/liquidity_providers"
+        ).json()
+        symmetric = [
+            lp
+            for lp in providers
+            if lp.get("cacao_address") and lp.get("asset_address")
+        ]
+        assert symmetric, f"no symmetric LP in {pool} to test against"
+        lp = symmetric[0]
+        by_protocol = maya.liquidity_provider(pool, lp["cacao_address"])
+        by_asset = maya.liquidity_provider(pool, lp["asset_address"])
+    assert by_protocol is not None
+    assert by_protocol.units > 0
+    assert by_asset is None  # the zeros stub -> "no position"
+
+
 def test_small_high_fee_swap_rejected_at_default_tolerance_live():
     # A small TRX->USDT-TRON swap costs well over 3% (the fixed TRON outbound fee
     # dominates a ~$25 swap), so the default tolerance makes THORChain refuse the

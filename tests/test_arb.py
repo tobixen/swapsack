@@ -44,9 +44,35 @@ def test_arb_wallet_balance_reports_eth(monkeypatch):
         adapter, "fetch_balance", lambda address: 2_580_000_000_000_000_000
     )
     report = adapter.wallet_balance(MNEMONIC)
-    assert report.symbol == "ETH"
+    # The coin is ether (native_symbol, what a fee is quoted in), but the
+    # *balance row* is chain-qualified — see the next test for why.
+    assert report.symbol == "ETH-ARB"
     assert report.decimals == 18
-    assert report.format().startswith("ETH: 2.58")
+    assert report.format().startswith("ETH-ARB: 2.58")
+
+
+def test_arb_native_row_is_distinguishable_from_ethereums(monkeypatch):
+    """Regression: both adapters call the native coin ETH *and* share one
+    address, so `balance` printed two identical-looking rows and there was
+    nothing on screen to say which chain held what (docs/TODO.md)."""
+    arb, eth = ArbAdapter(), EthAdapter()
+    for adapter in (arb, eth):
+        monkeypatch.setattr(adapter, "fetch_balance", lambda address: 10**18)
+    assert (
+        arb.wallet_balance(MNEMONIC).format() != eth.wallet_balance(MNEMONIC).format()
+    )
+    assert eth.wallet_balance(MNEMONIC).symbol == "ETH"  # unchanged
+
+
+def test_arb_native_label_is_the_name_you_would_spend_it_by():
+    """What `balance` prints must be what `--asset` accepts, or the user cannot
+    act on the row."""
+    from swapsack.cli import ASSET
+
+    assert ArbAdapter().native_label == "ETH-ARB"
+    assert ASSET[ArbAdapter().native_label] == ArbAdapter.asset
+    assert EthAdapter().native_label == "ETH"
+    assert ASSET[EthAdapter().native_label] == EthAdapter.asset
 
 
 def test_arb_usdc_is_six_decimals(monkeypatch):
@@ -223,7 +249,7 @@ def test_arb_balance_live():
     not a (mutable) balance."""
     with ArbAdapter() as adapter:
         native = adapter.wallet_balance(MNEMONIC)
-        assert native.symbol == "ETH"
+        assert native.symbol == "ETH-ARB"
         assert native.decimals == 18
         assert native.confirmed >= 0
         reports = adapter.token_balances(MNEMONIC)

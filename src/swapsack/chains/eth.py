@@ -319,6 +319,18 @@ class EthAdapter(HttpClient):
         # a testnet.
         self.chain_id = chain_id
 
+    @property
+    def native_label(self) -> str:
+        """What `balance` calls the native row — the string ``--asset`` accepts.
+
+        Defaults to ``native_symbol``, which is right wherever the coin's name
+        names its chain too (ETH, BNB). A chain whose native coin is *ether*
+        must override this with a class attribute (see ``ArbAdapter``): symbol
+        and address are both identical to Ethereum's, so an unqualified row is
+        indistinguishable from it.
+        """
+        return self.native_symbol
+
     def _key(self, mnemonic: str, path: str) -> LocalAccount:
         return Account.from_mnemonic(
             mnemonic, passphrase=self.bip39_passphrase, account_path=path
@@ -369,7 +381,7 @@ class EthAdapter(HttpClient):
     def wallet_balance(self, mnemonic: str) -> BalanceReport:
         address = self.derive_address(mnemonic)
         return BalanceReport(
-            symbol=self.native_symbol,
+            symbol=self.native_label,
             confirmed=self.fetch_balance(address),
             decimals=18,
             note=f"({address})",

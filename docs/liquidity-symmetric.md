@@ -96,6 +96,25 @@ Implemented building blocks (all unit-tested):
   assumption** (no testnet) — get it wrong and the legs don't pair, so the CLI
   refuses `--symmetric` for UTXO chains rather than guessing.
 
+## Where the position shows up afterwards
+
+A symmetric record is filed under the **protocol** address, not the asset one.
+Measured on the live `ETH.USDC` position (2026-08-16), `pool/{POOL}/
+liquidity_provider/{ADDR}` answers:
+
+| queried by | `units` | `cacao_address` |
+|---|---|---|
+| our `maya1…` | non-zero | present |
+| our `0x…` | `0` | present-but-empty stub |
+
+A *single-sided* record is the other way round: non-zero `units` under the asset
+address and no `cacao_address` at all. The stub is an HTTP 200, not an error, so
+"filed elsewhere" is indistinguishable from "no position" at the parse layer —
+which is why `balance` hid a real position until `_report_liquidity` began
+probing the `maya1…`/`thor1…` address alongside the chain's own (de-duplicating
+by pool + asset address + units, since answering on one key only is the
+protocol's current behaviour rather than a promise).
+
 ## Withdraw
 
 A symmetric position is withdrawn with the ordinary `-:POOL:<bps>` trigger from

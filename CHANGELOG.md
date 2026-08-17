@@ -13,6 +13,9 @@ automatically from git tags (PEP 440 / SemVer).
   `swap --from`, and liquidity — single- and two-sided. Your Arbitrum address
   *is* your Ethereum address, so `--dest ARB` is now derived automatically
   instead of having to be typed, and `address` lists it.
+  - `balance` calls the Arbitrum row **`ETH-ARB`** — the name `--asset` takes,
+    so it can't be confused with the Ethereum row above it (same coin, same
+    address). Not `ARB`, which is the ARB *token* and not tradeable.
   - **Moving USDC on Arbitrum costs cents.** That was always the point of the
     `USDC-ARB` destination; until now you could only receive it and had to use
     another wallet to do anything with it.
@@ -212,6 +215,15 @@ automatically from git tags (PEP 440 / SemVer).
   it by hand still works, and is still needed for fish (see README).
 
 ### Fixed
+
+- **`balance` hid a two-sided liquidity position completely.** A symmetric add
+  is filed by the protocol under your **CACAO/RUNE** address, not the asset
+  address — and the asset address answers "no position" rather than an error,
+  so the position printed no line at all while single-sided ones printed fine.
+  The wallet under-reported real funds (confirmed against a live `ETH.USDC`
+  position on 2026-08-16). `balance` now probes each backend's own `maya1…` /
+  `thor1…` address alongside the chain's addresses, and de-duplicates in case a
+  position answers on both of its keys.
 
 - **Working default THORChain endpoint (the old one is dead):** the previous
   default, `thornode.thorchain.network`, was a Nine Realms host, and Nine Realms

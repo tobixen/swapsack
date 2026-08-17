@@ -485,6 +485,9 @@ def cmd_balance(args: argparse.Namespace) -> int:
     from swapsack.backends import default_backends
 
     backends = default_backends()
+    # Derived once, then handed to every LP probe: a symmetric position is filed
+    # under the protocol-chain address, not the asset address (see below).
+    protocol_addresses = _protocol_lp_addresses(mnemonic, passphrase)
     try:
         for adapter in _wallet_adapters(args, passphrase):
             with adapter:
@@ -515,9 +518,13 @@ def cmd_balance(args: argparse.Namespace) -> int:
                         if lp_backends is None
                         else [b for b in backends if b.name in lp_backends]
                     )
-                    _report_liquidity(probed, adapter.asset, report.addresses)
+                    _report_liquidity(
+                        probed, adapter.asset, report.addresses, protocol_addresses
+                    )
                     for pool_asset in _token_pool_assets(adapter):
-                        _report_liquidity(probed, pool_asset, report.addresses)
+                        _report_liquidity(
+                            probed, pool_asset, report.addresses, protocol_addresses
+                        )
                 _report_token_balances(adapter, mnemonic)
     finally:
         for backend in backends:
@@ -554,10 +561,28 @@ def _report_token_balances(adapter, mnemonic: str) -> None:  # noqa: ANN001 (Cha
         print(report.format())
 
 
+def _protocol_lp_addresses(mnemonic: str, passphrase: str) -> dict[str, str]:
+    """Backend name -> the wallet's address on that backend's *own* chain.
+
+    ``maya1…``/``thor1…`` — the key a **symmetric** LP position is filed under.
+    Derived from the two existing sources of truth (which backend settles which
+    chain, and how that chain derives an address) so a new settlement chain
+    cannot be added here without being added there.
+    """
+    from swapsack.backends import NATIVE_HOME_BACKEND
+
+    return {
+        backend: _DESTINATION_DERIVERS[chain](mnemonic, passphrase)
+        for chain, backend in NATIVE_HOME_BACKEND.items()
+        if chain in _DESTINATION_DERIVERS
+    }
+
+
 def _report_liquidity(
     backends: list,  # noqa: ANN401 (list[Backend]; lazy import avoids a cycle)
     asset: str,
     addresses: tuple[str, ...],
+    protocol_addresses: dict[str, str] | None = None,
 ) -> None:
     """Print any LP positions the wallet's addresses hold in ``asset``'s pool.
 
@@ -566,12 +591,25 @@ def _report_liquidity(
     ahead of time, so we probe every used address (most return nothing). The
     redeemable amount is shown as its own line, never folded into the spendable
     balance — an LP position isn't liquid and the figure is gross of exit fees.
+
+    A **symmetric** position is not filed under the asset address at all: the
+    protocol keys it by the RUNE/CACAO address that paired the two legs, and the
+    asset address answers HTTP 200 with a zeros stub that collapses to "no
+    position" — so the whole position was invisible until this probed
+    ``protocol_addresses[backend.name]`` too (one extra lookup per pool per
+    backend). Positions are de-duplicated by (pool, asset address, units), since
+    "only one key answers" is the protocol's current behaviour, not a promise.
     """
     for backend in backends:
         protocol = "CACAO" if backend.name == "maya" else "RUNE"
         price: float | None = None  # asset per RUNE/CACAO; fetched once, lazily
         priced = False
-        for address in addresses:
+        seen: set[tuple[str, str, int]] = set()
+        probe = list(addresses)
+        protocol_address = (protocol_addresses or {}).get(backend.name)
+        if protocol_address is not None and protocol_address not in probe:
+            probe.append(protocol_address)
+        for address in probe:
             try:
                 position = backend.client.liquidity_provider(asset, address)
             except HTTP_ERRORS as exc:
@@ -581,6 +619,10 @@ def _report_liquidity(
                 break  # backend unreachable: don't hammer it for every address
             if position is None:
                 continue
+            key = (position.pool, position.asset_address, position.units)
+            if key in seen:
+                continue  # same position, answering on both of its keys
+            seen.add(key)
             if not priced:  # only worth a pool fetch once we've found a position
                 priced = True
                 try:

@@ -36,6 +36,10 @@ def test_bsc_wallet_balance_reports_bnb(monkeypatch):
     assert report.symbol == "BNB"
     assert report.decimals == 18
     assert report.format().startswith("BNB: 2.58")
+    # A subclass that overrides only native_symbol must still be labelled by it:
+    # the chain-qualified label exists for chains whose native coin is *ether*
+    # (Arbitrum), and must not leak Ethereum's name onto BNB.
+    assert adapter.native_label == "BNB"
 
 
 def test_bsc_token_balances_are_18_decimals(monkeypatch):

@@ -62,7 +62,14 @@ class ArbAdapter(EthAdapter):
     # Maya's native-ETH-on-Arbitrum pool. Deliberately not "ARB.ARB": the ARB
     # *token* pool is Staged, not tradeable, so "ARB" as an asset means this.
     asset = "ARB.ETH"
-    native_symbol = "ETH"
+    native_symbol = "ETH"  # the coin IS ether — fees are quoted in it
+    # …but the balance row must say which chain's ether, since the symbol and
+    # the address are both Ethereum's. "ETH-ARB" is what `--asset` accepts, so
+    # `balance` prints the name you would spend it by. Deliberately not "ARB":
+    # that is the (Staged, untradeable) ARB *token*, a different thing.
+    # A plain class attribute overriding EthAdapter's property — MRO lookup
+    # finds this first.
+    native_label = "ETH-ARB"
     # Maya is the only network with ARB pools, so `balance` must not probe
     # THORChain for LP positions that cannot exist there.
     lp_backends = ("maya",)

@@ -81,8 +81,9 @@ has never broadcast on Arbitrum, which is item 1.
 
 ## Known bugs (found, diagnosed, not yet fixed)
 
-All four surfaced during a real 2026-08-16 session
-(`docs/live-session-2026-08-16.md`). None risks funds — every one is a
+Four surfaced during a real 2026-08-16 session
+(`docs/live-session-2026-08-16.md`); **the two `balance` ones are fixed** (see
+`CHANGELOG.md`), and the two below remain. None risks funds — every one is a
 *reporting* defect over a money path that was correct — but each tells the user
 something false about their money, which is why they sit above the feature work
 rather than in *Other known gaps*.
@@ -123,41 +124,6 @@ depending on which flags a given thornode version happens to emit — and Maya, 
 older fork, still emits `started`, so the two node families must both be handled.
 Worth a regression test built on both real response shapes, captured above.
 
-### `balance` does not show a **symmetric** LP position at all
-
-The worst of the four: the wallet silently under-reports funds. Confirmed on a
-real position 2026-08-16 — a live `ETH.USDC` symmetric
-add produced **no `+LP maya ETH.USDC-…` line whatsoever**, while single-sided
-positions in the same run (`BTC.BTC`, `ETH.ETH`, `ETH.USDT`, `ZEC.ZEC`) all
-printed correctly.
-
-Cause: Maya keys a **symmetric** LP record by the **protocol (CACAO) address**,
-not the asset address. Same pool, same session:
-
-| queried by | `units` | `cacao_address` |
-|---|---|---|
-| our `maya1…` (CACAO addr) | non-zero | present |
-| our `0x…` (asset addr) | `0` | present-but-empty stub |
-
-A single-sided record is the other way round — `ETH.ETH` queried by the asset
-address returned a non-zero `units` with **no** `cacao_address`. So the
-presence of `cacao_address` is the clean discriminator between the two shapes.
-
-`_report_liquidity` (`cli.py:557`) probes only the addresses on the chain's own
-`BalanceReport` — the ETH address for ETH pools — and never the `maya1`/`thor1`
-address. Maya answers that query HTTP 200 with a zeros stub, which
-`parse_liquidity_provider` correctly collapses to `None` (it cannot distinguish
-"no position" from "position filed elsewhere"), so the line is dropped and the
-position is invisible rather than merely wrong.
-
-**Fix**: probe the protocol-chain address alongside the asset addresses for each
-pool — one extra lookup per backend per pool. Guard against double-reporting a
-position that answers on both keys; today the asset-address stub collapses to
-`None` so there is no double count, but that is Maya's behaviour, not a
-guarantee. Note this makes the *existing* warning under *Cache LP provider
-addresses* concrete: coverage must only ever **extend**, and here it silently
-shrank the moment symmetric adds became possible.
-
 ### A tolerance rejection is only explained when **THORChain** phrases it
 
 `_explain_quote_error` (`swap.py:43`) turns the "your swap costs more than your
@@ -189,30 +155,6 @@ Second, smaller defect in the same string: the message is hardcoded
 `"THORChain rejected the quote"` regardless of backend, so a Maya rejection is
 attributed to THORChain. That is what the user sees while explicitly passing
 `--backend maya`.
-
-### `balance` prints two indistinguishable `ETH` rows
-
-Introduced with the Arbitrum adapter (`91228b2`). `EthAdapter.wallet_balance`
-labels the row `self.native_symbol`, which is `"ETH"` for **both** `EthAdapter`
-and `ArbAdapter`, and annotates it with the address — which is also the same on
-both chains. Result:
-
-```
-ETH: <a balance>  (0x…our EVM address)     <- Ethereum
-ETH: 0.00000000  (0x…our EVM address)     <- Arbitrum, indistinguishable
-```
-
-Only the *native* row collides; token rows are already fine, because
-`token_suffix` gives `USDC-ETH` vs `USDC-ARB`.
-
-**Fix**: give the native row the chain-qualified name the CLI already uses
-elsewhere — `ASSET` calls Arbitrum's native coin `ETH-ARB`, and `--asset
-ETH-ARB` is what you would type to spend it, so `balance` should print that.
-A `native_label` class attribute (defaulting to `native_symbol`, overridden to
-`"ETH-ARB"` on `ArbAdapter`) keeps what `balance` shows identical to what
-`--asset` accepts. Do **not** label it by chain (`ARB:`): Arbitrum's native coin
-is ether, not the ARB token, and the ARB token pool is `Staged` anyway — that
-naming would trade one confusion for a worse one.
 
 ## Symmetric liquidity — the standing risk notes
 
@@ -570,7 +512,9 @@ README — both copies would need the column.)
   another tool) would silently under-report funds — the worst failure for a
   wallet. So treat it as a hint unioned with the full scan, or as an opt-in fast
   path with the scan as the default source of truth. (See the chat that prompted
-  this.)
+  this.) That warning has already come true once — a symmetric position is keyed
+  by the `maya1…`/`thor1…` address and was invisible until `_report_liquidity`
+  started probing it, so any cache must keep that probe rather than replace it.
 - **USDT-ETH source niceties**: `--amount max` (needs token balance), real
   `eth_estimateGas` instead of fixed approve/deposit gas, and the USDT
   "reset allowance to 0 before re-approving" edge case for repeat swaps.

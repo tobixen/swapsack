@@ -887,9 +887,11 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
 
     probed = []
     monkeypatch.setattr(
-        cli, "_report_liquidity", lambda backends, asset, addrs: probed.append(asset)
+        cli,
+        "_report_liquidity",
+        lambda backends, asset, addrs, protocol=None: probed.append(asset),
     )
-    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("m", ""))
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
     monkeypatch.setattr(
         cli,
         "_wallet_adapters",
@@ -943,11 +945,11 @@ def test_balance_probes_maya_only_chains_on_maya_only(monkeypatch):
     monkeypatch.setattr(
         cli,
         "_report_liquidity",
-        lambda backends, asset, addrs: probed.append(
+        lambda backends, asset, addrs, protocol=None: probed.append(
             (asset, tuple(b.name for b in backends))
         ),
     )
-    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("m", ""))
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
     monkeypatch.setattr(cli, "_wallet_adapters", lambda args, p="": [FakeDashAdapter()])
     monkeypatch.setattr(
         backends_mod,
@@ -1009,10 +1011,12 @@ def test_balance_probes_rune_pool_on_maya(monkeypatch):
 
     probed = []
     monkeypatch.setattr(
-        cli, "_report_liquidity", lambda backends, asset, addrs: probed.append(asset)
+        cli,
+        "_report_liquidity",
+        lambda backends, asset, addrs, protocol=None: probed.append(asset),
     )
     monkeypatch.setattr(cli, "_report_token_balances", lambda a, m: None)
-    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("m", ""))
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
     monkeypatch.setattr(cli, "_wallet_adapters", lambda args, p="": [FakeThorAdapter()])
     monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
     args = build_parser().parse_args(["balance"])
@@ -3209,3 +3213,197 @@ def test_address_command_lists_arb(monkeypatch, capsys):
     assert cli.cmd_address(args) == 0
     out = capsys.readouterr().out
     assert "ARB:" in out
+
+
+# --- `balance` must show a SYMMETRIC LP position ---------------------------
+# Maya files a symmetric position under the *protocol* (CACAO) address, not the
+# asset address: the same pool queried by our maya1… returns non-zero units,
+# queried by our 0x… returns a zeros stub. `_report_liquidity` only probed the
+# chain's own addresses, so a real 2026-08-16 ETH.USDC position printed no line
+# at all — the wallet silently under-reported funds (docs/TODO.md).
+
+USDC_POOL = "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48"
+EVM_ADDRESS = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+PROTOCOL_ADDRESS = "maya1gm00vwsfcp48enm4uv9e5dhm37jtd0ye2fs0sl"
+
+# Trimmed real shapes: the record as Maya answers it for the CACAO address …
+SYMMETRIC_BY_PROTOCOL_ADDRESS = {
+    "asset": USDC_POOL,
+    "asset_address": EVM_ADDRESS,
+    "cacao_address": PROTOCOL_ADDRESS,
+    "units": "1568919094620",
+    "pending_asset": "0",
+    "asset_deposit_value": "2000000000",
+    "cacao_deposit_value": "1770000000000",
+    "asset_redeem_value": "1998000000",
+    "cacao_redeem_value": "1768000000000",
+}
+# … and the zeros stub the *asset* address gets for that same position: HTTP
+# 200, the queried address echoed back, and nothing else (verified live against
+# a third party's ETH.USDC position, 2026-08-17).
+SYMMETRIC_STUB_BY_ASSET_ADDRESS = {
+    "asset": USDC_POOL,
+    "asset_address": EVM_ADDRESS,
+    "cacao_address": None,
+    "units": "0",
+    "pending_asset": "0",
+    "asset_redeem_value": "0",
+    "cacao_redeem_value": "0",
+    "asset_deposit_value": "0",
+    "cacao_deposit_value": "0",
+}
+
+
+class _FakePool:
+    asset_per_protocol = 0.113
+
+
+class _FakeLpClient:
+    """A thornode-style client whose LP answers are keyed by address."""
+
+    def __init__(self, answers: dict):
+        self.answers = answers
+        self.queried: list[str] = []
+
+    def liquidity_provider(self, pool, address):
+        from swapsack.thorchain import parse_liquidity_provider
+
+        self.queried.append(address)
+        payload = self.answers.get(address)
+        return parse_liquidity_provider(payload) if payload else None
+
+    def pool(self, asset):
+        return _FakePool()
+
+    def close(self):
+        pass
+
+
+class _FakeLpBackend:
+    def __init__(self, name, client):
+        self.name = name
+        self.client = client
+
+
+def test_report_liquidity_finds_symmetric_position_via_protocol_address(capsys):
+    import swapsack.cli as cli
+
+    client = _FakeLpClient(
+        {
+            EVM_ADDRESS: SYMMETRIC_STUB_BY_ASSET_ADDRESS,
+            PROTOCOL_ADDRESS: SYMMETRIC_BY_PROTOCOL_ADDRESS,
+        }
+    )
+    cli._report_liquidity(
+        [_FakeLpBackend("maya", client)],
+        USDC_POOL,
+        (EVM_ADDRESS,),
+        {"maya": PROTOCOL_ADDRESS},
+    )
+    out = capsys.readouterr().out
+    assert f"+LP maya {USDC_POOL}" in out
+    # The asset address is still probed (single-sided positions live there); the
+    # protocol address is the addition.
+    assert client.queried == [EVM_ADDRESS, PROTOCOL_ADDRESS]
+
+
+def test_report_liquidity_probes_each_backends_own_protocol_address(capsys):
+    """thor1… is meaningless to Maya and maya1… to THORChain, so each backend
+    gets only its own protocol address."""
+    import swapsack.cli as cli
+
+    maya = _FakeLpClient({})
+    thorchain = _FakeLpClient({})
+    cli._report_liquidity(
+        [_FakeLpBackend("maya", maya), _FakeLpBackend("thorchain", thorchain)],
+        "ETH.ETH",
+        (EVM_ADDRESS,),
+        {"maya": PROTOCOL_ADDRESS, "thorchain": "thor1abc"},
+    )
+    assert maya.queried == [EVM_ADDRESS, PROTOCOL_ADDRESS]
+    assert thorchain.queried == [EVM_ADDRESS, "thor1abc"]
+
+
+def test_report_liquidity_does_not_double_count_a_position(capsys):
+    """Today only the protocol address answers, but that is Maya's behaviour,
+    not a guarantee — a backend answering on both keys must still print once,
+    or the wallet over-reports."""
+    import swapsack.cli as cli
+
+    client = _FakeLpClient(
+        {
+            EVM_ADDRESS: SYMMETRIC_BY_PROTOCOL_ADDRESS,
+            PROTOCOL_ADDRESS: SYMMETRIC_BY_PROTOCOL_ADDRESS,
+        }
+    )
+    cli._report_liquidity(
+        [_FakeLpBackend("maya", client)],
+        USDC_POOL,
+        (EVM_ADDRESS,),
+        {"maya": PROTOCOL_ADDRESS},
+    )
+    assert capsys.readouterr().out.count("+LP maya") == 1
+
+
+def test_report_liquidity_skips_a_protocol_address_already_scanned(capsys):
+    """The MAYA adapter's own report already carries maya1…; probing it twice
+    would be a wasted round-trip per pool."""
+    import swapsack.cli as cli
+
+    client = _FakeLpClient({})
+    cli._report_liquidity(
+        [_FakeLpBackend("maya", client)],
+        "THOR.RUNE",
+        (PROTOCOL_ADDRESS,),
+        {"maya": PROTOCOL_ADDRESS},
+    )
+    assert client.queried == [PROTOCOL_ADDRESS]
+
+
+def test_balance_passes_the_derived_protocol_addresses(monkeypatch):
+    """Wiring: the maya1/thor1 addresses `_report_liquidity` needs are derived
+    from the seed once, not re-scanned per pool."""
+    import swapsack.backends as backends_mod
+    import swapsack.cli as cli
+    from swapsack.chains.maya import MayaAdapter
+    from swapsack.chains.thor import ThorAdapter
+
+    class FakeReport:
+        addresses = (EVM_ADDRESS,)
+
+        def format(self):
+            return "ETH: 1.0"
+
+    class FakeEthAdapter:
+        chain = "ETH"
+        asset = "ETH.ETH"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wallet_balance(self, mnemonic):
+            return FakeReport()
+
+    seen = []
+    monkeypatch.setattr(
+        cli,
+        "_report_liquidity",
+        lambda backends, asset, addrs, protocol_addresses=None: seen.append(
+            protocol_addresses
+        ),
+    )
+    monkeypatch.setattr(cli, "_report_token_balances", lambda a, m: None)
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
+    monkeypatch.setattr(cli, "_wallet_adapters", lambda args, p="": [FakeEthAdapter()])
+    monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
+    args = build_parser().parse_args(["balance"])
+    assert cli.cmd_balance(args) == 0
+    assert seen == [
+        {
+            "maya": MayaAdapter().derive_address(MNEMONIC),
+            "thorchain": ThorAdapter().derive_address(MNEMONIC),
+        }
+    ]
