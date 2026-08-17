@@ -114,12 +114,14 @@ What you get and what it costs:
   **Maya** (asset + CACAO) today; the CLI aborts with the mimir key if you aim
   it at a paused pool.  On **RUNE** the protocol leg is unproven — no THORChain
   native transaction has ever been broadcast.
-* **`withdraw-liquidity` cannot exit one of these positions yet.**  A symmetric
-  position is filed under your `maya1…` address, and the trigger this CLI
-  builds is looked up under your asset address, where it finds nothing.
-  Withdrawing needs either a CACAO-side trigger or the memo's pair-address
-  field; until that ships, exiting means another tool (e.g. Maya's own web UI).
-  See *Known bugs* in [docs/TODO.md](docs/TODO.md).
+* **Exiting works the same way you got in — from the protocol side.**
+  `withdraw-liquidity` looks up which kind of position you hold and, for a
+  symmetric one, triggers the withdraw with a dust `MsgDeposit` on
+  Maya/THORChain instead of a transaction on the asset chain (that is where the
+  protocol files the position, so an asset-chain trigger would find nothing).
+  Nothing to pass: `swapsack withdraw-liquidity --asset USDC-ETH --backend maya`
+  picks the right one.  Both sides come back proportionally — the asset to your
+  asset address, the CACAO to your `maya1…`.
 
 See [docs/liquidity-symmetric.md](docs/liquidity-symmetric.md) for the
 mechanics and the full safety protocol.

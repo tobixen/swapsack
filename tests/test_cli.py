@@ -211,7 +211,7 @@ def test_add_liquidity_usdt_eth_routes_to_eth_handler(monkeypatch):
 
     called = {}
 
-    def fake_evm(args, factory, *, memo, amount, sweep=False):
+    def fake_evm(args, factory, *, memo, amount, sweep=False, **_):
         called.update(memo=memo, amount=amount, sweep=sweep, factory=factory)
         return 0
 
@@ -3164,7 +3164,7 @@ def test_liquidity_dispatches_arb_tokens(monkeypatch):
 
     seen = {}
 
-    def fake(args, factory, *, memo, amount, sweep=False):
+    def fake(args, factory, *, memo, amount, sweep=False, **_):
         seen.update(factory=factory, memo=memo)
         return 0
 
@@ -3407,3 +3407,225 @@ def test_balance_passes_the_derived_protocol_addresses(monkeypatch):
             "thorchain": ThorAdapter().derive_address(MNEMONIC),
         }
     ]
+
+
+# --- withdrawing a SYMMETRIC position (the CACAO-side trigger) --------------
+# A symmetric position is filed under the maya1… address, so the asset-chain
+# trigger this CLI used to build looked it up where it does not exist and would
+# have spent a transaction doing nothing. Maya's own traffic answers it from the
+# protocol side: of 300 recent withdraws, every two-sided payout was triggered
+# by a MsgDeposit from maya1… carrying 1 base unit of CACAO.
+
+WITHDRAW_POOL = ASSET["USDC-ETH"]
+
+
+def _symmetric_position(pool=WITHDRAW_POOL):
+    from swapsack.thorchain import parse_liquidity_provider
+
+    return parse_liquidity_provider(
+        {
+            "asset": pool,
+            "asset_address": EVM_ADDRESS,
+            "cacao_address": PROTOCOL_ADDRESS,
+            "units": "1568919094620",
+            "asset_redeem_value": "1998000000",
+            "cacao_redeem_value": "1768000000000",
+        }
+    )
+
+
+class _FakeProtocolAdapter:
+    """Stand-in for MayaAdapter/ThorAdapter (the CACAO/RUNE side)."""
+
+    chain = "MAYA"
+    symbol = "CACAO"
+    decimals = 10
+
+    def __init__(self):
+        self.deposits = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def derive_address(self, mnemonic, path=None):
+        return PROTOCOL_ADDRESS
+
+    def build_and_verify_native_deposit(self, **kwargs):
+        self.deposits.append(kwargs)
+        return SimpleNamespace(problems=[], plan=SimpleNamespace(memo=kwargs["memo"]))
+
+
+def _wire_withdraw(monkeypatch, *, position, protocol=None):
+    """Route cmd_withdraw_liquidity's lookups at fakes; return what it reached."""
+    import swapsack.cli as cli
+
+    protocol = protocol or _FakeProtocolAdapter()
+    seen = {"loads": 0, "asset_chain": [], "executed": []}
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def liquidity_provider(self, pool, address):
+            if isinstance(position, Exception):
+                raise position
+            seen.setdefault("queried", []).append((pool, address))
+            return position
+
+    def fake_load(args):
+        seen["loads"] += 1
+        return (MNEMONIC, "")
+
+    monkeypatch.setattr(cli, "_load_mnemonic", fake_load)
+    monkeypatch.setattr(cli, "_protocol_adapter", lambda args, p="": protocol)
+    monkeypatch.setattr(cli, "_liquidity_client", lambda args: FakeClient())
+    monkeypatch.setattr(
+        cli,
+        "_liquidity",
+        lambda args, *, memo, amount, **kw: seen["asset_chain"].append(memo) or 0,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_confirm_and_execute",
+        lambda prepared, adapter, args: (
+            seen["executed"].append((prepared, adapter)) or 0
+        ),
+    )
+    return seen, protocol
+
+
+def test_withdraw_symmetric_triggers_from_the_protocol_side(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    seen, protocol = _wire_withdraw(monkeypatch, position=_symmetric_position())
+    args = build_parser().parse_args(
+        ["withdraw-liquidity", "--asset", "USDC-ETH", "--backend", "maya"]
+    )
+    assert cli.cmd_withdraw_liquidity(args) == 0
+    # Nothing was sent on the asset chain — that trigger cannot match.
+    assert seen["asset_chain"] == []
+    assert len(protocol.deposits) == 1
+    deposit = protocol.deposits[0]
+    assert deposit["memo"] == f"-:{WITHDRAW_POOL}:10000"
+    assert deposit["amount"] == 1  # dust, as Maya's own withdraw traffic uses
+    assert seen["executed"] and seen["executed"][0][1] is protocol
+    out = capsys.readouterr().out
+    assert PROTOCOL_ADDRESS in out  # where the trigger comes from
+    assert EVM_ADDRESS in out  # …and where the asset side lands
+
+
+def test_withdraw_symmetric_honours_partial_bps(monkeypatch):
+    import swapsack.cli as cli
+
+    seen, protocol = _wire_withdraw(monkeypatch, position=_symmetric_position())
+    args = build_parser().parse_args(
+        [
+            "withdraw-liquidity",
+            "--asset",
+            "USDC-ETH",
+            "--bps",
+            "2500",
+            "--backend",
+            "maya",
+        ]
+    )
+    assert cli.cmd_withdraw_liquidity(args) == 0
+    assert protocol.deposits[0]["memo"] == f"-:{WITHDRAW_POOL}:2500"
+
+
+def test_withdraw_single_sided_still_triggers_from_the_asset_chain(monkeypatch):
+    """A single-sided position IS filed under the asset address; that path must
+    keep working exactly as before."""
+    import swapsack.cli as cli
+
+    seen, protocol = _wire_withdraw(monkeypatch, position=None)
+    args = build_parser().parse_args(
+        ["withdraw-liquidity", "--asset", "BTC", "--backend", "maya"]
+    )
+    assert cli.cmd_withdraw_liquidity(args) == 0
+    assert seen["asset_chain"] == [f"-:{ASSET['BTC']}:10000"]
+    assert protocol.deposits == []
+
+
+def test_withdraw_refuses_when_the_position_lookup_fails(monkeypatch, capsys):
+    """An unreachable backend must not silently fall back to the asset-chain
+    trigger: for a symmetric position that spends a tx and does nothing."""
+    import niquests
+
+    import swapsack.cli as cli
+
+    seen, protocol = _wire_withdraw(
+        monkeypatch,
+        position=niquests.exceptions.ConnectionError("mayanode down"),
+    )
+    args = build_parser().parse_args(
+        ["withdraw-liquidity", "--asset", "USDC-ETH", "--backend", "maya"]
+    )
+    assert cli.cmd_withdraw_liquidity(args) == 1
+    assert seen["asset_chain"] == []
+    assert protocol.deposits == []
+    assert "ABORTED" in capsys.readouterr().err
+
+
+def test_withdraw_asks_for_the_keystore_once(monkeypatch):
+    """Routing needs the seed to derive maya1…, and so does the withdraw — but
+    the user must be prompted for the keystore passphrase only once."""
+    import swapsack.cli as cli
+
+    for position in (_symmetric_position(), None):
+        seen, _ = _wire_withdraw(monkeypatch, position=position)
+        args = build_parser().parse_args(
+            ["withdraw-liquidity", "--asset", "USDC-ETH", "--backend", "maya"]
+        )
+        assert cli.cmd_withdraw_liquidity(args) == 0
+        assert seen["loads"] == 1
+
+
+def test_withdraw_refuses_a_backend_without_the_pool_before_looking_anything_up(
+    monkeypatch, capsys
+):
+    """ARB pools exist only on Maya. The wrong-backend refusal must still come
+    first — otherwise the symmetric lookup goes to a node that cannot know the
+    pool, and its 404 is reported as "cannot tell what kind of position this
+    is", which is both wrong and unactionable."""
+    import swapsack.cli as cli
+
+    seen, protocol = _wire_withdraw(monkeypatch, position=None)
+    args = build_parser().parse_args(["withdraw-liquidity", "--asset", "USDC-ARB"])
+    assert cli.cmd_withdraw_liquidity(args) == 2
+    assert seen["loads"] == 0  # not even the keystore was opened
+    assert seen["asset_chain"] == []
+    assert protocol.deposits == []
+    assert "maya" in capsys.readouterr().err.lower()
+
+
+def test_symmetric_add_refuses_wrong_backend_before_touching_the_keystore(
+    monkeypatch, capsys
+):
+    """`--symmetric` must run the same up-front backend check as a single-sided add.
+
+    cmd_add_liquidity dispatched to _liquidity_symmetric *before* the
+    _lp_backend_refused guard, so `--symmetric --asset USDC-ARB` (the default
+    backend being thorchain, which has no ARB pools at all) prompted for the
+    keystore passphrase and then died on a missing router instead of saying
+    which backend to use. README and CHANGELOG both promise the up-front
+    refusal.
+    """
+    import swapsack.cli as cli
+
+    def boom(*a, **kw):
+        raise AssertionError("keystore touched before the backend was validated")
+
+    monkeypatch.setattr(cli, "_load_mnemonic", boom)
+    args = build_parser().parse_args(
+        ["add-liquidity", "--symmetric", "--asset", "USDC-ARB", "--amount", "100"]
+    )
+    assert args.backend == "thorchain"  # the default that makes this reachable
+    assert cli.cmd_add_liquidity(args) == 2
+    assert "ARB liquidity exists only on maya" in capsys.readouterr().err

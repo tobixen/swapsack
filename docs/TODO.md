@@ -86,49 +86,11 @@ Four surfaced during a real 2026-08-16 session
 `CHANGELOG.md`), and the two below remain. Neither risks funds — both are
 *reporting* defects over a money path that was correct — but each tells the user
 something false about their money, which is why they sit above the feature work
-rather than in *Other known gaps*. The third entry below is different in kind
-and worse: it is a **spend** that cannot work.
+rather than in *Other known gaps*.
 
-### `withdraw-liquidity` cannot withdraw a **symmetric** position
-
-Found 2026-08-17 while explaining the fixed `balance` bug — same root cause
-(which address a symmetric LP record is keyed by), but this one wastes a real
-transaction rather than merely mis-printing.
-
-`cmd_withdraw_liquidity` always triggers from the **asset** chain with
-`withdraw_liquidity_memo` → `-:POOL:BPS`. Read Maya's own handling of that
-(`x/mayachain/handler.go:getMsgWithdrawFromMemo`, `handler_withdraw.go`):
-
-- `WithdrawAddress` — the key the LP record is looked up by — is the observed
-  sender, i.e. our `0x…`, **unless** the memo carries a *pair address* in field
-  5 that is a BASE-chain (`maya1…`) address, in which case that replaces it.
-- A symmetric position holds **no units** under the asset address (this is the
-  same zeros-stub lookup that made it invisible in `balance`), so the withdraw
-  resolves to an empty provider.
-
-Two shapes work, and both are visible in real traffic — of 300 recent Maya
-withdraws (Midgard, 2026-08-17), **every** two-sided payout (70/70) was
-triggered from `maya1…`, and **no** asset-chain trigger ever produced one:
-
-1. **Trigger from the CACAO side**: a native `MsgDeposit` carrying dust with
-   memo `-:POOL:BPS`. This needs no new chain work —
-   `CosmosAdapter.build_and_verify_native_deposit` is the symmetric add's
-   protocol leg and is mainnet-proven; what is missing is routing
-   `withdraw-liquidity` to it and gating it.
-2. **Keep the asset-chain trigger and name the pair address**:
-   `-:POOL:BPS::maya1…` (field 4, the withdrawal asset, left empty). Maya then
-   also requires `lp.AssetAddress == tx.FromAddress`, which holds for us.
-   `withdraw_liquidity_memo` would grow an optional `pair_address`.
-
-Note field 4 while you are there: **empty means a proportional, both-sides
-withdraw** (asset to the `0x…`, CACAO to the `maya1…`) — the "balanced
-withdraw" — and naming an asset there takes everything on one side instead.
-Maya refuses a non-empty field 4 while the pool is not `Available`.
-
-Whichever is built, the CLI must first *know* which shape the position is
-(`cacao_address` present in the LP record is the discriminator) and refuse
-rather than broadcast a trigger that cannot match. A withdraw that silently
-does nothing costs a tx fee and leaves the user believing they exited.
+(A third, found 2026-08-17 while explaining those: `withdraw-liquidity` could
+not exit a symmetric position at all. That one is **fixed** — the trigger now
+goes out from the CACAO side. See `docs/liquidity-symmetric.md`.)
 
 ### `status` reports a **completed** swap as "not observed"
 

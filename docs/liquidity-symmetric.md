@@ -105,10 +105,16 @@ liquidity_provider/{ADDR}` answers:
 | queried by | `units` | `cacao_address` |
 |---|---|---|
 | our `maya1…` | non-zero | present |
-| our `0x…` | `0` | present-but-empty stub |
+| our `0x…` | `0` | absent (`null`) |
+| a `maya1…` with **no** position | `0` | the address you asked with |
 
 A *single-sided* record is the other way round: non-zero `units` under the asset
-address and no `cacao_address` at all. The stub is an HTTP 200, not an error, so
+address and no `cacao_address` at all. Note the third row (measured 2026-08-17):
+a protocol-address query echoes `cacao_address` back whether or not anything is
+there, so `cacao_address` discriminates the two *shapes* only when querying by
+the **asset** address. Anything asking "does this address hold a position" must
+key on `units`/redeem values — which is what `parse_liquidity_provider` already
+collapses to `None`. The stub is an HTTP 200, not an error, so
 "filed elsewhere" is indistinguishable from "no position" at the parse layer —
 which is why `balance` hid a real position until `_report_liquidity` began
 probing the `maya1…`/`thor1…` address alongside the chain's own (de-duplicating
@@ -117,11 +123,10 @@ protocol's current behaviour rather than a promise).
 
 ## Withdraw
 
-**Not** with the memo the single-sided path builds. An earlier version of this
-section said a symmetric position withdraws "with the ordinary `-:POOL:<bps>`
-trigger from either owned address"; Maya's source says otherwise, and
-`withdraw-liquidity` therefore cannot exit one of these positions today (a
-Known bug in `docs/TODO.md`).
+A symmetric position is **not** withdrawn by the memo the single-sided path
+builds. (An earlier version of this section said it was — "the ordinary
+`-:POOL:<bps>` trigger from either owned address". Maya's source says
+otherwise.)
 
 The withdraw memo has five fields — `-:POOL:BPS:WITHDRAWAL_ASSET:PAIR_ADDRESS`
 — and the last two are what matter here
@@ -136,10 +141,23 @@ The withdraw memo has five fields — `-:POOL:BPS:WITHDRAWAL_ASSET:PAIR_ADDRESS`
   CACAO to the `maya1…`). Naming an asset there takes it all on one side
   instead; Maya refuses that while the pool is not `Available`.
 
-So a symmetric exit is either a CACAO-side `MsgDeposit` carrying
-`-:POOL:BPS` — which is how **70 of 70** two-sided payouts in 300 recent Maya
-withdraws were triggered (Midgard, 2026-08-17), with no asset-chain trigger ever
-producing one — or an asset-chain trigger carrying `-:POOL:BPS::maya1…`.
+**What the CLI does** (`cmd_withdraw_liquidity`): it asks which shape the
+position is — one `liquidity_provider` lookup under the `maya1…`/`thor1…`
+address — and then
+
+- **symmetric** (that lookup answers): triggers from the protocol side, a native
+  `MsgDeposit` carrying `liquidity.WITHDRAW_TRIGGER_AMOUNT` (1 base unit, what
+  Maya's own traffic uses) with the plain `-:POOL:BPS` memo. This is the shape
+  **70 of 70** two-sided payouts in 300 recent Maya withdraws used (Midgard,
+  2026-08-17); no asset-chain trigger produced one.
+- **single-sided** (it does not): the asset-chain trigger, exactly as before.
+- **lookup failed**: aborts. Falling back to the asset chain would spend a
+  transaction that cannot match a symmetric position, and the user would read
+  the silence as a completed exit.
+
+The pair-address form (`-:POOL:BPS::maya1…`) is the other way to reach the same
+place and is *not* implemented — one shape is enough, and the CACAO trigger is
+the cheaper transaction as well as the better-attested one.
 
 ## See also
 

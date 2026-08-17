@@ -1981,7 +1981,94 @@ def cmd_withdraw_liquidity(args: argparse.Namespace) -> int:
     from swapsack.liquidity import withdraw_liquidity_memo
 
     pool = ASSET[args.asset]
-    return _liquidity(args, memo=withdraw_liquidity_memo(pool, args.bps), amount=None)
+    memo = withdraw_liquidity_memo(pool, args.bps)
+    # Before any keystore or network work, and before the symmetric lookup in
+    # particular: asking a backend that does not run this pool would fail as
+    # "cannot tell what kind of position this is" rather than as the wrong
+    # backend, which is what it actually is.
+    factory = _lp_asset_factory(pool.split(".", 1)[0])
+    if factory is not None and _lp_backend_refused(args, factory(args)):
+        return 2
+    # Loaded once and threaded through: routing has to derive the maya1/thor1
+    # address to find out which kind of position this is, and the withdraw
+    # itself needs the seed again — but the user gets one passphrase prompt.
+    credentials = _load_mnemonic(args)
+    try:
+        position = _protocol_side_position(args, pool, credentials)
+    except SwapAborted as exc:
+        print(f"ABORTED: {exc}", file=sys.stderr)
+        return 1
+    if position is not None:
+        return _withdraw_from_protocol_side(args, memo, credentials, position)
+    return _liquidity(args, memo=memo, amount=None, credentials=credentials)
+
+
+def _protocol_side_position(  # noqa: ANN202 (thorchain.LiquidityPosition | None)
+    args: argparse.Namespace, pool: str, credentials: tuple[str, str]
+):
+    """The LP record filed under our RUNE/CACAO address, or ``None``.
+
+    That is where a **symmetric** position lives, and *only* there — the asset
+    address answers a zeros stub for it (the same lookup that once hid it from
+    `balance`). A single-sided position is the other way round, so ``None``
+    means "withdraw from the asset chain as before".
+
+    A failed lookup raises rather than answering ``None``: falling back to the
+    asset-chain trigger on a symmetric position spends a transaction that
+    cannot match anything, and the user would read the silence as a completed
+    exit.
+    """
+    mnemonic, passphrase = credentials
+    with _protocol_adapter(args, passphrase) as protocol, _liquidity_client(args) as be:
+        try:
+            return be.liquidity_provider(pool, protocol.derive_address(mnemonic))
+        except HTTP_ERRORS as exc:
+            raise SwapAborted(
+                f"cannot tell whether this is a symmetric position "
+                f"({args.backend} LP lookup failed: {exc}); refusing to send a "
+                f"withdraw trigger that may not match it"
+            ) from exc
+
+
+def _withdraw_from_protocol_side(
+    args: argparse.Namespace,
+    memo: str,
+    credentials: tuple[str, str],
+    position,  # noqa: ANN001 (thorchain.LiquidityPosition)
+) -> int:
+    """Withdraw a symmetric position by triggering from the RUNE/CACAO side.
+
+    A native ``MsgDeposit`` carrying dust and the ordinary ``-:POOL:<bps>``
+    memo. Both sides come back proportionally — the asset to the asset address
+    the protocol has on file, the RUNE/CACAO to the address that signs this.
+    """
+    from swapsack.liquidity import WITHDRAW_TRIGGER_AMOUNT
+
+    _warn_liquidity_risks()
+    mnemonic, passphrase = credentials
+    with _protocol_adapter(args, passphrase) as protocol:
+        address = protocol.derive_address(mnemonic)
+        prepared = protocol.build_and_verify_native_deposit(
+            memo=memo,
+            amount=WITHDRAW_TRIGGER_AMOUNT,
+            mnemonic=mnemonic,
+            now=int(time.time()),
+        )
+        print(
+            f"withdraw: {args.bps / 100:.2f}% of a SYMMETRIC {position.pool} "
+            f"position ({protocol.symbol}-side, units {position.units})"
+        )
+        print(
+            f"trigger:  dust {protocol.symbol} MsgDeposit on {protocol.chain} "
+            f"from {address}"
+        )
+        print(f"memo:     {memo}")
+        print(
+            f"returns:  the asset side to {position.asset_address}, "
+            f"the {protocol.symbol} side to {address}"
+        )
+        print(f"max fee:  {protocol.chain}'s fixed native tx fee")
+        return _confirm_and_execute(prepared, protocol, args)
 
 
 def _warn_liquidity_risks() -> None:
@@ -1996,8 +2083,19 @@ def _warn_liquidity_risks() -> None:
 
 
 def _liquidity(
-    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
+    args: argparse.Namespace,
+    *,
+    memo: str,
+    amount: int | None,
+    sweep: bool = False,
+    credentials: tuple[str, str] | None = None,
 ) -> int:
+    """Dispatch an LP add/withdraw to the asset chain's own path.
+
+    ``credentials`` is an already-loaded ``(mnemonic, bip39_passphrase)``, so a
+    caller that had to open the keystore to *route* the command (see
+    `cmd_withdraw_liquidity`) does not make the user type the passphrase twice.
+    """
     _warn_liquidity_risks()
     asset = ASSET[args.asset]
     chain = asset.split(".", 1)[0]
@@ -2008,28 +2106,50 @@ def _liquidity(
         # adding an EVM chain does not silently leave its token pools refused.
         print(f"token liquidity is only supported for EVM tokens, not {args.asset}")
         return 2
+    # Refuse a backend that can't host the pool up front, before any keystore or
+    # network work — uniformly for every chain that has an adapter. This was
+    # once wired only into the DASH/ZEC branches, so an lp_backends restriction
+    # on any other adapter was silently ignored. The throwaway adapter does no
+    # I/O at construction; it only carries the class attrs.
+    factory = _lp_asset_factory(chain)
+    if factory is not None and _lp_backend_refused(args, factory(args)):
+        return 2
     utxo = _UTXO_ADAPTERS.get(chain)
     if utxo is not None:
-        # Refuse a backend that can't host the pool up front, before any
-        # keystore/network work — uniformly for every UTXO chain. This was
-        # previously wired only into the DASH/ZEC branches, so an lp_backends
-        # restriction on any other adapter was silently ignored. The throwaway
-        # adapter does no I/O at construction; it only carries the class attrs.
-        if _lp_backend_refused(args, utxo(args)):
-            return 2
-        return _liquidity_utxo(args, utxo, memo=memo, amount=amount, sweep=sweep)
+        return _liquidity_utxo(
+            args,
+            utxo,
+            memo=memo,
+            amount=amount,
+            sweep=sweep,
+            credentials=credentials,
+        )
     evm = _EVM_ADAPTERS.get(chain)
     if evm is not None:
-        # Same up-front backend check the UTXO branch does: ARB pools exist only
-        # on Maya, so `--backend thorchain` must be refused before any keystore
-        # or network work rather than failing at the vault lookup.
-        if _lp_backend_refused(args, evm(args)):
-            return 2
-        return _liquidity_evm(args, evm, memo=memo, amount=amount, sweep=sweep)
+        return _liquidity_evm(
+            args,
+            evm,
+            memo=memo,
+            amount=amount,
+            sweep=sweep,
+            credentials=credentials,
+        )
     if chain == "TRON":
-        return _liquidity_tron(args, memo=memo, amount=amount, sweep=sweep)
+        return _liquidity_tron(
+            args, memo=memo, amount=amount, sweep=sweep, credentials=credentials
+        )
     print(f"liquidity on {chain} is not implemented", file=sys.stderr)
     return 2
+
+
+def _lp_asset_factory(chain: str):  # noqa: ANN202 (Callable[..., ChainAdapter] | None)
+    """The adapter factory an LP op on ``chain`` builds through, or ``None``.
+
+    One lookup for both callers, so the "which chains can hold liquidity" answer
+    cannot differ between routing a withdraw and executing one. TRON is absent
+    deliberately: it has its own path and no `lp_backends` restriction to check.
+    """
+    return _UTXO_ADAPTERS.get(chain) or _EVM_ADAPTERS.get(chain)
 
 
 def _lp_backend_refused(args: argparse.Namespace, adapter: object) -> bool:
@@ -2058,12 +2178,13 @@ def _liquidity_utxo(
     memo: str,
     amount: int | None,
     sweep: bool = False,
+    credentials: tuple[str, str] | None = None,
 ) -> int:
     from swapsack.chains.coins import InsufficientFunds
     from swapsack.chains.scan import scan_account
     from swapsack.swap import prepare_liquidity
 
-    mnemonic, passphrase = _load_mnemonic(args)
+    mnemonic, passphrase = credentials or _load_mnemonic(args)
     with adapter_factory(args, passphrase) as adapter, _liquidity_client(args) as thor:
         records = scan_account(
             derive_address=lambda p: adapter.derive_address(mnemonic, p),
@@ -2181,6 +2302,7 @@ def _liquidity_evm(
     memo: str,
     amount: int | None,
     sweep: bool = False,
+    credentials: tuple[str, str] | None = None,
 ) -> int:
     from swapsack.chains.coins import InsufficientFunds, token_sweep_amount
     from swapsack.chains.eth import eth_sweep_amount
@@ -2191,7 +2313,7 @@ def _liquidity_evm(
     # the router; a token *withdraw* is a native-coin dust trigger, handled
     # natively.
     token_add = memo.startswith("+") and "-" in asset
-    mnemonic, passphrase = _load_mnemonic(args)
+    mnemonic, passphrase = credentials or _load_mnemonic(args)
     with adapter_factory(args, passphrase) as adapter, _liquidity_client(args) as thor:
         from_address = adapter.derive_address(mnemonic)
         try:
@@ -2274,6 +2396,13 @@ def _liquidity_symmetric(args: argparse.Namespace, pool: str) -> int:
     from swapsack.swap import prepare_symmetric_liquidity
 
     chain = pool.split(".", 1)[0]
+    # The same up-front refusal _liquidity makes, before any keystore or network
+    # work. --symmetric has its own dispatch out of cmd_add_liquidity and so
+    # skipped that guard entirely, reaching the backend's missing router only
+    # after the risk warnings had printed and the passphrase had been asked for.
+    factory = _lp_asset_factory(chain)
+    if factory is not None and _lp_backend_refused(args, factory(args)):
+        return 2
     if chain not in _SYMMETRIC_ASSET_CHAINS:
         print(
             f"--symmetric needs an account-model asset chain "
@@ -2443,14 +2572,19 @@ def _confirm_and_execute_symmetric(
 
 
 def _liquidity_tron(
-    args: argparse.Namespace, *, memo: str, amount: int | None, sweep: bool = False
+    args: argparse.Namespace,
+    *,
+    memo: str,
+    amount: int | None,
+    sweep: bool = False,
+    credentials: tuple[str, str] | None = None,
 ) -> int:
     from swapsack.swap import prepare_liquidity
 
     if sweep:
         print("--amount max is not supported for TRON liquidity yet", file=sys.stderr)
         return 2
-    mnemonic, passphrase = _load_mnemonic(args)
+    mnemonic, passphrase = credentials or _load_mnemonic(args)
     with _tron_adapter(args, passphrase) as adapter, _liquidity_client(args) as thor:
         try:
             prepared = prepare_liquidity(

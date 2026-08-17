@@ -216,6 +216,14 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Fixed
 
+- **`withdraw-liquidity` could not exit a two-sided position** — it sent the
+  trigger on the asset chain, where the protocol has no record of such a
+  position, so the transaction was spent and nothing came back. It now detects
+  which kind of position you hold and, for a two-sided one, triggers from the
+  CACAO/RUNE side instead (a dust `MsgDeposit`); both sides are returned
+  proportionally. Nothing new to pass — the command picks the right one. If it
+  cannot reach the network to find out, it refuses rather than guessing.
+
 - **`balance` hid a two-sided liquidity position completely.** A symmetric add
   is filed by the protocol under your **CACAO/RUNE** address, not the asset
   address — and the asset address answers "no position" rather than an error,

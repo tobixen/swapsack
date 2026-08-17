@@ -177,6 +177,32 @@ def test_build_and_verify_native_deposit_for_symmetric_lp(monkeypatch):
     assert decoded["memo"] == memo
 
 
+def test_build_and_verify_native_deposit_for_a_symmetric_withdraw(monkeypatch):
+    """The withdraw trigger is the same MsgDeposit machinery carrying a `-:`
+    memo and dust — the money-path proof that what routing chooses is a
+    well-formed, gate-passing transaction."""
+    import time
+
+    from swapsack.chains import cosmos_tx
+    from swapsack.liquidity import WITHDRAW_TRIGGER_AMOUNT, withdraw_liquidity_memo
+
+    adapter = MayaAdapter()
+    monkeypatch.setattr(adapter, "fetch_account", lambda address: (4, 2))
+    monkeypatch.setattr(adapter, "fetch_chain_id", lambda: "mayachain-mainnet-v1")
+
+    memo = withdraw_liquidity_memo("ETH.ETH", 10000)
+    prepared = adapter.build_and_verify_native_deposit(
+        memo=memo,
+        amount=WITHDRAW_TRIGGER_AMOUNT,
+        mnemonic=TEST_MNEMONIC,
+        now=int(time.time()),
+    )
+    assert prepared.problems == []  # a "-:" memo pays no destination, and needn't
+    decoded = cosmos_tx.decode_msg_deposit_body(prepared.built.body_bytes)
+    assert decoded["coins"] == [("MAYA.CACAO", "1")]  # dust; the memo does the work
+    assert decoded["memo"] == "-:ETH.ETH:10000"
+
+
 def test_build_and_verify_swap_deposit_catches_tampered_memo():
     import time
 

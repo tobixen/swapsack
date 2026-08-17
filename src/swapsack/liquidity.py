@@ -8,6 +8,14 @@ and fee yield both scale ~linearly with the deposit; the thing that penalises a
 small position is the roughly *fixed* round-trip transaction cost (add +
 withdraw trigger + outbound), which is a larger fraction of a smaller stake.
 
+Withdrawing a **symmetric** position is not that: the protocol looks the LP
+record up by the trigger's observed sender, and a symmetric position is filed
+under the RUNE/CACAO address, so an asset-chain trigger finds nothing. It is
+triggered from the protocol side instead — a native ``MsgDeposit`` carrying
+``WITHDRAW_TRIGGER_AMOUNT`` with the same ``-:POOL:<bps>`` memo — and both sides
+come back proportionally, asset to the asset address and RUNE/CACAO to the
+protocol one. See ``docs/liquidity-symmetric.md``.
+
 Add (symmetric / two-sided): **two linked deposits**, one per side, paired by
 the protocol via cross-referenced addresses:
 
@@ -41,6 +49,13 @@ def symmetric_add_memo(pool: str, paired_address: str) -> str:
     if not paired_address:
         raise ValueError("symmetric add needs the paired address")
     return f"+:{pool}:{paired_address}"
+
+
+# A withdraw is *triggered*, not paid for: the deposit carries the memo and the
+# amount is irrelevant to what comes back, so it is dust. 1 base unit is what
+# Maya's own withdraw traffic uses (1e-10 CACAO; sampled 2026-08-17), and it is
+# the smallest thing a MsgDeposit can carry.
+WITHDRAW_TRIGGER_AMOUNT = 1
 
 
 def withdraw_liquidity_memo(pool: str, basis_points: int) -> str:
