@@ -2281,6 +2281,14 @@ def _lp_backend_refused(args: argparse.Namespace, adapter: object) -> bool:
     allowed = getattr(adapter, "lp_backends", None)
     if allowed is None or args.backend in allowed:
         return False
+    if not allowed:
+        # () means pool-less everywhere (BSC; CACAO, the settlement asset).
+        # There is no backend to suggest, and allowed[0] would IndexError.
+        print(
+            f"{adapter.chain} has no liquidity pools on any backend",
+            file=sys.stderr,
+        )
+        return True
     print(
         f"{adapter.chain} liquidity exists only on {'/'.join(allowed)} — "
         f"re-run with --backend {allowed[0]}",

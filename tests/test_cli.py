@@ -3881,3 +3881,22 @@ def test_balance_keeps_each_lp_row_under_its_own_token(monkeypatch, capsys):
     )
     # …and USDT-ETH, which has no position, is free to collapse into `zero:`.
     assert "USDT-ETH" not in " ".join(ln for ln in lines if not ln.startswith("zero:"))
+
+
+def test_lp_backend_refusal_survives_a_chain_with_no_pools_anywhere():
+    """`lp_backends = ()` means no pools on any backend — say so, don't crash.
+
+    The message formatted allowed[0], which IndexErrors on the empty tuple.
+    Unreachable while BSC/MAYA stay out of the adapter registries, but
+    _lp_asset_factory widened the set of callers.
+    """
+    import swapsack.cli as cli
+
+    class Poolless:
+        chain = "BSC"
+        lp_backends = ()
+
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "USDC-ETH", "--amount", "1"]
+    )
+    assert cli._lp_backend_refused(args, Poolless()) is True
