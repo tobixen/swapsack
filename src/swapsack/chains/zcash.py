@@ -168,6 +168,7 @@ class ZecAdapter(GatedTxBuilder):
 
     chain = "ZEC"
     asset = "ZEC.ZEC"
+    unconfirmed_spendable = False  # lightwalletd indexes mined outputs only
     default_derivation = DEFAULT_DERIVATION
     account = ACCOUNT
     change_path = CHANGE_PATH
@@ -269,7 +270,19 @@ class ZecAdapter(GatedTxBuilder):
 
     # --- Phase 2: send / sweep (bespoke v4/ZIP-243 signer, ZIP-317 fees) -------
 
-    def fetch_utxos(self, address: str) -> list[Utxo]:
+    def fetch_utxos(
+        self,
+        address: str,
+        *,
+        include_unconfirmed: bool = False,  # noqa: ARG002
+    ) -> list[Utxo]:
+        """This address's spendable outputs — always confirmed ones.
+
+        ``include_unconfirmed`` is accepted for a uniform adapter surface and
+        does nothing: lightwalletd's address index holds mined outputs only, so
+        there is no mempool UTXO to opt into. The CLI says so rather than
+        letting ``--allow-unconfirmed`` look like it did something.
+        """
         resp = self._unary("GetAddressUtxos", encode_utxos_arg(address))
         return decode_utxos_reply(resp, address)
 
@@ -287,6 +300,7 @@ class ZecAdapter(GatedTxBuilder):
         n_inputs: int,
         fee_rate: float,  # noqa: ARG002 (ZIP-317 ignores it)
         memo_len: int = 0,
+        extra_fee: int = 0,  # noqa: ARG002 (no unconfirmed ZEC input to lift)
     ) -> tuple[int, int]:
         return sweep_amount_zip317(total, n_inputs, memo_len)
 

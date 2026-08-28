@@ -12,7 +12,7 @@ import dataclasses
 from bitcoinlib.mnemonic import Mnemonic
 
 from swapsack.chains.base import AddressInfo, BalanceReport
-from swapsack.chains.coins import Utxo
+from swapsack.chains.coins import Utxo, cpfp_deficit
 from swapsack.chains.utxo import UtxoTxBuilder
 from swapsack.net import HttpClient
 
@@ -149,14 +149,61 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
         resp.raise_for_status()
         return parse_address_info(resp.json())
 
-    def fetch_utxos(self, address: str) -> list[Utxo]:
+    def fetch_utxos(
+        self, address: str, *, include_unconfirmed: bool = False
+    ) -> list[Utxo]:
+        """This address's spendable outputs; confirmed-only unless opted out.
+
+        ``include_unconfirmed`` (the CLI's ``--allow-unconfirmed``) also returns
+        mempool outputs, marked ``confirmed=False`` so the fee maths can price
+        their parents — see :meth:`cpfp_deficits`.
+        """
         resp = self._get(f"{self.esplora_url}/address/{address}/utxo")
         resp.raise_for_status()
-        # Fail closed: only spend UTXOs explicitly marked confirmed (L1).
+        # Fail closed: an output counts as confirmed only if it says so (L1).
         return [
-            Utxo(txid=x["txid"], vout=x["vout"], value=x["value"], address=address)
+            Utxo(
+                txid=x["txid"],
+                vout=x["vout"],
+                value=x["value"],
+                address=address,
+                confirmed=confirmed,
+            )
             for x in resp.json()
-            if x.get("status", {}).get("confirmed", False)
+            if (confirmed := x.get("status", {}).get("confirmed", False))
+            or include_unconfirmed
+        ]
+
+    def cpfp_deficits(self, utxos: list[Utxo], fee_rate: float) -> list[Utxo]:
+        """Fill in ``ancestor_deficit`` for the unconfirmed inputs among ``utxos``.
+
+        One ``/tx`` call per distinct mempool parent, priced against the same
+        ``fee_rate`` the child will be built at. Depth 1 only: if the parent is
+        itself spending unconfirmed money, its own ancestors' shortfall is not
+        counted, so the package can still land under target. Bitcoin's
+        ancestor/descendant limits (25 txs, 101 kvB) bound such chains anyway;
+        a deep one is a sign to wait rather than to build on.
+        """
+        deficits: dict[str, int] = {}
+        for utxo in utxos:
+            if utxo.confirmed or utxo.txid in deficits:
+                continue
+            parent = self.fetch_tx(utxo.txid)
+            if parent is None:
+                raise RuntimeError(
+                    f"cannot price the unconfirmed parent {utxo.txid}: this chain "
+                    "has never seen it — refusing to guess its fee"
+                )
+            deficits[utxo.txid] = (
+                0
+                if parent.confirmed  # mined between the scan and now: nothing to lift
+                else cpfp_deficit(parent.fee, parent.vsize, fee_rate)
+            )
+        return [
+            dataclasses.replace(u, ancestor_deficit=deficits[u.txid])
+            if u.txid in deficits
+            else u
+            for u in utxos
         ]
 
     def fetch_balance(self, address: str) -> int:

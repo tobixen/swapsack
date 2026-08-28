@@ -257,6 +257,24 @@ target_blocks = 4   # cheaper/slower; --fee-blocks and $SWAPSACK_FEE_BLOCKS win
 
 Precedence: `--fee-blocks` › `$SWAPSACK_FEE_BLOCKS` › config file › default.
 
+**Spending unconfirmed money.** By default only confirmed UTXOs are
+spendable — an output still in the mempool can be replaced or evicted, and
+whatever you built on it dies with it (no funds lost; the spend simply never
+happens). `--allow-unconfirmed` opts into them anyway, on `send`, `swap` and
+the liquidity commands. The spend then pays each unconfirmed parent's fee
+shortfall on top of its own fee, so the parent+child *package* reaches the
+targeted rate — child-pays-for-parent, which is the point: a fee-stuck
+incoming transaction gets dragged into a block by the one you are sending
+now. Confirmed coins are still selected first, and the extra fee may need a
+higher `--max-fee` before the gate will pass it.
+
+Two things it does not do: it looks one hop back only (a parent that is
+itself spending unconfirmed money can leave the package short), and it does
+not make a *swap* settle sooner — THORChain, Maya and Chainflip all wait for
+their own confirmation count on the deposit regardless. On DASH the flag
+spends mempool outputs with no surcharge (no replacement, flat fee rate); on
+ZEC it has nothing to act on, and says so.
+
 **Shell tab-completion** (via argcomplete) for commands, subcommands and
 options should need no setup at all: the install ships a completion file into
 `<prefix>/share/bash-completion/completions/swapsack` (and

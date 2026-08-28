@@ -244,30 +244,29 @@ nothing yet *does* the replacing. Build the other half:
   implements no mempool replacement (deliberate, for InstantSend). So `bump`
   should be BTC-only and say so, rather than building a replacement no Dash node
   will accept. Dash's own answer to a stuck tx is InstantSend, not RBF.
-- Pairs naturally with the CPFP work below (the other way to rescue a stuck tx —
+- Pairs naturally with the CPFP work below, which has since shipped as
+  `--allow-unconfirmed` (the other way to rescue a stuck tx —
   child-pays-for-parent — for when *we* don't control the parent).
 
-## Spend unconfirmed inbound via CPFP (`--allow-unconfirmed`)
+## Unconfirmed spending — what `--allow-unconfirmed` still leaves open
 
-Currently `fetch_utxos` is confirmed-only and the fee model is a flat
-`fee_rate`, so a swap can't be funded from an inbound tx still in the mempool.
+The flag and its child-pays-for-parent fee maths shipped (see `CHANGELOG.md`);
+these are the gaps it was knowingly shipped with.
 
-Add an opt-in `--allow-unconfirmed` that:
-
-- includes unconfirmed UTXOs as spendable, and
-- does proper **child-pays-for-parent** fee selection: detect the parent's fee
-  deficit and overpay on the swap (child) tx so the parent+child *package*
-  reaches the target feerate.
-
-Notes / caveats (see the chat that prompted this):
-
-- THORChain still only acts on **confirmed** deposits (value-scaled
-  confirmation count), so CPFP speeds up reaching that point but does not skip
-  it. Main benefit is when the inbound is fee-stuck.
-- Only safe when we control the parent. An external RBF-signalling parent can
-  be replaced, which invalidates our deposit tx (benign failure: the swap just
-  never happens, no funds lost) — warn the user.
-- Mind Bitcoin mempool ancestor/descendant limits.
+- **The CPFP surcharge looks one hop back.** A parent that is itself spending
+  unconfirmed money has its own ancestors' shortfall uncounted, so the package
+  can land under the targeted rate even though the wallet believes it paid for
+  it. Walking the chain needs the parents' `vin` txids, which `TxSummary`
+  currently drops.
+- **Nothing counts against Bitcoin's ancestor/descendant limits** (25 txs,
+  101 kvB). A deep enough chain gets the child rejected by mempool policy at
+  broadcast, with no warning beforehand.
+- **Nothing checks whether the parent is ours.** Spending our own unconfirmed
+  change is safe; spending an external RBF-signalling parent is not — it can be
+  replaced, which invalidates our child (benign: the spend never happens, no
+  funds lost). Today the user gets one warning covering both. The wallet could
+  tell them apart: a parent whose inputs are all wallet addresses is our own
+  change. Needs input addresses from `/tx`, which `TxSummary` already carries.
 
 ## Carried over from the early core reviews
 

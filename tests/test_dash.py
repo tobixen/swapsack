@@ -407,3 +407,23 @@ def test_parse_insight_unconfirmed_balance_alone_counts_as_history():
         )
         assert info.has_history
         assert info.pending == pending
+
+
+def test_fetch_utxos_can_include_unconfirmed(monkeypatch):
+    """--allow-unconfirmed opts DASH in too; Dash has no RBF, so no CPFP maths."""
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return INSIGHT_UTXOS
+
+    a = DashAdapter()
+    monkeypatch.setattr(a, "_get", lambda url: FakeResp())
+    utxos = a.fetch_utxos(
+        "XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5", include_unconfirmed=True
+    )
+    assert [(u.value, u.confirmed) for u in utxos] == [(150000, True), (50000, False)]
+    # No mempool fee market to price against: the inputs stay unsurcharged.
+    assert [u.ancestor_deficit for u in a.cpfp_deficits(utxos, fee_rate=1.0)] == [0, 0]

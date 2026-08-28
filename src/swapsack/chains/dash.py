@@ -136,19 +136,31 @@ class DashAdapter(HttpClient, UtxoTxBuilder):
         resp.raise_for_status()
         return parse_insight_addr(resp.json())
 
-    def fetch_utxos(self, address: str) -> list[Utxo]:
+    def fetch_utxos(
+        self, address: str, *, include_unconfirmed: bool = False
+    ) -> list[Utxo]:
+        """This address's spendable outputs; confirmed-only unless opted out.
+
+        Dash implements no mempool replacement (deliberately, for InstantSend),
+        so an unconfirmed Dash output cannot be RBF'd out from under a spend of
+        it — and with a flat, generous fee rate there is no package-fee maths to
+        do either (:meth:`cpfp_deficits` is the shared no-op). It stays opt-in
+        all the same: a double-spend race is still lost by whoever the network
+        settles against.
+        """
         resp = self._get(f"{self.api_url}/addr/{address}/utxo")
         resp.raise_for_status()
-        # Fail closed: only spend UTXOs with at least one confirmation.
+        # Fail closed: an output counts as confirmed only if it says so.
         return [
             Utxo(
                 txid=x["txid"],
                 vout=x["vout"],
                 value=x["satoshis"],
                 address=address,
+                confirmed=confirmed,
             )
             for x in resp.json()
-            if x.get("confirmations", 0) > 0
+            if (confirmed := x.get("confirmations", 0) > 0) or include_unconfirmed
         ]
 
     def fetch_balance(self, address: str) -> int:

@@ -5,6 +5,8 @@ pass the same verify gate that guards broadcasting, and must sign across the
 distinct derivation paths of its inputs. Skipped if bitcoinlib is not installed.
 """
 
+import dataclasses
+
 import pytest
 
 pytest.importorskip("bitcoinlib")
@@ -571,3 +573,154 @@ def test_the_three_outputs_are_in_chainflips_required_order():
     assert [o.address == VAULT for o in built.outputs][0] is True
     assert built.outputs[1].op_return_data == BINARY_MEMO
     assert built.outputs[2].address == built.change_address
+
+
+# --- unconfirmed inputs: opt-in spending, with a CPFP surcharge ---
+
+ESPLORA_UTXOS = [
+    {
+        "txid": "cc" * 32,
+        "vout": 1,
+        "value": 150_000,
+        "status": {"confirmed": True, "block_height": 959260},
+    },
+    {
+        "txid": "dd" * 32,
+        "vout": 0,
+        "value": 50_000,
+        "status": {"confirmed": False},
+    },
+]
+
+
+def _utxo_adapter(monkeypatch) -> BtcAdapter:
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return ESPLORA_UTXOS
+
+    a = BtcAdapter()
+    monkeypatch.setattr(a, "_get", lambda url: FakeResp())
+    return a
+
+
+def test_fetch_utxos_excludes_unconfirmed_by_default(monkeypatch):
+    utxos = _utxo_adapter(monkeypatch).fetch_utxos("bc1qowned")
+    assert [(u.txid, u.value, u.confirmed) for u in utxos] == [
+        ("cc" * 32, 150_000, True)
+    ]
+
+
+def test_fetch_utxos_can_include_unconfirmed_and_marks_them(monkeypatch):
+    utxos = _utxo_adapter(monkeypatch).fetch_utxos(
+        "bc1qowned", include_unconfirmed=True
+    )
+    assert [(u.value, u.confirmed) for u in utxos] == [
+        (150_000, True),
+        (50_000, False),
+    ]
+
+
+def _parent(fee: int, vsize: int, confirmed: bool = False):
+    from swapsack.chains.btc import TxSummary
+
+    return TxSummary(
+        txid="dd" * 32,
+        confirmed=confirmed,
+        block_height=None,
+        fee=fee,
+        vsize=vsize,
+        inputs=(),
+        outputs=(),
+    )
+
+
+def test_cpfp_deficits_price_the_unconfirmed_parents_shortfall(monkeypatch):
+    a = BtcAdapter()
+    monkeypatch.setattr(a, "fetch_tx", lambda txid: _parent(fee=200, vsize=200))
+    utxos = [
+        Utxo(txid="cc" * 32, vout=1, value=150_000, address="bc1qowned"),
+        Utxo(
+            txid="dd" * 32,
+            vout=0,
+            value=50_000,
+            address="bc1qowned",
+            confirmed=False,
+        ),
+    ]
+    priced = a.cpfp_deficits(utxos, fee_rate=5)
+    # Confirmed input untouched; the unconfirmed one carries 5*200 - 200 = 800.
+    assert [u.ancestor_deficit for u in priced] == [0, 800]
+
+
+def test_cpfp_deficits_charge_nothing_for_a_parent_that_just_confirmed(monkeypatch):
+    a = BtcAdapter()
+    monkeypatch.setattr(
+        a, "fetch_tx", lambda txid: _parent(fee=200, vsize=200, confirmed=True)
+    )
+    utxo = Utxo(
+        txid="dd" * 32, vout=0, value=50_000, address="bc1qowned", confirmed=False
+    )
+    assert a.cpfp_deficits([utxo], fee_rate=5)[0].ancestor_deficit == 0
+
+
+def test_cpfp_deficits_fetch_a_shared_parent_once(monkeypatch):
+    a = BtcAdapter()
+    calls = []
+
+    def fake_fetch(txid):
+        calls.append(txid)
+        return _parent(fee=200, vsize=200)
+
+    monkeypatch.setattr(a, "fetch_tx", fake_fetch)
+    utxos = [
+        Utxo(txid="dd" * 32, vout=n, value=50_000, address="bc1qowned", confirmed=False)
+        for n in (0, 1)
+    ]
+    priced = a.cpfp_deficits(utxos, fee_rate=5)
+    assert calls == ["dd" * 32]
+    # Both carry it; cpfp_surcharge dedupes by txid so the parent is paid once.
+    assert [u.ancestor_deficit for u in priced] == [800, 800]
+
+
+def test_cpfp_deficits_refuse_an_unpriceable_parent(monkeypatch):
+    a = BtcAdapter()
+    monkeypatch.setattr(a, "fetch_tx", lambda txid: None)
+    utxo = Utxo(
+        txid="dd" * 32, vout=0, value=50_000, address="bc1qowned", confirmed=False
+    )
+    with pytest.raises(RuntimeError, match="cannot price"):
+        a.cpfp_deficits([utxo], fee_rate=5)
+
+
+def test_a_spend_of_an_unconfirmed_input_carries_the_surcharge_to_the_chain():
+    """End to end: the parent's shortfall reaches the transaction's real fee."""
+    a = BtcAdapter()
+    addr = a.derive_address(MNEMONIC, PATH)
+    recipient = a.derive_address(MNEMONIC, "m/84'/0'/0'/0/9")
+
+    def prepared_with(utxo):
+        return a.build_and_verify_send(
+            recipient=recipient,
+            amount=100_000,
+            now=0,
+            mnemonic=MNEMONIC,
+            scanned_utxos=[utxo],
+            fee_rate=2,
+            change_address=addr,
+            max_fee=100_000,
+        )
+
+    base = Utxo(txid="aa" * 32, vout=0, value=200_000, address=addr, path=PATH)
+    plain = prepared_with(base)
+    lifted = prepared_with(
+        dataclasses.replace(base, confirmed=False, ancestor_deficit=800)
+    )
+    assert lifted.built.fee == plain.built.fee + 800
+    assert lifted.problems == []
+    # The extra fee comes out of the change, never out of the recipient's output.
+    pays = [o for o in lifted.built.outputs if o.address == recipient]
+    assert len(pays) == 1 and pays[0].value == 100_000
+    assert a.sign(lifted.built) and lifted.built.tx.verify() is True

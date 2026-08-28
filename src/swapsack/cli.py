@@ -32,6 +32,7 @@ from swapsack.addresses import (
     parse_payment_uri,
     validate_destination_address,
 )
+from swapsack.chains.coins import Utxo, cpfp_surcharge
 from swapsack.cow import DEFAULT_COW_TOLERANCE_BPS
 from swapsack.keystore import HdKey, Keystore
 from swapsack.net import HTTP_ERRORS
@@ -1528,39 +1529,105 @@ def _send_tron(args: argparse.Namespace) -> int:
         return _confirm_and_execute(prepared, adapter, args)
 
 
+def _no_utxos_message(args: argparse.Namespace) -> str:
+    if getattr(args, "allow_unconfirmed", False):
+        return "no UTXOs found for this wallet, confirmed or in the mempool"
+    return (
+        "no confirmed UTXOs found for this wallet "
+        "(--allow-unconfirmed also spends mempool ones)"
+    )
+
+
+def _spendable_utxos(
+    adapter,  # noqa: ANN001 (any UTXO-chain adapter)
+    mnemonic: str,
+    args: argparse.Namespace,
+) -> list[Utxo]:
+    """Gap-limit scan the wallet's account and collect what it may spend.
+
+    Confirmed outputs only, unless ``--allow-unconfirmed`` opts into the
+    mempool ones too — see :func:`_price_unconfirmed`, which must then price
+    them before anything is built.
+    """
+    from swapsack.chains.scan import scan_account
+
+    allow_unconfirmed = getattr(args, "allow_unconfirmed", False)
+    if allow_unconfirmed and not adapter.unconfirmed_spendable:
+        print(
+            f"note: --allow-unconfirmed has no effect on {adapter.chain} — its "
+            "data source indexes mined outputs only",
+            file=sys.stderr,
+        )
+        allow_unconfirmed = False
+    records = scan_account(
+        derive_address=lambda p: adapter.derive_address(mnemonic, p),
+        probe=adapter.address_info,
+        account=adapter.account,
+    )
+    return [
+        dataclasses.replace(u, path=path)
+        for path, address, info in records
+        if info.confirmed > 0 or (allow_unconfirmed and info.pending > 0)
+        for u in adapter.fetch_utxos(address, include_unconfirmed=allow_unconfirmed)
+    ]
+
+
+def _price_unconfirmed(
+    adapter,  # noqa: ANN001 (any UTXO-chain adapter)
+    utxos: list[Utxo],
+    fee_rate: float,
+) -> list[Utxo]:
+    """Attach each unconfirmed input's CPFP surcharge, and say what that risks.
+
+    A mempool input is only as fast as the transaction that created it, and can
+    still be replaced or evicted along with our spend of it — so this is where
+    the user is told, before the run that is about to build the transaction.
+
+    The count is what was *offered*, not what will be spent: selection has not
+    run yet, and pricing has to cover every candidate it might reach. What the
+    transaction ends up spending, and what that costs, is
+    :func:`_report_cpfp_surcharge`'s to say once it exists.
+    """
+    unconfirmed = [u for u in utxos if not u.confirmed]
+    if not unconfirmed:
+        return utxos
+    print(
+        f"WARNING: {len(unconfirmed)} of the scanned {adapter.chain} input(s) "
+        "are unconfirmed. Any this spend selects can still be replaced or "
+        "evicted from the mempool, which would invalidate this transaction too "
+        "(no funds lost — it simply never happens); spending one also pays its "
+        "parent's shortfall (CPFP), so raise --max-fee if the gate refuses the "
+        "total.",
+        file=sys.stderr,
+    )
+    return adapter.cpfp_deficits(utxos, fee_rate)
+
+
 def _send_utxo(
     args: argparse.Namespace,
     adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter | ZecAdapter])
 ) -> int:
     """Plain send for a UTXO chain (BTC/DASH/ZEC): scan, select, gate, broadcast."""
     from swapsack.chains.coins import InsufficientFunds
-    from swapsack.chains.scan import scan_account
 
     mnemonic, passphrase = _load_mnemonic(args)
     recipient = args.address
     sweep = args.amount == "max"
     with adapter_factory(args, passphrase) as adapter:
-        records = scan_account(
-            derive_address=lambda p: adapter.derive_address(mnemonic, p),
-            probe=adapter.address_info,
-            account=adapter.account,
-        )
-        utxos = [
-            dataclasses.replace(u, path=path)
-            for path, address, info in records
-            if info.confirmed > 0
-            for u in adapter.fetch_utxos(address)
-        ]
+        utxos = _spendable_utxos(adapter, mnemonic, args)
         if not utxos:
-            print("no confirmed UTXOs found for this wallet", file=sys.stderr)
+            print(_no_utxos_message(args), file=sys.stderr)
             return 1
 
         change_address = adapter.derive_address(mnemonic, adapter.change_path)
         fee_rate = adapter.fetch_fee_rate(_fee_blocks(args))
+        utxos = _price_unconfirmed(adapter, utxos, fee_rate)
         try:
             if sweep:
                 total = sum(u.value for u in utxos)
-                amount, _ = adapter.sweep_send_amount(total, len(utxos), fee_rate)
+                amount, _ = adapter.sweep_send_amount(
+                    total, len(utxos), fee_rate, extra_fee=cpfp_surcharge(utxos)
+                )
             else:
                 amount = _base_units(args.amount)
             prepared = adapter.build_and_verify_send(
@@ -1590,7 +1657,34 @@ def _send_utxo(
         return _confirm_and_execute(prepared, adapter, args)
 
 
+def _report_cpfp_surcharge(prepared) -> None:  # noqa: ANN001 (swap.Prepared)
+    """What the mempool inputs this transaction *actually* spends cost it.
+
+    Said here rather than at scan time because selection has run by now:
+    ``select_coins`` takes confirmed coins first and may use none of the
+    unconfirmed ones it was offered, so a surcharge worked out over everything
+    scanned names a fee for parents this transaction never lifts. Silent for an
+    all-confirmed spend, and for chains with no UTXOs at all.
+    """
+    inputs = getattr(getattr(prepared, "built", None), "inputs", ())
+    unconfirmed = [u for u in inputs if not u.confirmed]
+    if not unconfirmed:
+        return
+    surcharge = cpfp_surcharge(inputs)
+    detail = (
+        f", {surcharge} base units of which lifts their parent(s) to this "
+        "transaction's fee rate (CPFP)"
+        if surcharge
+        else " (their parents already pay the rate, so no CPFP surcharge)"
+    )
+    print(
+        f"note: this spends {len(unconfirmed)} unconfirmed input(s){detail}.",
+        file=sys.stderr,
+    )
+
+
 def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  # noqa: ANN001
+    _report_cpfp_surcharge(prepared)
     if prepared.problems:
         print("VERIFY GATE FAILED — not safe to broadcast:", file=sys.stderr)
         for problem in prepared.problems:
@@ -1625,7 +1719,6 @@ def _swap_from_utxo(
 ) -> int:
     """Swap from a UTXO chain (BTC/DASH/ZEC): scan, quote, build, gate, broadcast."""
     from swapsack.chains.coins import InsufficientFunds
-    from swapsack.chains.scan import scan_account
 
     mnemonic, passphrase = _load_mnemonic(args)
     dest = _resolve_destination(args, mnemonic, passphrase)
@@ -1635,23 +1728,14 @@ def _swap_from_utxo(
 
     sweep = args.amount == "max"
     with adapter_factory(args, passphrase) as adapter:
-        records = scan_account(
-            derive_address=lambda p: adapter.derive_address(mnemonic, p),
-            probe=adapter.address_info,
-            account=adapter.account,
-        )
-        utxos = [
-            dataclasses.replace(u, path=path)
-            for path, address, info in records
-            if info.confirmed > 0
-            for u in adapter.fetch_utxos(address)
-        ]
+        utxos = _spendable_utxos(adapter, mnemonic, args)
         if not utxos:
-            print("no confirmed UTXOs found for this wallet", file=sys.stderr)
+            print(_no_utxos_message(args), file=sys.stderr)
             return 1
 
         change_address = adapter.derive_address(mnemonic, adapter.change_path)
         fee_rate = adapter.fetch_fee_rate(_fee_blocks(args))
+        utxos = _price_unconfirmed(adapter, utxos, fee_rate)
         if sweep:
             from swapsack.chains.coins import OP_RETURN_MAX_BYTES
 
@@ -1660,7 +1744,11 @@ def _swap_from_utxo(
                 # The memo isn't known until the quote; size for the maximum
                 # so the fee is never underestimated.
                 amount, _ = adapter.sweep_send_amount(
-                    total, len(utxos), fee_rate, memo_len=OP_RETURN_MAX_BYTES
+                    total,
+                    len(utxos),
+                    fee_rate,
+                    memo_len=OP_RETURN_MAX_BYTES,
+                    extra_fee=cpfp_surcharge(utxos),
                 )
             except InsufficientFunds as exc:
                 print(f"ABORTED: {exc}", file=sys.stderr)
@@ -2570,36 +2658,30 @@ def _liquidity_utxo(
     credentials: tuple[str, str] | None = None,
 ) -> int:
     from swapsack.chains.coins import InsufficientFunds
-    from swapsack.chains.scan import scan_account
     from swapsack.swap import prepare_liquidity
 
     mnemonic, passphrase = credentials or _load_mnemonic(args)
     with adapter_factory(args, passphrase) as adapter, _liquidity_client(args) as thor:
-        records = scan_account(
-            derive_address=lambda p: adapter.derive_address(mnemonic, p),
-            probe=adapter.address_info,
-            account=adapter.account,
-        )
-        utxos = [
-            dataclasses.replace(u, path=path)
-            for path, address, info in records
-            if info.confirmed > 0
-            for u in adapter.fetch_utxos(address)
-        ]
+        utxos = _spendable_utxos(adapter, mnemonic, args)
         if not utxos:
             print(
-                f"no confirmed {adapter.chain} (add needs funds; withdraw needs "
+                f"no spendable {adapter.chain} (add needs funds; withdraw needs "
                 f"a little {adapter.chain} in-wallet for the trigger tx)",
                 file=sys.stderr,
             )
             return 1
         change_address = adapter.derive_address(mnemonic, adapter.change_path)
         fee_rate = adapter.fetch_fee_rate(_fee_blocks(args))
+        utxos = _price_unconfirmed(adapter, utxos, fee_rate)
         if sweep:
             total = sum(u.value for u in utxos)
             try:
                 amount, _ = adapter.sweep_send_amount(
-                    total, len(utxos), fee_rate, memo_len=len(memo.encode())
+                    total,
+                    len(utxos),
+                    fee_rate,
+                    memo_len=len(memo.encode()),
+                    extra_fee=cpfp_surcharge(utxos),
                 )
             except InsufficientFunds as exc:
                 print(f"ABORTED: {exc}", file=sys.stderr)
@@ -3249,6 +3331,19 @@ def _add_swap_args(sub: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_unconfirmed_arg(sub: argparse.ArgumentParser) -> None:
+    """The opt-in to spending mempool UTXOs — every command that spends one."""
+    sub.add_argument(
+        "--allow-unconfirmed",
+        action="store_true",
+        help="also spend UTXOs still in the mempool (default: confirmed only). "
+        "The spend pays their parents' fee shortfall on top (child-pays-for-"
+        "parent), so a fee-stuck inbound is dragged along with it — but a "
+        "parent that gets replaced or evicted takes this transaction with it. "
+        "BTC/DASH only (ZEC indexes mined outputs only)",
+    )
+
+
 def _add_broadcast_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--key", help="keystore HD key label (default: first)")
     sub.add_argument("--confirm", action="store_true", help="actually broadcast")
@@ -3265,6 +3360,7 @@ def _add_broadcast_args(sub: argparse.ArgumentParser) -> None:
         help="UTXO fee target in blocks (lower = faster & pricier); "
         "overrides config.toml [fees] target_blocks and $SWAPSACK_FEE_BLOCKS",
     )
+    _add_unconfirmed_arg(sub)
     _add_price_check_args(sub)
 
 
@@ -3374,6 +3470,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--eth-gas", type=int, default=60000, help="gas limit for ETH deposit"
     )
+    _add_unconfirmed_arg(s)
     s.add_argument(
         "--tolerance-bps",
         type=int,
@@ -3452,6 +3549,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
+    _add_unconfirmed_arg(s)
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
     s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")

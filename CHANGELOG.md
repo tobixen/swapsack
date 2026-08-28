@@ -8,6 +8,34 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **`--allow-unconfirmed`: spend money that is still in the mempool.** Off by
+  default, as before — a UTXO the wallet cannot see confirmed is a UTXO whose
+  parent can still be replaced or evicted, taking the spend built on it along
+  (no funds lost: the transaction simply never happens). With the flag, `send`,
+  `swap`, `add-liquidity` and `withdraw-liquidity` will spend mempool outputs
+  too, after warning what that risks.
+  - **The spend pays its parents' fee shortfall — child-pays-for-parent.** A
+    miner takes a parent and child together or not at all, so an unconfirmed
+    input is only as fast as the transaction that created it. For each such
+    input the wallet reads the parent's real fee and vsize off the chain and
+    adds whatever it is short of the rate being targeted, once per parent
+    however many of its outputs are spent. So a fee-stuck incoming transaction
+    gets dragged into a block by the one you are sending now, which is the
+    whole reason to spend unconfirmed money in the first place. The surcharge
+    comes out of the change (or out of the swept amount, where there is none),
+    and may need a higher `--max-fee` before the gate passes it.
+  - **Confirmed coins are still spent first.** Selection now takes confirmed
+    inputs before unconfirmed ones and only reaches for the mempool when the
+    confirmed balance cannot cover the spend — an unconfirmed input is both
+    riskier and, through the surcharge, dearer.
+  - It does not make a *swap* settle sooner: THORChain, Maya and Chainflip each
+    wait for their own confirmation count on the deposit regardless. It looks
+    one hop back only, and does not distinguish our own unconfirmed change from
+    an incoming payment a stranger can still replace — `docs/TODO.md` carries
+    both gaps. DASH takes the flag with no surcharge (it has no replacement and
+    a flat fee rate); on ZEC, whose lightwalletd indexes mined outputs only, it
+    says it has nothing to act on.
+
 - **Chainflip is priced alongside THORChain, Maya and CoW** (`--backend
   chainflip`, and in `--backend auto`). Chainflip is an independent protocol
   with its own validators and pools, so it keeps quoting when THORChain and Maya

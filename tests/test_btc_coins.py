@@ -246,3 +246,106 @@ def test_sweep_amount_zip317_prices_the_memo():
     # 1 standard output (34 B) + memo (92 B) = 126 B -> ceil(126/34) = 4.
     assert fee == 20_000
     assert send + fee == 1_000_000
+
+
+# --- CPFP: spending an unconfirmed input pays its parent's fee shortfall ---
+
+
+def uu(value: int, vout: int = 0, deficit: int = 0, txid: str = "bb" * 32) -> Utxo:
+    """An unconfirmed UTXO whose parent needs ``deficit`` more base units."""
+    return Utxo(
+        txid=txid,
+        vout=vout,
+        value=value,
+        address="bc1qowned",
+        confirmed=False,
+        ancestor_deficit=deficit,
+    )
+
+
+def test_cpfp_deficit_is_the_shortfall_against_the_target_rate():
+    from swapsack.chains.coins import cpfp_deficit
+
+    # A 200 vB parent paying 200 sat (1 sat/vB) needs 800 more to reach 5 sat/vB.
+    assert cpfp_deficit(parent_fee=200, parent_vsize=200, fee_rate=5) == 800
+
+
+def test_cpfp_deficit_is_zero_when_the_parent_already_pays_the_rate():
+    from swapsack.chains.coins import cpfp_deficit
+
+    assert cpfp_deficit(parent_fee=2000, parent_vsize=200, fee_rate=5) == 0
+
+
+def test_cpfp_surcharge_counts_a_shared_parent_once():
+    from swapsack.chains.coins import cpfp_surcharge
+
+    # Two outputs of the SAME unconfirmed parent: the parent is lifted once, so
+    # charging its deficit per input would overpay by a whole parent fee.
+    both = [uu(50_000, vout=0, deficit=800), uu(60_000, vout=1, deficit=800)]
+    assert cpfp_surcharge(both) == 800
+
+
+def test_cpfp_surcharge_ignores_confirmed_inputs():
+    from swapsack.chains.coins import cpfp_surcharge
+
+    assert cpfp_surcharge([u(100_000)]) == 0
+
+
+def test_select_adds_the_cpfp_surcharge_for_a_chosen_unconfirmed_input():
+    plain = select_coins([u(200_000)], send_amount=100_000, fee_rate=2, memo_len=50)
+    lifted = select_coins(
+        [uu(200_000, deficit=800)], send_amount=100_000, fee_rate=2, memo_len=50
+    )
+    assert lifted.fee == plain.fee + 800
+    # The surcharge comes out of the change, not out of the recipient's output.
+    assert sum(x.value for x in lifted.utxos) == 100_000 + lifted.fee + lifted.change
+
+
+def test_select_ignores_the_deficit_of_an_unchosen_unconfirmed_input():
+    # The confirmed coin alone covers the spend, so the unconfirmed one is never
+    # selected and its parent is not ours to lift.
+    sel = select_coins(
+        [u(200_000), uu(50_000, deficit=10_000)],
+        send_amount=100_000,
+        fee_rate=2,
+        memo_len=50,
+    )
+    assert [x.value for x in sel.utxos] == [200_000]
+    assert (
+        sel.fee
+        == select_coins([u(200_000)], send_amount=100_000, fee_rate=2, memo_len=50).fee
+    )
+
+
+def test_select_prefers_a_confirmed_coin_over_a_larger_unconfirmed_one():
+    sel = select_coins(
+        [uu(500_000, deficit=10_000), u(200_000)],
+        send_amount=100_000,
+        fee_rate=2,
+        memo_len=50,
+    )
+    assert [x.value for x in sel.utxos] == [200_000]
+
+
+def test_select_falls_back_to_the_unconfirmed_coin_when_it_must():
+    sel = select_coins(
+        [u(60_000), uu(500_000, deficit=800)],
+        send_amount=100_000,
+        fee_rate=2,
+        memo_len=50,
+    )
+    assert sorted(x.value for x in sel.utxos) == [60_000, 500_000]
+
+
+def test_sweep_amount_pays_the_cpfp_surcharge_out_of_the_swept_amount():
+    from swapsack.chains.coins import sweep_amount
+
+    send, fee = sweep_amount(
+        total=200_000, n_inputs=1, fee_rate=2, memo_len=50, extra_fee=800
+    )
+    plain_send, plain_fee = sweep_amount(
+        total=200_000, n_inputs=1, fee_rate=2, memo_len=50
+    )
+    assert send + fee == 200_000
+    assert fee == plain_fee + 800
+    assert send == plain_send - 800

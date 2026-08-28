@@ -1719,7 +1719,7 @@ def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
         def address_info(self, address):
             return None  # unused: scan_account is stubbed
 
-        def fetch_utxos(self, address):
+        def fetch_utxos(self, address, *, include_unconfirmed=False):
             return [Utxo(txid="aa" * 32, vout=0, value=100_000, address=address)]
 
         def fetch_fee_rate(self, target_blocks=2):
@@ -1832,7 +1832,7 @@ def test_swap_and_send_pass_the_change_path_address_as_change(monkeypatch):
         def address_info(self, address):
             return None  # unused: scan_account is stubbed
 
-        def fetch_utxos(self, address):
+        def fetch_utxos(self, address, *, include_unconfirmed=False):
             return [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=address)]
 
         def fetch_fee_rate(self, target_blocks=2):
@@ -2583,7 +2583,7 @@ def test_btc_send_fee_line_shows_eur(monkeypatch, capsys, fake_feed):
         def address_info(self, address):
             return None
 
-        def fetch_utxos(self, address):
+        def fetch_utxos(self, address, *, include_unconfirmed=False):
             return [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=address)]
 
         def fetch_fee_rate(self, target_blocks=2):
@@ -4163,3 +4163,179 @@ def test_the_chainflip_re_quote_is_sent_in_native_source_units(monkeypatch, caps
     )
     assert rc == 1
     assert sent == [chainflip_mod.deposit_units(10_000_000, 6)]
+
+
+# --- --allow-unconfirmed: opt-in mempool inputs, priced by CPFP ---
+
+
+def _fake_unconfirmed_wallet(monkeypatch):
+    """A one-address BTC wallet holding one confirmed and one mempool UTXO."""
+    from swapsack.chains.coins import Utxo
+
+    seen: dict = {}
+
+    class FakeBtc:
+        chain = "BTC"
+        asset = "BTC.BTC"
+        account = "m/84'/0'/0'"
+        change_path = "m/84'/0'/0'/1/0"
+        default_derivation = "m/84'/0'/0'/0/0"
+        unconfirmed_spendable = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def derive_address(self, mnemonic, path=None):
+            return "bc1qowned" if path == self.default_derivation else "bc1qchange"
+
+        def address_info(self, address):
+            return None  # unused: scan_account is stubbed
+
+        def fetch_utxos(self, address, *, include_unconfirmed=False):
+            seen["include_unconfirmed"] = include_unconfirmed
+            utxos = [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=address)]
+            if include_unconfirmed:
+                utxos.append(
+                    Utxo(
+                        txid="bb" * 32,
+                        vout=0,
+                        value=500_000,
+                        address=address,
+                        confirmed=False,
+                    )
+                )
+            return utxos
+
+        def cpfp_deficits(self, utxos, fee_rate):
+            import dataclasses
+
+            seen["cpfp_fee_rate"] = fee_rate
+            return [
+                u if u.confirmed else dataclasses.replace(u, ancestor_deficit=800)
+                for u in utxos
+            ]
+
+        def fetch_fee_rate(self, target_blocks=2):
+            return 5.0
+
+        def sweep_send_amount(self, total, n_inputs, fee_rate, memo_len=0):
+            return total - 1000, 1000
+
+        def build_and_verify_send(self, **kwargs):
+            seen.update(kwargs)
+            raise SystemExit(0)  # stop before printing/broadcasting
+
+    def fake_scan(*, derive_address, probe, account):
+        return [
+            (
+                "m/84'/0'/0'/0/0",
+                "bc1qowned",
+                SimpleNamespace(confirmed=1_000_000, pending=500_000),
+            )
+        ]
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": FakeBtc())
+    monkeypatch.setattr("swapsack.chains.scan.scan_account", fake_scan)
+    return seen
+
+
+def test_send_is_confirmed_only_without_the_flag(monkeypatch):
+    seen = _fake_unconfirmed_wallet(monkeypatch)
+    args = build_parser().parse_args(["send", "bc1qdest", "--amount", "0.001"])
+    assert args.allow_unconfirmed is False
+    with pytest.raises(SystemExit):
+        cli._send_utxo(args, cli._btc_adapter)
+    assert seen["include_unconfirmed"] is False
+    assert [u.value for u in seen["scanned_utxos"]] == [1_000_000]
+    assert "cpfp_fee_rate" not in seen  # nothing unconfirmed to price
+
+
+def test_allow_unconfirmed_spends_the_mempool_utxo_and_prices_its_parent(monkeypatch):
+    seen = _fake_unconfirmed_wallet(monkeypatch)
+    args = build_parser().parse_args(
+        ["send", "bc1qdest", "--amount", "0.001", "--allow-unconfirmed"]
+    )
+    with pytest.raises(SystemExit):
+        cli._send_utxo(args, cli._btc_adapter)
+    assert seen["include_unconfirmed"] is True
+    # Priced against the same rate the spend is built at, not a fresh estimate.
+    assert seen["cpfp_fee_rate"] == 5.0
+    spent = [(u.value, u.confirmed, u.ancestor_deficit) for u in seen["scanned_utxos"]]
+    assert spent == [(1_000_000, True, 0), (500_000, False, 800)]
+
+
+def test_allow_unconfirmed_warns_before_it_builds(monkeypatch, capsys):
+    _fake_unconfirmed_wallet(monkeypatch)
+    args = build_parser().parse_args(
+        ["send", "bc1qdest", "--amount", "0.001", "--allow-unconfirmed"]
+    )
+    with pytest.raises(SystemExit):
+        cli._send_utxo(args, cli._btc_adapter)
+    out = capsys.readouterr()
+    assert "unconfirmed" in (out.out + out.err).lower()
+
+
+def test_the_cpfp_surcharge_is_reported_for_the_inputs_actually_spent(capsys):
+    """Scanning prices every mempool coin; the transaction spends a subset.
+
+    `select_coins` takes confirmed coins first, so a spend that the confirmed
+    balance covers uses none of the unconfirmed ones it was offered — and a
+    surcharge named for a parent whose output is never spent is a fee figure
+    that does not match the transaction being approved.
+    """
+    from swapsack.chains.coins import Utxo
+
+    confirmed = Utxo(txid="aa" * 32, vout=0, value=1_000_000, address="bc1qowned")
+    prepared = SimpleNamespace(
+        problems=[],
+        built=SimpleNamespace(inputs=[confirmed]),
+        plan=SimpleNamespace(expiry=None),
+    )
+    args = build_parser().parse_args(["send", "bc1qdest", "--amount", "0.001"])
+    assert cli._confirm_and_execute(prepared, None, args) == 0
+    assert "CPFP" not in capsys.readouterr().err
+
+
+def test_the_cpfp_surcharge_is_reported_when_a_mempool_input_is_spent(capsys):
+    from swapsack.chains.coins import Utxo
+
+    prepared = SimpleNamespace(
+        problems=[],
+        built=SimpleNamespace(
+            inputs=[
+                Utxo(txid="aa" * 32, vout=0, value=1_000_000, address="bc1qowned"),
+                Utxo(
+                    txid="bb" * 32,
+                    vout=0,
+                    value=500_000,
+                    address="bc1qowned",
+                    confirmed=False,
+                    ancestor_deficit=800,
+                ),
+            ]
+        ),
+        plan=SimpleNamespace(expiry=None),
+    )
+    args = build_parser().parse_args(["send", "bc1qdest", "--amount", "0.001"])
+    assert cli._confirm_and_execute(prepared, None, args) == 0
+    err = capsys.readouterr().err
+    assert "800" in err
+    assert "CPFP" in err
+
+
+def test_allow_unconfirmed_is_offered_on_every_utxo_spend_command():
+    parser = build_parser()
+    for argv in (
+        ["send", "bc1qdest", "--amount", "0.001"],
+        ["swap", "--from", "BTC", "--to", "ETH", "--amount", "0.001"],
+        ["add-liquidity", "--asset", "BTC", "--amount", "0.001"],
+        ["withdraw-liquidity", "--asset", "BTC"],
+    ):
+        assert parser.parse_args([*argv, "--allow-unconfirmed"]).allow_unconfirmed
+    # ...and nowhere else: `balance` spends nothing, so the flag would be noise.
+    with pytest.raises(SystemExit):
+        parser.parse_args(["balance", "--allow-unconfirmed"])

@@ -41,6 +41,26 @@ class _Built(Protocol):
 class GatedTxBuilder:
     """Mixin: build (via the ``build_unsigned_swap`` hook) then gate the result."""
 
+    # Whether ``--allow-unconfirmed`` can do anything on this chain. False for
+    # ZEC, whose lightwalletd address index holds mined outputs only — the CLI
+    # says so rather than letting the flag look like it took effect.
+    unconfirmed_spendable = True
+
+    def cpfp_deficits(
+        self,
+        utxos: list[Utxo],
+        fee_rate: float,  # noqa: ARG002
+    ) -> list[Utxo]:
+        """Fill in the CPFP surcharge for unconfirmed inputs; by default, none.
+
+        Overridden by BTC, the one chain here with a real mempool fee market.
+        DASH prices spends at a flat generous rate and has no replacement at
+        all; ZEC never returns an unconfirmed UTXO to begin with. Neither has a
+        parent to lift, so both keep this no-op — and the caller can price any
+        chain's inputs without asking which it is holding.
+        """
+        return utxos
+
     def build_unsigned_swap(
         self,
         *,

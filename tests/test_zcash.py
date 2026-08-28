@@ -577,3 +577,16 @@ def test_zec_send_change_returns_to_the_wallets_change_address(monkeypatch):
     assert change_outs[0].value == 150_000 - 100_000 - prepared.built.fee
     # Explicitly NOT the receive address.
     assert all(o.address != receive for o in prepared.built.outputs)
+
+
+def test_zec_says_allow_unconfirmed_cannot_apply(monkeypatch, capsys):
+    """The flag is chain-wide: ZEC must say it did nothing, not imply it did."""
+    import argparse
+
+    from swapsack import cli
+
+    a = ZecAdapter()
+    monkeypatch.setattr("swapsack.chains.scan.scan_account", lambda **kw: [])
+    args = argparse.Namespace(allow_unconfirmed=True)
+    assert cli._spendable_utxos(a, "mnemonic", args) == []
+    assert "no effect on ZEC" in capsys.readouterr().err

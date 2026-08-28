@@ -55,6 +55,10 @@ class BuiltSwap:
     fee: int
     change_address: str
     keys: list[HDKey] = dataclasses.field(default_factory=list)
+    # The UTXOs coin selection actually took — a subset of what was scanned, and
+    # the only honest basis for saying what this transaction spends and what its
+    # unconfirmed parents cost it (see ``cli._report_cpfp_surcharge``).
+    inputs: list[Utxo] = dataclasses.field(default_factory=list)
 
 
 def extract_outputs(tx: Transaction) -> list[TxOutput]:
@@ -94,18 +98,30 @@ class UtxoTxBuilder(GatedTxBuilder):
         return HDKey.from_seed(seed, network=self.network).key_for_path(path)
 
     def sweep_send_amount(
-        self, total: int, n_inputs: int, fee_rate: float, memo_len: int = 0
+        self,
+        total: int,
+        n_inputs: int,
+        fee_rate: float,
+        memo_len: int = 0,
+        extra_fee: int = 0,
     ) -> tuple[int, int]:
         """``(send_amount, fee)`` draining every UTXO into one output.
 
         ``memo_len`` sizes the OP_RETURN a swap/LP deposit carries (0 for a
-        plain send). Adapter-level so each chain brings its own fee model (ZEC
-        overrides with ZIP-317, where the rate argument is meaningless).
+        plain send); ``extra_fee`` is the CPFP surcharge for the unconfirmed
+        inputs a sweep necessarily spends. Adapter-level so each chain brings
+        its own fee model (ZEC overrides with ZIP-317, where the rate argument
+        is meaningless).
         """
         from swapsack.chains.coins import sweep_amount
 
         return sweep_amount(
-            total, n_inputs, fee_rate, memo_len=memo_len, script=self.script
+            total,
+            n_inputs,
+            fee_rate,
+            memo_len=memo_len,
+            script=self.script,
+            extra_fee=extra_fee,
         )
 
     def build_unsigned_swap(
@@ -168,6 +184,7 @@ class UtxoTxBuilder(GatedTxBuilder):
             fee=fee,
             change_address=change_address,
             keys=keys,
+            inputs=chosen,
         )
 
     def sign(self, built: BuiltSwap) -> list[str]:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 OP_RETURN_MAX_BYTES = 80
 OP_PUSHDATA1 = 0x4C
@@ -47,6 +47,14 @@ class Utxo:
     value: int
     address: str
     path: str | None = None  # HD derivation path, set by the address scanner
+    # False = still in the mempool. Spending one is opt-in (--allow-unconfirmed):
+    # the parent can still be replaced or evicted, which would invalidate this
+    # spend along with it.
+    confirmed: bool = True
+    # Base units this input's unconfirmed parent is short of the target fee
+    # rate; a spend that selects it pays that on top (child-pays-for-parent) so
+    # the parent+child package reaches the rate. 0 for a confirmed input.
+    ancestor_deficit: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -54,6 +62,33 @@ class Selection:
     utxos: list[Utxo]
     fee: int
     change: int
+
+
+# --- child-pays-for-parent -------------------------------------------------
+#
+# An unconfirmed input is only as fast as the transaction that created it: a
+# miner takes the two together or neither. So when we spend one, we pay its
+# parent's shortfall on top of our own fee, and the parent+child *package*
+# reaches the rate we targeted.
+
+
+def cpfp_deficit(parent_fee: int, parent_vsize: int, fee_rate: float) -> int:
+    """Base units a child must add so its parent reaches ``fee_rate``.
+
+    Zero when the parent already pays the rate — a well-fee'd parent needs no
+    help, and CPFP never asks for a refund.
+    """
+    return max(0, math.ceil(parent_vsize * fee_rate) - parent_fee)
+
+
+def cpfp_surcharge(utxos: Iterable[Utxo]) -> int:
+    """The total deficit of ``utxos``' unconfirmed parents, one parent counted once.
+
+    Two outputs of the same mempool transaction are two inputs but one parent to
+    lift; charging per input would overpay by a whole parent fee.
+    """
+    per_parent = {u.txid: u.ancestor_deficit for u in utxos if not u.confirmed}
+    return sum(per_parent.values())
 
 
 def memo_bytes(memo: str | bytes | None) -> bytes:
@@ -120,14 +155,21 @@ def sweep_amount(
     memo_len: int = OP_RETURN_MAX_BYTES,
     *,
     script: ScriptParams = P2WPKH,
+    extra_fee: int = 0,
 ) -> tuple[int, int]:
     """Return ``(send_amount, fee)`` for sweeping ``total`` into one output.
 
     Spends every input into a single (vault/recipient) output plus the
     OP_RETURN memo, with no change. ``memo_len`` defaults to the maximum so the
-    fee is never underestimated.
+    fee is never underestimated. ``extra_fee`` is the CPFP surcharge for any
+    unconfirmed inputs (a sweep spends all of them, so the caller can price it
+    up front with :func:`cpfp_surcharge`); it comes out of the swept amount,
+    since there is no change output to take it from.
     """
-    fee = math.ceil(estimate_vsize(n_inputs, 1, memo_len, script=script) * fee_rate)
+    fee = (
+        math.ceil(estimate_vsize(n_inputs, 1, memo_len, script=script) * fee_rate)
+        + extra_fee
+    )
     send = total - fee
     if send < script.dust:
         raise InsufficientFunds(f"balance {total} too small to sweep after fee {fee}")
@@ -152,29 +194,35 @@ def _select(
     utxos: list[Utxo],
     send_amount: int,
     dust: int,
-    fee_fn: Callable[[int, int], int],
+    fee_fn: Callable[[list[Utxo], int], int],
 ) -> Selection:
     """The greedy largest-first selection core, fee-model agnostic.
 
-    ``fee_fn(n_inputs, n_outputs)`` prices a candidate transaction shape: one
+    ``fee_fn(chosen, n_outputs)`` prices a candidate transaction shape: one
     recipient/vault output (plus any memo the model accounts for internally)
-    and an optional change output. Change below ``dust`` is dropped and folded
-    into the fee.
+    and an optional change output. It is handed the chosen inputs rather than
+    their count because an unconfirmed one costs more than its vbytes — see
+    :func:`cpfp_surcharge`. Change below ``dust`` is dropped and folded into
+    the fee.
+
+    Confirmed coins are taken first, then largest-first within each group: an
+    unconfirmed input is both riskier and (via CPFP) dearer, so it is only
+    reached for once the confirmed ones cannot cover the spend.
     """
     chosen: list[Utxo] = []
     total = 0
-    for utxo in sorted(utxos, key=lambda x: x.value, reverse=True):
+    for utxo in sorted(utxos, key=lambda x: (x.confirmed, x.value), reverse=True):
         chosen.append(utxo)
         total += utxo.value
 
         # With a change output.
-        fee_with_change = fee_fn(len(chosen), 2)
+        fee_with_change = fee_fn(chosen, 2)
         change = total - send_amount - fee_with_change
         if change >= dust:
             return Selection(utxos=chosen, fee=fee_with_change, change=change)
 
         # Without a change output: any remainder above the minimal fee is fee.
-        if total >= send_amount + fee_fn(len(chosen), 1):
+        if total >= send_amount + fee_fn(chosen, 1):
             return Selection(utxos=chosen, fee=total - send_amount, change=0)
 
     raise InsufficientFunds(
@@ -201,8 +249,11 @@ def select_coins(
         utxos,
         send_amount,
         script.dust,
-        lambda n_in, n_out: math.ceil(
-            estimate_vsize(n_in, n_out, memo_len, script=script) * fee_rate
+        lambda chosen, n_out: (
+            math.ceil(
+                estimate_vsize(len(chosen), n_out, memo_len, script=script) * fee_rate
+            )
+            + cpfp_surcharge(chosen)
         ),
     )
 
@@ -247,7 +298,9 @@ def select_coins_zip317(
         utxos,
         send_amount,
         dust,
-        lambda n_in, n_out: zip317_fee(n_in, n_out, memo_len),
+        lambda chosen, n_out: (
+            zip317_fee(len(chosen), n_out, memo_len) + cpfp_surcharge(chosen)
+        ),
     )
 
 
