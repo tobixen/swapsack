@@ -314,6 +314,23 @@ labels, not lookups.
   and `docs/chainflip.md` for the feasibility assessment). Calldata-style
   aggregators (ParaSwap/1inch/0x/LiFi) and custodial instant exchangers: not
   planned (gating problem / custody).
+  **Priority raised 2026-08-28**: THORChain and Maya were halted simultaneously
+  (Maya's $1.7M exploit on 08-18), leaving BTC→ETH with no route through this
+  wallet at all. B1 — the keyless quote as a read-only source in `auto` — is
+  small, carries no money-path risk, and is what would have let `quote` still
+  answer. `docs/halt-alternatives.md` has the outage record, the live price
+  comparison against custodial exchangers and CEX orderbooks (Chainflip wins by
+  70–241 bps and ~40 bps respectively), and the manual stopgap.
+  **`docs/chainflip-effort.md` (2026-08-28) sizes the work**: B1 ~1 session
+  (~600 lines), B2 ~2–3 sessions (~800), together the order of the CoW commit.
+  It also supersedes this bullet's broker premise — Chainflip **vault swaps**
+  need no broker and no deposit channel, the destination is ours to encode and
+  to read back, and the tx shape (pay vault / OP_RETURN / change) is the one
+  `UtxoTxBuilder` already emits. Two corrections that came out of sizing it: the
+  `python-urllib` 403 is a non-issue (niquests gets a 200), and
+  `cf_*_open_deposit_channels` return **liquidity-provision** channels with no
+  destination or expiry in them — `docs/chainflip.md`'s readback plan does not
+  work as written.
 - **Maya-only assets**: ADA and ETH-ARB are now exposed as destinations. Note
   what *isn't* there — the ARB **token** pool (`ARB.ARB`) is `Staged`, not
   tradeable, so "ARB" as a destination means native ETH on Arbitrum.

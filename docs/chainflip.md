@@ -1,11 +1,24 @@
 # Chainflip backend — feasibility assessment
 
-Status: **scoping (B-phase), not built.** Live-probed 2026-07-13 against
-mainnet. This note supersedes the "broker decision is open" caveat in
-`docs/backends.md`'s Chainflip section: the key blocker — how to trust a
-broker with your destination address — turns out to be resolvable, because a
-channel's registered parameters are readable from a public keyless RPC. Style/
-spirit as `docs/dash.md` and `docs/backends.md`.
+Status: **scoping (B-phase), not built — and its execution plan is
+superseded.** Live-probed 2026-07-13 against mainnet. Style/spirit as
+`docs/dash.md` and `docs/backends.md`.
+
+> ⚠️ **Read `docs/chainflip-effort.md` first.** Re-probing on 2026-08-28 found
+> the key claim below to be wrong: `cf_all_open_deposit_channels` /
+> `cf_get_open_deposit_channels` return **liquidity-provision** channels — a
+> list of `(address, asset)` pairs per account, with no destination address, no
+> expiry and no refund parameters — so they cannot gate a swap, and the readback
+> plan in "Why the gating objection is now resolvable" does not work as written.
+>
+> It does not need to. Chainflip **vault swaps** need no broker and no deposit
+> channel at all: `cf_request_swap_parameter_encoding` (keyless) returns an
+> OP_RETURN payload carrying *our own* destination and an on-chain
+> `min_output_amount` floor, paid to a protocol vault that
+> `cf_get_vault_addresses` confirms, and `cf_decode_vault_swap_parameter` reads
+> every field back for the gate. The B2 phasing below should be rewritten around
+> that before anyone builds it. What stands unchanged: §1 (keyless quoting), §2
+> (assets), and the price case.
 
 ## The three things a backend needs, checked against reality
 

@@ -103,6 +103,15 @@ refunded — Chainflip has refund parameters worth setting.
    calldata-style keyless ones (ParaSwap/LiFi — gating problem; revisit only
    if CoW's coverage disappoints), instant exchangers (custodial).
 
+**The custodial/orderbook row was re-opened on 2026-08-28**, when THORChain and
+Maya were both halted at once and BTC→ETH had no route at all. The survey —
+custodial exchangers and CEX/atomic-swap orderbooks, all live-quoted against
+each other — is in **`docs/halt-alternatives.md`**. It closes the question the
+same way: Chainflip beat every custodial exchanger by 70–241 bps and Kraken's
+orderbook by ~40 bps, so the custodial branch loses on *price* before custody is
+argued. The outage is also the concrete case for doing Phase B's B1 (quote-only)
+sooner: it is what would have let `quote` still answer that day.
+
 ## Abstraction changes both phases need
 
 - A `Backend` protocol wider than "thornode client": `name`, capability
