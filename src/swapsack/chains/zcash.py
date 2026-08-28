@@ -35,6 +35,7 @@ from swapsack.chains.coins import (
     Utxo,
     decode_op_return,
     encode_op_return,
+    memo_bytes,
     select_coins_zip317,
     sweep_amount_zip317,
 )
@@ -294,7 +295,7 @@ class ZecAdapter(GatedTxBuilder):
         *,
         vault_address: str,
         amount: int,
-        memo: str | None,
+        memo: str | bytes | None,
         mnemonic: str,
         utxos: list[Utxo],
         change_address: str,
@@ -307,7 +308,7 @@ class ZecAdapter(GatedTxBuilder):
         any other value is encoded as the single OP_RETURN (swap/LP deposit) —
         the same contract as the bitcoinlib builder's ``build_unsigned_swap``.
         """
-        memo_bytes = memo.encode() if memo is not None else b""
+        payload = memo_bytes(memo)
         if sweep:
             chosen = list(utxos)
             fee = sum(u.value for u in chosen) - amount
@@ -315,12 +316,12 @@ class ZecAdapter(GatedTxBuilder):
             if fee < 0:
                 raise InsufficientFunds(f"amount {amount} exceeds balance")
         else:
-            sel = select_coins_zip317(utxos, amount, len(memo_bytes))
+            sel = select_coins_zip317(utxos, amount, len(payload))
             chosen, fee, change = sel.utxos, sel.fee, sel.change
 
         outputs = [TxOut(amount, address_to_script(vault_address))]
         if memo is not None:
-            outputs.append(TxOut(0, encode_op_return(memo_bytes)))
+            outputs.append(TxOut(0, encode_op_return(payload)))
         if change > 0:
             outputs.append(TxOut(change, address_to_script(change_address)))
         tx = TxV4(

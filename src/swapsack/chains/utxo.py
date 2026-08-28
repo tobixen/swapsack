@@ -28,6 +28,7 @@ from swapsack.chains.coins import (
     Utxo,
     decode_op_return,
     encode_op_return,
+    memo_bytes,
     select_coins,
 )
 from swapsack.chains.gated import GatedTxBuilder
@@ -114,7 +115,7 @@ class UtxoTxBuilder(GatedTxBuilder):
         utxos: list[Utxo],
         vault_address: str,
         amount: int,
-        memo: str | None,
+        memo: str | bytes | None,
         fee_rate: float,
         change_address: str | None = None,
         default_path: str | None = None,
@@ -123,11 +124,12 @@ class UtxoTxBuilder(GatedTxBuilder):
         """Build the unsigned tx paying ``amount`` to ``vault_address``.
 
         ``memo`` of ``None`` omits the OP_RETURN output entirely — used for a
-        plain send (no swap). Any other value is encoded as the single OP_RETURN.
+        plain send (no swap). A ``str`` is a THORChain/Maya memo; ``bytes`` is a
+        binary payload (a Chainflip vault swap) carried verbatim.
         """
         default_path = default_path or self.default_derivation
         change_address = change_address or self.derive_address(mnemonic, default_path)
-        memo_bytes = memo.encode() if memo is not None else b""
+        payload = memo_bytes(memo)
         if sweep:
             # Spend everything: fee is whatever is left over the vault output.
             chosen = list(utxos)
@@ -137,7 +139,7 @@ class UtxoTxBuilder(GatedTxBuilder):
                 raise InsufficientFunds(f"amount {amount} exceeds balance")
         else:
             sel = select_coins(
-                utxos, amount, fee_rate, len(memo_bytes), script=self.script
+                utxos, amount, fee_rate, len(payload), script=self.script
             )
             chosen, fee, change = sel.utxos, sel.fee, sel.change
 
@@ -156,7 +158,7 @@ class UtxoTxBuilder(GatedTxBuilder):
             keys.append(key)
         tx.add_output(amount, address=vault_address)
         if memo is not None:
-            tx.add_output(0, lock_script=encode_op_return(memo_bytes))
+            tx.add_output(0, lock_script=encode_op_return(payload))
         if change > 0:
             tx.add_output(change, address=change_address)
 

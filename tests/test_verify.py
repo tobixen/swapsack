@@ -16,6 +16,7 @@ from swapsack.verify import (
     TronTokenSendPlan,
     TronTokenSwapPlan,
     TxOutput,
+    memo_pays_destination,
     verify_btc_send,
     verify_btc_swap,
     verify_eth_send,
@@ -731,3 +732,94 @@ def test_tron_token_send_rejects_trx_value():
 
 def test_tron_token_send_rejects_memo():
     assert any("memo" in p for p in tron_token_send_verify(memo="=:hi"))
+
+
+# --- binary memos (Chainflip vault swaps carry SCALE bytes, not text) --------
+
+# A real 48-byte Chainflip vault-swap payload: version, output asset, 20-byte
+# destination, retry duration, min output, and the rest. Not valid UTF-8, and
+# that is the point — a memo is a byte string the gate must compare verbatim.
+BINARY_MEMO = bytes.fromhex(
+    "0101000000000000000000000000000000000000dead"
+    "640000002cf61a24a2290000000000000000ff01000200000000"
+)
+
+
+def _binary_outputs(memo=BINARY_MEMO, vault="bc1qvault", amount=178100):
+    return [
+        TxOutput(address=vault, value=amount),
+        TxOutput(address=None, value=0, op_return_data=memo),
+        TxOutput(address="bc1qchange", value=1000),
+    ]
+
+
+def test_binary_memo_matching_the_op_return_passes():
+    plan = SwapPlan(
+        inbound_address="bc1qvault",
+        amount=178100,
+        memo=BINARY_MEMO,
+        expiry=9_999_999_999,
+    )
+    assert (
+        verify_btc_swap(
+            _binary_outputs(),
+            fee=500,
+            plan=plan,
+            owned_addresses={"bc1qchange"},
+            now=0,
+            max_fee=100_000,
+        )
+        == []
+    )
+
+
+def test_binary_memo_is_not_judged_as_utf8():
+    # The old gate decoded every OP_RETURN as UTF-8; a binary payload would fail
+    # as "not valid UTF-8" even when it is byte-exact.
+    plan = SwapPlan(
+        inbound_address="bc1qvault",
+        amount=178100,
+        memo=BINARY_MEMO,
+        expiry=9_999_999_999,
+    )
+    problems = verify_btc_swap(
+        _binary_outputs(),
+        fee=500,
+        plan=plan,
+        owned_addresses={"bc1qchange"},
+        now=0,
+        max_fee=100_000,
+    )
+    assert not any("UTF-8" in p for p in problems)
+
+
+def test_binary_memo_off_by_one_byte_is_caught():
+    tampered = bytearray(BINARY_MEMO)
+    tampered[5] ^= 0x01  # one bit of the destination address
+    plan = SwapPlan(
+        inbound_address="bc1qvault",
+        amount=178100,
+        memo=BINARY_MEMO,
+        expiry=9_999_999_999,
+    )
+    problems = verify_btc_swap(
+        _binary_outputs(memo=bytes(tampered)),
+        fee=500,
+        plan=plan,
+        owned_addresses={"bc1qchange"},
+        now=0,
+        max_fee=100_000,
+    )
+    assert any("memo" in p for p in problems)
+
+
+def test_a_binary_memo_cannot_silently_skip_the_destination_binding():
+    # memo_pays_destination is a *text* check. A binary memo carries its
+    # destination in a chain-specific encoding, so this gate cannot prove the
+    # binding — it must refuse rather than wave it through. The Chainflip gate
+    # does the binding itself and leaves `destination` empty here.
+    assert not memo_pays_destination("0xdead", BINARY_MEMO)
+
+
+def test_a_binary_memo_with_no_destination_is_fine():
+    assert memo_pays_destination("", BINARY_MEMO)

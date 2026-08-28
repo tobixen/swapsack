@@ -46,16 +46,17 @@ class GatedTxBuilder:
         utxos: list[Utxo],
         vault_address: str,
         amount: int,
-        memo: str | None,
+        memo: str | bytes | None,
         fee_rate: float,
         change_address: str,
         sweep: bool = False,
     ) -> _Built:
         """Construct the unsigned tx paying ``amount`` to ``vault_address``.
 
-        ``memo`` of ``None`` omits the OP_RETURN (plain send); any other value
-        is the single OP_RETURN (swap/LP deposit). Chain-specific — overridden
-        by each adapter.
+        ``memo`` of ``None`` omits the OP_RETURN (plain send); a ``str`` is a
+        THORChain/Maya memo and ``bytes`` a binary payload (a Chainflip vault
+        swap), either carried as the single OP_RETURN. Chain-specific —
+        overridden by each adapter.
         """
         raise NotImplementedError
 
@@ -104,7 +105,7 @@ class GatedTxBuilder:
         self,
         *,
         vault: str,
-        memo: str,
+        memo: str | bytes,
         amount: int,
         now: int,
         mnemonic: str,

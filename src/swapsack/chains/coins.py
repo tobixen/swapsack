@@ -56,6 +56,20 @@ class Selection:
     change: int
 
 
+def memo_bytes(memo: str | bytes | None) -> bytes:
+    """The OP_RETURN payload for ``memo``; ``None`` (a plain send) gives ``b""``.
+
+    A THORChain/Maya memo is text (``=:ETH.ETH:0x…``), but a Chainflip vault
+    swap's parameters are SCALE-encoded *binary* — passing those through
+    ``str.encode`` would mangle them, so a memo that is already bytes is taken
+    verbatim. One helper rather than the same two-line branch in each UTXO
+    builder: a chain that got it wrong would silently broadcast a corrupt memo.
+    """
+    if memo is None:
+        return b""
+    return memo.encode() if isinstance(memo, str) else bytes(memo)
+
+
 def encode_op_return(data: bytes) -> bytes:
     """Encode ``data`` as an OP_RETURN script (``OP_RETURN <push> <data>``)."""
     if len(data) > OP_RETURN_MAX_BYTES:

@@ -134,7 +134,13 @@ class SwapSource(Protocol):
     ) -> Prepared: ...
 
     def build_and_verify_deposit(
-        self, *, vault: str, memo: str, amount: int, now: int, **kwargs: object
+        self,
+        *,
+        vault: str,
+        memo: str | bytes,
+        amount: int,
+        now: int,
+        **kwargs: object,
     ) -> Prepared:
         """Build + verify a non-quoted deposit to ``vault`` carrying ``memo``."""
         ...

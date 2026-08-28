@@ -17,15 +17,23 @@ OP_RETURN_MAX_BYTES = 80
 WEI_PER_THORCHAIN_UNIT = 10**10
 
 
-def memo_pays_destination(destination: str, memo: str) -> bool:
+def memo_pays_destination(destination: str, memo: str | bytes) -> bool:
     """Whether the swap memo actually pays ``destination``.
 
     Exact (case-sensitive) match — correct for bech32 (BTC) and base58 (TRON),
     where case is significant. Only EVM hex addresses (``0x…``) get a
     case-insensitive fallback, since THORChain may re-case them.
+
+    A **binary** memo (a Chainflip vault-swap payload) encodes its destination
+    in a chain-specific layout this text search cannot read, so it is refused
+    rather than waved through: a caller that binds the destination some other
+    way must say so by leaving ``destination`` empty, which makes the skip
+    deliberate and greppable instead of accidental.
     """
     if not destination:
         return True
+    if isinstance(memo, bytes):
+        return False
     if destination in memo:
         return True
     if destination.lower().startswith("0x"):
@@ -52,7 +60,7 @@ class SwapPlan:
 
     inbound_address: str
     amount: int
-    memo: str
+    memo: str | bytes  # text on THORChain/Maya; binary for a Chainflip vault swap
     expiry: int
     destination: str = ""  # our payout address; must appear in the memo when set
 
@@ -102,15 +110,23 @@ def verify_btc_swap(
                 f"memo is {len(data)} bytes, exceeds OP_RETURN limit of "
                 f"{OP_RETURN_MAX_BYTES}"
             )
-        try:
-            decoded = data.decode("utf-8")
-        except UnicodeDecodeError:
-            problems.append("OP_RETURN memo is not valid UTF-8")
-        else:
-            if decoded != plan.memo:
+        if isinstance(plan.memo, bytes):
+            # A binary payload is compared verbatim: decoding it as text would
+            # both fail and destroy the very bytes being checked.
+            if data != plan.memo:
                 problems.append(
-                    f"OP_RETURN memo {decoded!r} != quoted memo {plan.memo!r}"
+                    f"OP_RETURN memo {data.hex()} != intended memo {plan.memo.hex()}"
                 )
+        else:
+            try:
+                decoded = data.decode("utf-8")
+            except UnicodeDecodeError:
+                problems.append("OP_RETURN memo is not valid UTF-8")
+            else:
+                if decoded != plan.memo:
+                    problems.append(
+                        f"OP_RETURN memo {decoded!r} != quoted memo {plan.memo!r}"
+                    )
 
     # Every non-vault, non-OP_RETURN output (i.e. change) must return to us.
     for o in outputs:

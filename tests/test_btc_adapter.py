@@ -498,3 +498,76 @@ def test_built_tx_signals_bip125_rbf():
     for inp in reparsed.inputs:
         assert inp.sequence == 0xFFFFFFFD
     assert reparsed.locktime == 0
+
+
+# --- binary memos -----------------------------------------------------------
+
+# A Chainflip vault-swap payload is SCALE bytes, not text: it must reach the
+# OP_RETURN byte-exact, and .encode() on a str would mangle it.
+BINARY_MEMO = bytes.fromhex(
+    "0101000000000000000000000000000000000000dead"
+    "640000002cf61a24a2290000000000000000ff01000200000000"
+)
+
+
+def _build_with_memo(memo):
+    a = BtcAdapter()
+    addr = a.derive_address(MNEMONIC, PATH)
+    utxos = [Utxo(txid="aa" * 32, vout=0, value=200000, address=addr, path=PATH)]
+    return (
+        a,
+        addr,
+        a.build_unsigned_swap(
+            mnemonic=MNEMONIC,
+            utxos=utxos,
+            vault_address=VAULT,
+            amount=178100,
+            memo=memo,
+            fee_rate=2,
+        ),
+    )
+
+
+def test_binary_memo_reaches_the_op_return_byte_exact():
+    _, _, built = _build_with_memo(BINARY_MEMO)
+    op_returns = [o for o in built.outputs if o.op_return_data is not None]
+    assert len(op_returns) == 1
+    assert op_returns[0].op_return_data == BINARY_MEMO
+
+
+def test_binary_memo_built_swap_passes_the_gate():
+    _, addr, built = _build_with_memo(BINARY_MEMO)
+    plan = SwapPlan(
+        inbound_address=VAULT,
+        amount=178100,
+        memo=BINARY_MEMO,
+        expiry=9_999_999_999,
+    )
+    assert (
+        verify_btc_swap(
+            built.outputs,
+            fee=built.fee,
+            plan=plan,
+            owned_addresses={addr, built.change_address},
+            now=0,
+            max_fee=100_000,
+        )
+        == []
+    )
+
+
+def test_binary_memo_is_sized_like_a_text_memo_of_the_same_length():
+    # The fee estimate keys off the memo length; bytes and str of equal length
+    # must cost the same, or a binary swap underpays its fee.
+    _, _, from_bytes = _build_with_memo(BINARY_MEMO)
+    _, _, from_text = _build_with_memo("x" * len(BINARY_MEMO))
+    assert from_bytes.fee == from_text.fee
+
+
+def test_the_three_outputs_are_in_chainflips_required_order():
+    # Chainflip vault swaps require exactly: pay the vault, the nulldata
+    # OP_RETURN, then change (which doubles as the refund address).
+    _, _, built = _build_with_memo(BINARY_MEMO)
+    assert [o.address == VAULT for o in built.outputs][0] is True
+    assert built.outputs[1].op_return_data == BINARY_MEMO
+    assert built.outputs[2].address == built.change_address
