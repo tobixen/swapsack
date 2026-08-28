@@ -1,10 +1,11 @@
-"""Tests for the Chainflip backend (quote-only, phase B1).
+"""Tests for the Chainflip backend: the keyless quote, and the vault swap.
 
 Chainflip is a cross-chain JIT AMM: a second *independent* venue next to
 THORChain/Maya, which matters most exactly when those halt (see
-``docs/halt-alternatives.md``). This phase wires its keyless REST quote in as a
-read-only price source for ``--backend auto``; execution is a separate phase, so
-the backend advertises a ``vault-swap`` executor the CLI refuses to run.
+``docs/halt-alternatives.md``). Its keyless REST quote price-competes in
+``--backend auto``, and a BTC source settles through a *vault swap* — a plain
+Bitcoin transaction paying a protocol vault, with the swap parameters in its
+OP_RETURN — which is what the ``vault-swap`` executor means.
 
 The interesting work here is fee normalization. ``SwapFees`` is destination-
 denominated, but Chainflip itemizes its fees in *three different assets* —
@@ -18,14 +19,24 @@ import pytest
 from swapsack.backends import Backend, best_quote, gather_quotes
 from swapsack.chainflip import (
     CHAINFLIP_ASSETS,
+    VAULT_SWAP_ASSET_IDS,
     ChainflipBackend,
     ChainflipError,
     ChainflipQuote,
+    bitcoin_vault_addresses,
     deposit_units,
+    destination_bytes,
+    min_output_amount,
     parse_chainflip_quote,
+    prepare_vault_swap,
     select_quote,
 )
 from swapsack.thorchain import THORCHAIN_UNIT, Quote, SwapFees
+from swapsack.verify import (
+    ChainflipVaultPlan,
+    TxOutput,
+    verify_chainflip_vault_swap,
+)
 
 BTC = "BTC.BTC"
 ETH = "ETH.ETH"
@@ -248,8 +259,20 @@ def test_does_not_serve_unknown_or_identical_assets():
     assert not _backend().serves(BTC, BTC)
 
 
-def test_executor_is_vault_swap_so_the_cli_will_not_route_a_swap_here_yet():
+def test_executor_is_vault_swap_so_the_cli_builds_the_tx_itself():
     assert ChainflipBackend.executor == "vault-swap"
+
+
+def test_can_execute_is_narrower_than_serves():
+    # Chainflip lists Tron and quotes BTC -> TRX happily, but a vault swap
+    # encodes its destination into the payload and the gate re-derives it —
+    # and Tron needs a base58check decoder the gate does not have. Quoting it
+    # is useful; routing execution there dead-ends in `destination_bytes`.
+    backend = _backend()
+    assert backend.serves(BTC, "TRON.TRX")
+    assert not backend.can_execute(BTC, "TRON.TRX")
+    assert backend.can_execute(BTC, ETH)
+    assert set(VAULT_SWAP_ASSET_IDS) <= set(CHAINFLIP_ASSETS)
 
 
 def test_try_quote_scales_the_amount_to_source_native_units():
@@ -365,3 +388,349 @@ def test_chainflip_is_in_the_default_swap_backends():
     finally:
         for b in backends:
             b.client.close()
+
+
+# --- vault swaps (phase B2: execution) --------------------------------------
+#
+# A vault swap is a plain Bitcoin transaction paying a protocol vault, with the
+# swap parameters in the OP_RETURN. No broker, no deposit channel, and the
+# destination is ours to encode — which is what makes it gateable.
+
+VAULT = "bc1p5rrs3gd9tlzucafucuj5jgvaj7rdtgn6je28y44wvvrv4d0vpsdslmnctx"
+OTHER_VAULT = "bc1p50rzjffd3ac87492wsrefdmyqtyfthfjse9ypeg2pf5l95zclsaq8g9pc5"
+DEST = "0x000000000000000000000000000000000000dEaD"
+# Recorded live 2026-08-28 for BTC -> ETH, dest above, min output 3 ETH.
+LIVE_PAYLOAD_HEX = (
+    "0x0101000000000000000000000000000000000000dead"
+    "640000002cf61a24a2290000000000000000ff01000200000000"
+)
+
+
+def _vault_rpc_result():
+    """The shape cf_get_vault_addresses answers with: per-chain lists of
+    (account id, address-as-ASCII-byte-array) pairs."""
+    return {
+        "bitcoin": [
+            ["cFAccountOne", {"Btc": list(VAULT.encode())}],
+            ["cFAccountTwo", {"Btc": list(OTHER_VAULT.encode())}],
+        ],
+        "ethereum": {"Eth": [1] * 20},
+    }
+
+
+def _build_payload(dest20, asset_id=1, min_out=3 * 10**18, retry=100, **over):
+    """The 48-byte layout Chainflip encodes, rebuilt locally.
+
+    Pinned against a recorded live encoding by the test below, so a stub that
+    drifted from the real thing would fail loudly rather than validate a layout
+    Chainflip does not use.
+    """
+    fields = dict(oracle=255, chunks=1, interval=2, boost=0, broker=0, affiliates=0)
+    fields.update(over)
+    return (
+        bytes([1, asset_id])
+        + dest20
+        + retry.to_bytes(2, "little")
+        + min_out.to_bytes(16, "little")
+        + bytes([fields["oracle"]])
+        + fields["chunks"].to_bytes(2, "little")
+        + fields["interval"].to_bytes(2, "little")
+        + bytes([fields["boost"], fields["broker"], fields["affiliates"]])
+    )
+
+
+def test_the_stub_payload_matches_a_live_chainflip_encoding():
+    live = bytes.fromhex(LIVE_PAYLOAD_HEX[2:])
+    assert _build_payload(bytes.fromhex("00" * 18 + "dead")) == live
+
+
+class _StubRpc:
+    """Stands in for ChainflipRpc's transport; records the calls it is given.
+
+    Encodes what it is *asked* for rather than replaying a fixture, so the
+    round trip (ask for a floor -> get a payload carrying it -> gate it) is
+    really exercised. Pass ``encoding`` to force a specific — usually bad —
+    response instead.
+    """
+
+    def __init__(self, encoding=None, vaults=None, error=None):
+        self.encoding = encoding
+        self.vaults = vaults if vaults is not None else _vault_rpc_result()
+        self.error = error
+        self.calls = []
+
+    def call(self, method, params):
+        self.calls.append((method, params))
+        if self.error is not None:
+            raise self.error
+        if method == "cf_get_vault_addresses":
+            return self.vaults
+        if method == "cf_request_swap_parameter_encoding":
+            if self.encoding is not None:
+                return self.encoding
+            _broker, _src, dst, dest, _commission, extra = params
+            return {
+                "chain": "Bitcoin",
+                "nulldata_payload": "0x"
+                + _build_payload(
+                    bytes.fromhex(dest[2:]),
+                    asset_id=VAULT_SWAP_ASSET_IDS[
+                        next(
+                            k
+                            for k, v in CHAINFLIP_ASSETS.items()
+                            if list(v[:2]) == [dst["chain"], dst["asset"]]
+                            and k in VAULT_SWAP_ASSET_IDS
+                        )
+                    ],
+                    min_out=int(extra["min_output_amount"], 16),
+                    retry=extra["retry_duration"],
+                ).hex(),
+                "deposit_address": VAULT,
+            }
+        raise AssertionError(f"unexpected method {method}")
+
+    def close(self):
+        pass
+
+
+# --- destination encoding ---------------------------------------------------
+
+
+def test_destination_bytes_of_an_evm_address():
+    assert destination_bytes(ETH, DEST) == bytes.fromhex(
+        "000000000000000000000000000000000000dead"
+    )
+
+
+def test_destination_bytes_is_case_insensitive_for_evm():
+    assert destination_bytes(ETH, DEST.lower()) == destination_bytes(ETH, DEST.upper())
+
+
+def test_destination_bytes_rejects_a_malformed_address():
+    with pytest.raises(ChainflipError):
+        destination_bytes(ETH, "0xnothex")
+
+
+def test_destination_bytes_rejects_a_wrong_length_address():
+    with pytest.raises(ChainflipError):
+        destination_bytes(ETH, "0xdead")
+
+
+def test_destination_bytes_refuses_an_asset_whose_layout_we_cannot_decode():
+    # The gate decodes the payload itself; an address encoding it cannot
+    # reproduce must be refused rather than trusted. Tron and Solana are the
+    # live cases (Tron needs base58check, Solana has a 32-byte address).
+    with pytest.raises(ChainflipError, match="cannot verify"):
+        destination_bytes("TRON.TRX", "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8")
+
+
+def test_every_vault_swap_asset_id_names_a_known_asset():
+    assert set(VAULT_SWAP_ASSET_IDS) <= set(CHAINFLIP_ASSETS)
+
+
+# --- the on-chain floor -----------------------------------------------------
+
+
+def test_min_output_amount_applies_the_tolerance_to_the_quote():
+    q = _quote()
+    assert min_output_amount(q, 250) == q.egress_amount * 9750 // 10000
+
+
+def test_min_output_amount_of_zero_tolerance_is_the_whole_quote():
+    q = _quote()
+    assert min_output_amount(q, 0) == q.egress_amount
+
+
+def test_min_output_amount_defaults_to_the_quotes_own_recommendation():
+    q = _quote()
+    assert min_output_amount(q, None) == min_output_amount(
+        q, q.recommended_slippage_bps
+    )
+
+
+def test_min_output_amount_refuses_a_nonsensical_tolerance():
+    with pytest.raises(ChainflipError):
+        min_output_amount(_quote(), 10_000)
+
+
+# --- assembling a vault swap ------------------------------------------------
+
+
+def test_vault_addresses_decode_from_the_rpc_byte_arrays():
+    rpc = _StubRpc()
+    assert bitcoin_vault_addresses(rpc) == frozenset({VAULT, OTHER_VAULT})
+
+
+def test_prepare_vault_swap_asks_for_our_destination_and_floor():
+    rpc = _StubRpc()
+    prepare_vault_swap(
+        rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+    )
+    method, params = rpc.calls[-1]
+    assert method == "cf_request_swap_parameter_encoding"
+    assert params[3] == DEST
+    assert params[4] == 0  # broker commission: nobody skims
+    assert int(params[5]["min_output_amount"], 16) == min_output_amount(_quote(), 250)
+
+
+def test_prepare_vault_swap_returns_a_gateable_plan():
+    # The integration that matters: what the builder produces must satisfy the
+    # gate. A field the two disagree about would otherwise only show up on a
+    # real, irreversible transaction.
+    swap = prepare_vault_swap(
+        rpc=_StubRpc(),
+        from_asset=BTC,
+        to_asset=ETH,
+        destination=DEST,
+        quote=_quote(),
+        bps=250,
+    )
+    plan = ChainflipVaultPlan(
+        deposit_address=swap.deposit_address,
+        amount=178100,
+        payload=swap.payload,
+        expiry=9_999_999_999,
+        destination_asset_id=swap.destination_asset_id,
+        destination_bytes=swap.destination_bytes,
+        min_output_amount=swap.min_output_amount,
+        known_vaults=swap.known_vaults,
+    )
+    outputs = [
+        TxOutput(address=swap.deposit_address, value=178100),
+        TxOutput(address=None, value=0, op_return_data=swap.payload),
+        TxOutput(address="bc1qchange", value=1000),
+    ]
+    assert (
+        verify_chainflip_vault_swap(
+            outputs,
+            fee=500,
+            plan=plan,
+            owned_addresses={"bc1qchange"},
+            now=0,
+            max_fee=100_000,
+        )
+        == []
+    )
+
+
+def test_prepare_vault_swap_refuses_a_deposit_address_outside_the_vault_list():
+    # Belt and braces: the gate checks this too, but failing early gives a
+    # better message than a gate problem list.
+    rpc = _StubRpc(
+        encoding={
+            "chain": "Bitcoin",
+            "nulldata_payload": LIVE_PAYLOAD_HEX,
+            "deposit_address": "bc1qnotavault",
+        }
+    )
+    with pytest.raises(ChainflipError, match="vault"):
+        prepare_vault_swap(
+            rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+        )
+
+
+def test_prepare_vault_swap_refuses_a_non_bitcoin_source():
+    with pytest.raises(ChainflipError, match="Bitcoin"):
+        prepare_vault_swap(
+            _StubRpc(),
+            from_asset=ETH,
+            to_asset=USDC_ETH,
+            destination=DEST,
+            quote=_quote(),
+            bps=250,
+        )
+
+
+def test_prepare_vault_swap_rejects_a_payload_that_is_not_hex():
+    rpc = _StubRpc(
+        encoding={
+            "chain": "Bitcoin",
+            "nulldata_payload": "not-hex",
+            "deposit_address": VAULT,
+        }
+    )
+    with pytest.raises(ChainflipError):
+        prepare_vault_swap(
+            rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+        )
+
+
+def test_prepare_vault_swap_rejects_a_payload_that_pays_elsewhere():
+    # The exact attack the local decode exists for: the node encodes someone
+    # else's address and reports success.
+    theirs = "0x" + _build_payload(bytes.fromhex("11" * 20)).hex()
+    rpc = _StubRpc(
+        encoding={
+            "chain": "Bitcoin",
+            "nulldata_payload": theirs,
+            "deposit_address": VAULT,
+        }
+    )
+    with pytest.raises(ChainflipError, match="destination"):
+        prepare_vault_swap(
+            rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+        )
+
+
+def _gateable_plan_and_outputs():
+    """The plan/outputs pair `test_prepare_vault_swap_returns_a_gateable_plan`
+    proves the gate accepts, so a test below can take one output away."""
+    swap = prepare_vault_swap(
+        rpc=_StubRpc(),
+        from_asset=BTC,
+        to_asset=ETH,
+        destination=DEST,
+        quote=_quote(),
+        bps=250,
+    )
+    plan = ChainflipVaultPlan(
+        deposit_address=swap.deposit_address,
+        amount=178100,
+        payload=swap.payload,
+        expiry=9_999_999_999,
+        destination_asset_id=swap.destination_asset_id,
+        destination_bytes=swap.destination_bytes,
+        min_output_amount=swap.min_output_amount,
+        known_vaults=swap.known_vaults,
+    )
+    outputs = [
+        TxOutput(address=swap.deposit_address, value=178100),
+        TxOutput(address=None, value=0, op_return_data=swap.payload),
+        TxOutput(address="bc1qchange", value=1000),
+    ]
+    return plan, outputs
+
+
+def test_a_vault_swap_without_a_change_output_is_refused():
+    # The change output *is* the refund address: Chainflip pays a swap that
+    # never clears its floor back to it. A selection that folds a sub-dust
+    # change into the fee (coins._select does, over a ~294-sat window) would
+    # otherwise sign a vault + OP_RETURN transaction with nowhere to refund to
+    # — and the gate's inherited "change must be ours" loop passes vacuously
+    # when there is no change output at all.
+    plan, outputs = _gateable_plan_and_outputs()
+    problems = verify_chainflip_vault_swap(
+        outputs[:2],
+        fee=1500,
+        plan=plan,
+        owned_addresses={"bc1qchange"},
+        now=0,
+        max_fee=100_000,
+    )
+    assert any("refund" in p for p in problems), problems
+
+
+def test_a_change_output_below_dust_is_refused_too():
+    # Chainflip requires the refund output above the dust limit; a dust one
+    # would be unspendable by the protocol even though it exists.
+    plan, outputs = _gateable_plan_and_outputs()
+    outputs[2] = TxOutput(address="bc1qchange", value=100)
+    problems = verify_chainflip_vault_swap(
+        outputs,
+        fee=1500,
+        plan=plan,
+        owned_addresses={"bc1qchange"},
+        now=0,
+        max_fee=100_000,
+    )
+    assert any("dust" in p for p in problems), problems

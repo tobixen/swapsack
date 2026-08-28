@@ -5,12 +5,16 @@ perform, return a list of human-readable problems. An empty list means the
 transaction matches the intended swap exactly and is safe to sign and
 broadcast; a non-empty list MUST block broadcasting. On THORChain a wrong
 vault, amount or memo means irreversible loss of funds, so this gate is
-deliberately strict and dependency-free (easy to read and test).
+deliberately strict and dependency-free (easy to read and test) — the one
+import below is a sizing constant from :mod:`swapsack.chains.coins`, which is
+itself pure maths and pulls in no chain library.
 """
 
 from __future__ import annotations
 
 import dataclasses
+
+from swapsack.chains.coins import P2WPKH
 
 OP_RETURN_MAX_BYTES = 80
 # wei (1e18) per THORChain base unit (1e8)
@@ -710,4 +714,199 @@ def verify_cow_order(*, order: dict, plan: CowOrderPlan, now: int) -> list[str]:
             f"order validTo {valid_to} is more than {plan.max_validity}s away"
         )
 
+    return problems
+
+
+# --- Chainflip vault swaps --------------------------------------------------
+#
+# A vault swap needs no broker and no deposit channel: the swap's parameters
+# ride in the transaction's own OP_RETURN, and the destination is ours to
+# encode rather than a broker's to register. That is what makes it gateable
+# here — but only if the gate reads those bytes *itself*. Asking the node that
+# produced the payload what the payload says would prove nothing; the whole
+# point is to catch a node that lies. So the layout below is decoded locally,
+# with no dependencies, like the rest of this module.
+#
+# Layout verified by differential encoding against mainnet on 2026-08-28 (vary
+# one RPC parameter, see which byte moves). It is identical for every EVM and
+# Tron destination — 48 bytes with a 20-byte address; Solana's 32-byte address
+# makes it 60, which is why VAULT_SWAP_PAYLOAD_BYTES is checked rather than
+# assumed.
+
+VAULT_SWAP_PAYLOAD_BYTES = 48
+VAULT_SWAP_VERSION = 1
+_VS_ASSET_ID = 1
+_VS_DEST = slice(2, 22)
+_VS_RETRY = slice(22, 24)
+_VS_MIN_OUTPUT = slice(24, 40)
+_VS_ORACLE_SLIPPAGE = 40
+_VS_DCA_CHUNKS = slice(41, 43)
+_VS_DCA_INTERVAL = slice(43, 45)
+_VS_BOOST_FEE = 45
+_VS_BROKER_FEE = 46
+_VS_AFFILIATES = 47
+
+
+@dataclasses.dataclass(frozen=True)
+class DecodedVaultSwap:
+    """A Chainflip vault-swap payload, decoded from its bytes alone."""
+
+    version: int
+    asset_id: int
+    destination: bytes
+    retry_duration: int
+    min_output_amount: int
+    oracle_slippage: int
+    dca_chunks: int
+    dca_interval: int
+    boost_fee: int
+    broker_fee: int
+    affiliates: int
+
+
+def decode_vault_swap_payload(payload: bytes) -> DecodedVaultSwap | None:
+    """Decode a 48-byte vault-swap payload, or None if it is not one."""
+    if len(payload) != VAULT_SWAP_PAYLOAD_BYTES:
+        return None
+    little = "little"
+    return DecodedVaultSwap(
+        version=payload[0],
+        asset_id=payload[_VS_ASSET_ID],
+        destination=payload[_VS_DEST],
+        retry_duration=int.from_bytes(payload[_VS_RETRY], little),
+        min_output_amount=int.from_bytes(payload[_VS_MIN_OUTPUT], little),
+        oracle_slippage=payload[_VS_ORACLE_SLIPPAGE],
+        dca_chunks=int.from_bytes(payload[_VS_DCA_CHUNKS], little),
+        dca_interval=int.from_bytes(payload[_VS_DCA_INTERVAL], little),
+        boost_fee=payload[_VS_BOOST_FEE],
+        broker_fee=payload[_VS_BROKER_FEE],
+        affiliates=payload[_VS_AFFILIATES],
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class ChainflipVaultPlan:
+    """What we intend a Chainflip vault swap to do.
+
+    ``known_vaults`` comes from the chain's own ``cf_get_vault_addresses``: the
+    deposit address is not something to trust from the encoding response, it is
+    something to find in the protocol's published list.
+    """
+
+    deposit_address: str
+    amount: int
+    payload: bytes
+    expiry: int
+    destination_asset_id: int
+    destination_bytes: bytes
+    min_output_amount: int
+    known_vaults: frozenset[str]
+
+
+def verify_chainflip_vault_swap(
+    outputs: list[TxOutput],
+    fee: int,
+    plan: ChainflipVaultPlan,
+    owned_addresses: set[str],
+    now: int,
+    *,
+    max_fee: int,
+) -> list[str]:
+    """Return reasons the tx is not the vault swap we intend; empty means safe.
+
+    Two layers. The Bitcoin layer is the same one every UTXO swap goes through
+    (:func:`verify_btc_swap`): one output to the deposit address for the exact
+    amount, one OP_RETURN carrying exactly our payload, change only to us, a
+    sane fee. The Chainflip layer then reads the payload and checks it promises
+    what we asked for — our destination, our floor, and nobody skimming.
+    """
+    problems = verify_btc_swap(
+        outputs,
+        fee=fee,
+        plan=SwapPlan(
+            inbound_address=plan.deposit_address,
+            amount=plan.amount,
+            memo=plan.payload,
+            expiry=plan.expiry,
+            # The destination is bound below, from the payload's own bytes —
+            # memo_pays_destination is a text search and cannot read this.
+            destination="",
+        ),
+        owned_addresses=owned_addresses,
+        now=now,
+        max_fee=max_fee,
+    )
+
+    if plan.deposit_address not in plan.known_vaults:
+        problems.append(
+            f"deposit address {plan.deposit_address} is not one of the "
+            f"protocol vaults published on-chain"
+        )
+
+    # The change output doubles as the refund address — it is where Chainflip
+    # sends the money back when the price never clears `min_output_amount`. The
+    # inherited "change only to us" loop above says nothing when there is no
+    # change output, and there are two ways to reach that: a sweep, and a
+    # selection that folds a sub-dust change into the fee. Both must fail here,
+    # because the refusal is only free *before* the deposit confirms.
+    change = [
+        o
+        for o in outputs
+        if o.op_return_data is None and o.address != plan.deposit_address
+    ]
+    if not change:
+        problems.append(
+            "no change output: a vault swap refunds to its change address, so "
+            "a transaction without one has nowhere to be refunded to"
+        )
+    else:
+        for o in change:
+            if o.value < P2WPKH.dust:
+                problems.append(
+                    f"change output {o.address} is {o.value} sats, under the "
+                    f"{P2WPKH.dust}-sat dust limit — the refund address must "
+                    f"be spendable"
+                )
+
+    decoded = decode_vault_swap_payload(plan.payload)
+    if decoded is None:
+        problems.append(
+            f"vault swap payload is {len(plan.payload)} bytes, expected "
+            f"{VAULT_SWAP_PAYLOAD_BYTES}"
+        )
+        return problems
+
+    if decoded.version != VAULT_SWAP_VERSION:
+        problems.append(
+            f"vault swap payload version {decoded.version} != "
+            f"{VAULT_SWAP_VERSION}; refusing to guess its layout"
+        )
+    if decoded.asset_id != plan.destination_asset_id:
+        problems.append(
+            f"payload pays output asset {decoded.asset_id}, intended "
+            f"{plan.destination_asset_id}"
+        )
+    if decoded.destination != plan.destination_bytes:
+        problems.append(
+            f"payload pays destination {decoded.destination.hex()}, intended "
+            f"{plan.destination_bytes.hex()}"
+        )
+    if decoded.min_output_amount < plan.min_output_amount:
+        problems.append(
+            f"payload min output {decoded.min_output_amount} is below our "
+            f"floor {plan.min_output_amount}"
+        )
+    if decoded.broker_fee:
+        problems.append(f"payload carries a broker fee of {decoded.broker_fee} bps")
+    if decoded.boost_fee:
+        problems.append(f"payload carries a boost fee of {decoded.boost_fee} bps")
+    if decoded.affiliates:
+        problems.append(
+            f"payload carries {decoded.affiliates} affiliate fee entries; expected none"
+        )
+    if decoded.dca_chunks != 1:
+        problems.append(
+            f"payload splits the swap into {decoded.dca_chunks} DCA chunks; "
+            f"one was intended"
+        )
     return problems

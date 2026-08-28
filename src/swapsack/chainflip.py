@@ -6,13 +6,15 @@ both halted at once, leaving BTC->ETH with no route at all (see
 validators and pools, so pricing against it is both a price check and the
 resilience hedge ``--backend auto`` was meant to provide.
 
-This module is **phase B1: quoting only**. The REST quote is keyless, so this is
-a read-only price source with no money path. Execution is a *vault swap* — a
-plain Bitcoin transaction paying a protocol vault with the swap parameters in an
-OP_RETURN, no broker and no deposit channel — which is a separate phase; see
-``docs/chainflip-effort.md``. Until then the backend advertises the
-``vault-swap`` executor, which the CLI refuses to run rather than silently
-handing a Chainflip quote to the thornode deposit path.
+The REST quote is keyless, so pricing needs no account and no key. Execution is
+a *vault swap* — a plain Bitcoin transaction paying a protocol vault with the
+swap parameters in an OP_RETURN, no broker and no deposit channel — which is
+what the ``vault-swap`` executor means, and why only a UTXO source path can
+drive this backend. The destination is *encoded* rather than registered, so the
+gate re-derives it from the payload's own bytes; only the assets
+:data:`VAULT_SWAP_ASSET_IDS` can encode are executable, which
+:meth:`ChainflipBackend.can_execute` says at selection time. See
+``docs/chainflip-effort.md``.
 
 Amounts cross this module in two units, as in :mod:`swapsack.cow`: the
 wallet-wide 1e8 base units at the backend surface (so ``best_quote`` can compare
@@ -28,6 +30,10 @@ from typing import TYPE_CHECKING, Any
 
 from swapsack.net import HTTP_ERRORS, HttpClient
 from swapsack.thorchain import THORCHAIN_UNIT, SwapFees, asset_unit
+from swapsack.verify import (
+    VAULT_SWAP_PAYLOAD_BYTES,
+    decode_vault_swap_payload,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -284,8 +290,10 @@ class ChainflipBackend:
 
     ``executor`` says this backend settles by paying a protocol vault with the
     swap parameters encoded in the transaction — *not* by the thornode ``=:``
-    memo the CLI's deposit path builds. That path is not implemented yet, so the
-    CLI refuses to execute here; quotes still price-compete in ``gather_quotes``.
+    memo the CLI's deposit path builds. That makes it drivable only from a UTXO
+    source (``UTXO_EXECUTORS``) and only to a destination the payload can encode
+    (:meth:`can_execute`); everything else it serves still price-competes in
+    ``gather_quotes``.
     """
 
     client: ChainflipClient
@@ -305,6 +313,19 @@ class ChainflipBackend:
             and to_asset in CHAINFLIP_ASSETS
             and from_asset != to_asset
         )
+
+    def can_execute(self, from_asset: str, to_asset: str) -> bool:
+        """Whether a *vault swap* can settle this pair, not merely price it.
+
+        Narrower than :meth:`serves` on purpose. The destination is encoded into
+        the OP_RETURN payload and re-derived by the gate, so only the assets
+        :data:`VAULT_SWAP_ASSET_IDS` can encode are settleable here — Tron is
+        listed and quotable but needs a base58check decoder the gate does not
+        have. Saying so at selection time routes such a pair to a backend that
+        can run it, instead of aborting in ``destination_bytes`` after the
+        quotes are in.
+        """
+        return self.serves(from_asset, to_asset) and to_asset in VAULT_SWAP_ASSET_IDS
 
     def try_quote(
         self,
@@ -344,3 +365,257 @@ class ChainflipBackend:
 def default_chainflip_backend() -> ChainflipBackend:
     base_url = os.environ.get("SWAPSACK_CHAINFLIP_API") or DEFAULT_CHAINFLIP_API
     return ChainflipBackend(ChainflipClient(base_url))
+
+
+# --- vault swaps (execution) ------------------------------------------------
+#
+# Chainflip can be paid two ways. A *deposit channel* has a broker register your
+# destination, which you then have to trust or read back. A **vault swap** puts
+# the swap parameters in your own transaction's OP_RETURN and pays a protocol
+# vault directly: no broker, no channel, no expiry race — and the destination is
+# something we encode rather than something we are told. That is why this is the
+# path built here; ``docs/chainflip-effort.md`` has the reasoning and the live
+# probes behind it.
+#
+# The Bitcoin transaction shape Chainflip requires — pay the vault, the nulldata
+# OP_RETURN, then change (which doubles as the refund address) — is exactly what
+# ``UtxoTxBuilder.build_unsigned_swap`` already emits for THORChain.
+
+CHAINFLIP_RPC = "https://mainnet-rpc.chainflip.io"
+
+# Chainflip's output-asset ids as they appear in a vault-swap payload, verified
+# by differential encoding against mainnet on 2026-08-28. Only assets whose
+# address the gate can independently reproduce are listed: these all encode as
+# 20 raw bytes. Tron does too, but needs a base58check decoder we do not have;
+# Solana's is 32 bytes and changes the payload length. Both are refused rather
+# than trusted — see destination_bytes.
+VAULT_SWAP_ASSET_IDS: dict[str, int] = {
+    "ETH.ETH": 1,
+    "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48": 3,
+    "ARB.ETH": 6,
+    "ARB.USDC-0XAF88D065E77C8CC2239327C5EDB3A432268E5831": 7,
+    "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7": 8,
+}
+
+# Blocks Chainflip keeps retrying a swap whose price never clears the floor
+# before refunding to the change output. The chain caps this
+# (max_swap_retry_duration_blocks, 600 at the time of writing) and rejects more.
+DEFAULT_RETRY_DURATION_BLOCKS = 100
+
+# The encode RPC wants a broker account. It is **inert for what we broadcast**:
+# with a zero commission the payload is byte-identical whichever account is
+# named (checked against two on 2026-08-28), and the account only selects which
+# of the protocol's published vault addresses to pay — every one of which the
+# gate confirms against cf_get_vault_addresses. It is not a liveness dependency
+# either: the account is a constant here, not a service we call.
+DEFAULT_BROKER_ACCOUNT = "cFJZVRaybb2PBwxTiAiRLiQfHY4KPB3RpJK22Q7Fhqk979aCH"
+
+# A u8 in the payload; 255 is what the protocol encodes when it is not asked
+# for. Its units are documented as basis points, which a u8 cannot express past
+# 2.55%, so rather than set a number whose meaning we are unsure of we leave the
+# protocol default and rely on min_output_amount — a floor we compute, encode
+# and gate ourselves. Noted so the next reader knows this was a decision.
+UNSET_ORACLE_SLIPPAGE = 255
+
+# How long a prepared vault swap stays valid, in seconds. Chainflip itself gives
+# a vault swap two epoch rotations (~3-6 days), so this is not the protocol's
+# deadline — it is ours: the encoded floor comes from a price quoted now, and a
+# plan left sitting at a confirmation prompt should be re-quoted rather than
+# broadcast against a stale one.
+VAULT_SWAP_PLAN_TTL = 600
+
+
+@dataclasses.dataclass(frozen=True)
+class VaultSwap:
+    """An unsigned Chainflip vault swap: where to pay and what to say.
+
+    Everything the gate needs to re-derive its checks travels with it, so the
+    CLI never has to reconstruct an intention from two places.
+    """
+
+    deposit_address: str
+    payload: bytes
+    known_vaults: frozenset[str]
+    destination_asset_id: int
+    destination_bytes: bytes
+    min_output_amount: int
+
+
+def destination_bytes(asset: str, address: str) -> bytes:
+    """The 20 raw address bytes a vault-swap payload carries for ``asset``.
+
+    Raises for an asset whose address this cannot reproduce: the gate proves the
+    payload pays us by comparing these bytes, so an asset it cannot encode is an
+    asset it cannot verify — and an unverifiable swap must not be built.
+    """
+    if asset not in VAULT_SWAP_ASSET_IDS:
+        raise ChainflipError(
+            f"cannot verify a Chainflip vault swap paying {asset}: the gate "
+            f"decodes the payload's destination itself, and only "
+            f"{', '.join(sorted(VAULT_SWAP_ASSET_IDS))} are supported"
+        )
+    if not address.lower().startswith("0x"):
+        raise ChainflipError(f"expected an 0x… address for {asset}, got {address!r}")
+    try:
+        raw = bytes.fromhex(address[2:])
+    except ValueError as exc:
+        raise ChainflipError(f"destination {address!r} is not hex: {exc}") from exc
+    if len(raw) != 20:
+        raise ChainflipError(
+            f"destination {address!r} is {len(raw)} bytes, expected 20"
+        )
+    return raw
+
+
+def min_output_amount(quote: ChainflipQuote, bps: int | None) -> int:
+    """The on-chain floor to encode: the quote less ``bps`` of tolerance.
+
+    This is the vault swap's equivalent of CoW's ``buyAmount`` — a number the
+    protocol enforces, not a hint. ``None`` takes the quote's own
+    ``recommendedSlippageTolerancePercent``, which is the right default because
+    a Bitcoin deposit waits ~15 minutes for confirmations and the price moves
+    in that window; a CoW-style 50 bps floor would simply refund most swaps.
+    """
+    if bps is None:
+        bps = quote.recommended_slippage_bps
+    if not 0 <= bps < 10000:
+        raise ChainflipError(f"tolerance {bps} bps must be >= 0 and < 10000")
+    return quote.egress_amount * (10000 - bps) // 10000
+
+
+class ChainflipRpc(HttpClient):
+    """The Chainflip State Chain's public JSON-RPC (keyless).
+
+    Separate from :class:`ChainflipClient`: that one talks to the hosted
+    swapping service for prices, this one talks to the protocol's own nodes for
+    the things a money path must not take on a service's word — the vault
+    addresses and the parameter encoding.
+    """
+
+    def __init__(self, base_url: str = CHAINFLIP_RPC, timeout: float = 25.0) -> None:
+        super().__init__(timeout)
+        self.base_url = base_url.rstrip("/")
+
+    def call(self, method: str, params: list[Any]) -> Any:  # noqa: ANN401 (JSON)
+        resp = self._post(
+            self.base_url,
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        )
+        if resp.status_code >= 400:
+            resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            raise ChainflipError(f"malformed RPC response for {method}")
+        if "error" in payload:
+            error = payload["error"]
+            raise ChainflipError(
+                f"{method}: {error.get('message', error)}"
+                if isinstance(error, dict)
+                else f"{method}: {error}"
+            )
+        if "result" not in payload:
+            raise ChainflipError(f"RPC response for {method} carries no result")
+        return payload["result"]
+
+
+def bitcoin_vault_addresses(rpc: ChainflipRpc) -> frozenset[str]:
+    """The Bitcoin vault addresses the protocol publishes on-chain.
+
+    The chain answers with ``(account id, {"Btc": [byte, …]})`` pairs, where the
+    byte array is the address string's own ASCII. This is the independent side
+    of the gate's vault check: the deposit address an encoding hands back has to
+    appear here, or we are not paying the protocol.
+    """
+    result = rpc.call("cf_get_vault_addresses", [])
+    try:
+        entries = result["bitcoin"]
+        return frozenset(
+            bytes(address["Btc"]).decode() for _account, address in entries
+        )
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise ChainflipError(f"malformed vault address list: {exc!r}") from exc
+
+
+def prepare_vault_swap(
+    rpc: ChainflipRpc,
+    *,
+    from_asset: str,
+    to_asset: str,
+    destination: str,
+    quote: ChainflipQuote,
+    bps: int | None,
+) -> VaultSwap:
+    """Ask the chain to encode a vault swap, then check it before returning it.
+
+    Every check here is repeated by :func:`swapsack.verify.
+    verify_chainflip_vault_swap` against the built transaction — this is not the
+    gate. It fails early so the user gets one clear sentence instead of a gate
+    problem list, and so a bad encoding never reaches a transaction builder.
+    """
+    if from_asset != "BTC.BTC":
+        raise ChainflipError(
+            f"vault swaps are implemented for a Bitcoin source only, not "
+            f"{from_asset} (an EVM source needs a contract call, not this path)"
+        )
+    expected_dest = destination_bytes(to_asset, destination)
+    asset_id = VAULT_SWAP_ASSET_IDS[to_asset]
+    floor = min_output_amount(quote, bps)
+    vaults = bitcoin_vault_addresses(rpc)
+    result = rpc.call(
+        "cf_request_swap_parameter_encoding",
+        [
+            DEFAULT_BROKER_ACCOUNT,
+            dict(
+                zip(("chain", "asset"), CHAINFLIP_ASSETS[from_asset][:2], strict=True)
+            ),
+            dict(zip(("chain", "asset"), CHAINFLIP_ASSETS[to_asset][:2], strict=True)),
+            destination,
+            0,  # broker commission: nobody skims a swap this wallet builds
+            {
+                "chain": "Bitcoin",
+                "min_output_amount": hex(floor),
+                "retry_duration": DEFAULT_RETRY_DURATION_BLOCKS,
+            },
+        ],
+    )
+    try:
+        deposit_address = str(result["deposit_address"])
+        raw = str(result["nulldata_payload"])
+        payload = bytes.fromhex(raw[2:] if raw.lower().startswith("0x") else raw)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ChainflipError(f"malformed vault swap encoding: {exc!r}") from exc
+
+    if deposit_address not in vaults:
+        raise ChainflipError(
+            f"the encoding names deposit address {deposit_address}, which is "
+            f"not one of the protocol vaults published on-chain"
+        )
+    decoded = decode_vault_swap_payload(payload)
+    if decoded is None:
+        raise ChainflipError(
+            f"vault swap payload is {len(payload)} bytes, expected "
+            f"{VAULT_SWAP_PAYLOAD_BYTES}"
+        )
+    if decoded.destination != expected_dest:
+        raise ChainflipError(
+            f"the encoding pays destination 0x{decoded.destination.hex()}, "
+            f"not {destination}"
+        )
+    if decoded.asset_id != asset_id:
+        raise ChainflipError(
+            f"the encoding pays output asset {decoded.asset_id}, not "
+            f"{asset_id} ({to_asset})"
+        )
+    if decoded.min_output_amount < floor:
+        raise ChainflipError(
+            f"the encoding's min output {decoded.min_output_amount} is below "
+            f"the floor {floor} we asked for"
+        )
+    return VaultSwap(
+        deposit_address=deposit_address,
+        payload=payload,
+        known_vaults=vaults,
+        destination_asset_id=asset_id,
+        destination_bytes=expected_dest,
+        min_output_amount=floor,
+    )

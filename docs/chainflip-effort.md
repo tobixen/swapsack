@@ -1,10 +1,38 @@
 # What integrating Chainflip actually costs
 
-Status: **estimate, live-probed 2026-08-28 — and B1 has since shipped**
-(`src/swapsack/chainflip.py`, `tests/test_chainflip.py`), which is the estimate
-below being checked against reality rather than left as a guess. It landed at
-~330 lines of module + ~370 of tests + ~70 of CLI/backends wiring, inside the
-~600-line band. B2 is still to build. Answers "how much work is it?"
+Status: **both phases shipped** (2026-08-28), so what follows is an estimate
+with its own outcome attached rather than a guess. B1 landed inside its
+~600-line band. B2 landed too, and the three questions this note left open were
+answered from the chain rather than by asking anyone — see *Answers* below.
+
+| | estimated | actual |
+|---|---|---|
+| B1 (quotes) | ~1 session, ~600 lines | ~1 session, 1,026 insertions incl. tests |
+| B2 (execution) | ~2–3 sessions, ~700–900 | 2 commits, ~1,100 insertions incl. tests |
+
+## Answers to the questions this note left open
+
+- **The broker account is inert for what we broadcast.** With a zero commission
+  the payload is byte-identical whichever account is named (checked against two
+  on 2026-08-28); the account only selects *which* of the protocol's published
+  vault addresses to pay, and the gate confirms that address against
+  `cf_get_vault_addresses` either way. It is a constant in our source, not a
+  service we depend on being up.
+- **`max_oracle_price_slippage` is a `u8` whose 255 is what the protocol
+  encodes when it is not asked for.** Its documented unit (basis points) cannot
+  reach past 2.55% in a `u8`, so rather than set a number whose meaning is
+  unclear, the wallet leaves the protocol default and relies on
+  `min_output_amount` — a floor it computes, encodes and gates itself. Recorded
+  as a decision, not an oversight.
+- **Refunds go to the change output**, which the gate already requires to be an
+  address we own. So the refund path is bound by the same check that stops a
+  swap paying change to a stranger — which is also why a sweep cannot be a
+  vault swap.
+
+The payload layout was mapped by **differential encoding**: vary one RPC
+parameter, see which byte moves. That is what made a local decoder possible, and
+the local decoder is what makes the gate mean anything — asking the node that
+produced the payload what the payload says would prove nothing. Answers "how much work is it?"
 against the code as it stands, using the CoW backend (the last one that
 shipped) as the empirical yardstick. Supersedes the execution half of
 `docs/chainflip.md` — see §2, where its central finding turns out to be wrong
@@ -202,12 +230,28 @@ because the broker, the channel and the expiry gate all evaporate.
 
 ## 5. Recommendation
 
-**B1 is done.** It is what makes `quote` still answer while THORChain and Maya
-are halted. Two things came out of building it that the estimate did not
-predict: the generic `SwapFees.breakdown()` wording ("slip/swap fee") is wrong
-for Chainflip, so the fees object overrides it to name ingress/network/egress
-legs; and `auto` needed to *say* when the price-only backend won, rather than
-quietly routing around a cheaper route the user could take by hand. Do the **`bytes` memo widening as
+**Both phases are done.** What the estimate did not predict, in the order it
+was found:
+
+1. The generic `SwapFees.breakdown()` wording ("slip/swap fee") is wrong for
+   Chainflip, so the fees object overrides it to name ingress/network/egress.
+2. `auto` needed to *say* when a backend it cannot drive won on price, rather
+   than quietly routing around a cheaper route the user could take by hand.
+3. "Which executors can execute" is not one global set — a signed CoW order
+   needs an EVM source and a vault swap is a Bitcoin transaction, so each
+   `swap --from` path declares what it can actually drive.
+4. The gate wanted its **own plan type**. Reusing `SwapPlan` would have meant a
+   binary memo silently skipping `memo_pays_destination`, which is a text
+   search; instead that function now *refuses* a binary memo when a destination
+   is set, and `ChainflipVaultPlan` carries the binding the vault-swap gate
+   does itself.
+
+What is left, and deliberately so: **the broadcast is unproven on mainnet.**
+Everything up to it is covered by an opt-in network test that quotes, encodes
+against mainnet, builds a real unsigned transaction from a throwaway key and
+requires the gate to pass — the same shape as CoW's "unfunded order clears every
+check up to `InsufficientBalance`". Only spending real BTC can close the last
+step. Do the **`bytes` memo widening as
 its own commit** next, on its own test run. Then **B2**, and rewrite
 `docs/chainflip.md` around vault swaps first — leaving a note whose central
 mechanism does not work as its plan of record is how the wrong thing gets built.

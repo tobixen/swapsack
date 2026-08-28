@@ -15,15 +15,29 @@ automatically from git tags (PEP 440 / SemVer).
   all through this wallet. Quoting is keyless; see `docs/halt-alternatives.md`
   for the measured price comparison that picked it over custodial exchangers and
   CEX orderbooks.
-  - **Price only, and it says so.** Chainflip settles by paying a protocol vault
-    with the swap parameters encoded in the transaction, not by the thornode
-    `=:` memo — a path that is not built yet, so `swap --backend chainflip`
-    refuses with an actionable message instead of handing its quote to a deposit
-    builder that cannot settle it. `docs/chainflip-effort.md` sizes the work.
-  - **`auto` routes around it, out loud.** When Chainflip quotes the best price
-    but cannot execute, the swap goes to the best backend that *can* — and a
-    note names Chainflip and the difference, because a cheaper route you could
-    take by hand is worth knowing about rather than silently paying more.
+  - **Swapping from BTC settles as a *vault swap*.** One ordinary Bitcoin
+    transaction pays a protocol vault, with your destination and an on-chain
+    minimum-output floor encoded in its OP_RETURN. No broker, no deposit
+    channel, nothing registered on your behalf, and no single-use address to
+    miss. The floor comes from `--tolerance-bps`, defaulting to Chainflip's own
+    recommendation for the pair — a Bitcoin deposit waits ~15 minutes for
+    confirmations, and a tighter floor would simply refund most swaps.
+  - **The gate decodes the payload itself.** Before signing, the wallet reads
+    the 48 bytes it is about to publish and checks they pay *your* address in
+    *your* asset, clear your floor, and carry no broker, boost or affiliate fee
+    — and that the deposit address is one of the vaults the chain publishes.
+    Asking the node that produced the payload what it says would prove nothing.
+  - **`--amount max` is refused for a vault swap**: Chainflip reads the change
+    output as the swap's refund address and needs it above dust, so a sweep has
+    nothing to refund to. The gate enforces the same thing on the bytes
+    themselves — a vault swap whose change fell under dust into the fee would
+    otherwise be signed with nowhere to be refunded to.
+  - **Pairs it can only quote say so, out loud.** Chainflip prices more than it
+    can settle: EVM and Tron *sources* (a vault swap is a Bitcoin transaction),
+    and Tron and Solana *destinations*, whose address the gate cannot re-derive
+    from the payload it is checking. When one of those wins on price, the swap
+    goes to the best backend that *can* execute and a note names the cheaper
+    route and the difference, rather than silently paying more.
   - The cost breakdown names Chainflip's own fee legs — ingress, network,
     egress — rather than borrowing THORChain's "slip/swap fee" wording, which
     would be a lie here: Chainflip's slip is in the price, not in a fee field.

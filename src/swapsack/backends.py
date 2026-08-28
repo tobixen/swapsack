@@ -8,8 +8,9 @@ Two kinds of backend exist behind one small protocol (``name``, ``client``,
   a memo (``executor = "memo-deposit"``).
 - *CoW Protocol*: same-chain ETH-token swaps executed by signing an EIP-712
   order (``executor = "signed-order"``); see ``swapsack.cow``.
-- *Chainflip*: an independent cross-chain venue, quote-only for now
-  (``executor = "vault-swap"``, which the CLI refuses to execute); see
+- *Chainflip*: an independent cross-chain venue, executed by paying a protocol
+  vault with the swap parameters in the transaction's own OP_RETURN
+  (``executor = "vault-swap"``, drivable only from a UTXO source); see
   ``swapsack.chainflip`` and ``docs/chainflip-effort.md``.
 
 ``gather_quotes`` asks every backend that can serve the pair and normalizes to
@@ -139,10 +140,11 @@ def default_backends() -> list[Backend]:
 def swap_backends() -> list[SwapBackend]:
     """Every backend a swap/quote can price-route across.
 
-    Chainflip is included as a *price* source: it is an independent protocol, so
-    it keeps answering when THORChain and Maya halt together (as they did on
-    2026-08-18). Its ``vault-swap`` executor is not built yet, so the CLI
-    refuses to swap through it — see ``_refuse_unexecutable_backend``.
+    Chainflip earns its place as an independent protocol: it keeps answering
+    when THORChain and Maya halt together (as they did on 2026-08-18). Its
+    ``vault-swap`` executor is a Bitcoin transaction, so the CLI routes
+    execution there only from a UTXO source and only to a destination the
+    payload can encode — see ``cli._can_execute``.
     """
     from swapsack.chainflip import default_chainflip_backend
     from swapsack.cow import default_cow_backend

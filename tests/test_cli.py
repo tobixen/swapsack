@@ -328,7 +328,7 @@ def test_swap_from_eth_token_sweep_uses_full_token_balance(monkeypatch):
     captured = {}
 
     def fake_select_backend(
-        args, *, from_asset, to_asset, amount, destination, tolerance_bps=None
+        args, *, from_asset, to_asset, amount, destination, tolerance_bps=None, **kw
     ):
         captured["amount"] = amount
         raise SwapAborted("captured")  # short-circuit before any network/quote
@@ -404,7 +404,7 @@ def test_swap_from_tron_token_sweep_uses_full_balance(monkeypatch):
     captured = {}
 
     def fake_select_backend(
-        args, *, from_asset, to_asset, amount, destination, tolerance_bps=None
+        args, *, from_asset, to_asset, amount, destination, tolerance_bps=None, **kw
     ):
         captured["amount"] = amount
         raise SwapAborted("captured")  # short-circuit before any network/quote
@@ -677,10 +677,10 @@ def test_swap_backend_accepts_chainflip():
 
 
 class _PriceOnlyBackend:
-    """A backend that can quote but whose executor `swap` cannot drive."""
+    """A backend that can quote but whose executor no swap path can drive."""
 
-    name = "chainflip"
-    executor = "vault-swap"
+    name = "somevenue"
+    executor = "deposit-channel"
 
     def __init__(self, out=10**9):
         self.out = out
@@ -708,7 +708,9 @@ class _ExecutableBackend:
         return SimpleNamespace(expected_amount_out=self.out)
 
 
-def _select(monkeypatch, backends, backend_arg="auto"):
+def _select(
+    monkeypatch, backends, backend_arg="auto", executors=None, to_asset="ETH.ETH"
+):
     monkeypatch.setattr(cli, "_backends_for", lambda args: backends)
     args = build_parser().parse_args(
         ["swap", "--amount", "0.1", "--backend", backend_arg]
@@ -716,17 +718,45 @@ def _select(monkeypatch, backends, backend_arg="auto"):
     return cli._select_backend(
         args,
         from_asset="BTC.BTC",
-        to_asset="ETH.ETH",
+        to_asset=to_asset,
         amount=10_000_000,
         destination="0xdead",
+        executors=executors if executors is not None else cli.EXECUTABLE_EXECUTORS,
     )
 
 
 def test_explicit_price_only_backend_is_refused_with_a_usable_message(monkeypatch):
     with pytest.raises(cli.SwapAborted) as exc:
         _select(monkeypatch, [_PriceOnlyBackend()], backend_arg="chainflip")
-    assert "cannot execute it yet" in str(exc.value)
-    assert "quote --backend chainflip" in str(exc.value)
+    assert "cannot execute a swap from" in str(exc.value)
+    assert "quote --backend somevenue" in str(exc.value)
+
+
+class _VaultSwapBackend(_PriceOnlyBackend):
+    name = "chainflip"
+    executor = "vault-swap"
+
+
+class _SignedOrderBackend(_PriceOnlyBackend):
+    name = "cow"
+    executor = "signed-order"
+
+
+def test_a_vault_swap_backend_is_drivable_from_a_utxo_source(monkeypatch):
+    chosen = _select(monkeypatch, [_VaultSwapBackend()], executors=cli.UTXO_EXECUTORS)
+    assert chosen.name == "chainflip"
+
+
+def test_a_vault_swap_backend_is_refused_from_an_evm_source(monkeypatch):
+    # A Chainflip vault swap is a Bitcoin transaction; the EVM path cannot
+    # build one, so selection must refuse rather than hand it the quote.
+    with pytest.raises(cli.SwapAborted):
+        _select(monkeypatch, [_VaultSwapBackend()], executors=cli.EVM_EXECUTORS)
+
+
+def test_a_signed_order_backend_is_refused_from_a_utxo_source(monkeypatch):
+    with pytest.raises(cli.SwapAborted):
+        _select(monkeypatch, [_SignedOrderBackend()], executors=cli.UTXO_EXECUTORS)
 
 
 def test_auto_routes_around_a_price_only_backend(monkeypatch):
@@ -739,15 +769,75 @@ def test_auto_says_out_loud_when_the_price_only_backend_was_cheaper(
 ):
     _select(monkeypatch, [_ExecutableBackend(out=1), _PriceOnlyBackend(out=10**9)])
     err = capsys.readouterr().err
-    assert "chainflip quoted" in err
+    assert "somevenue quoted" in err
     assert "cannot execute yet" in err
+
+
+def test_auto_names_a_backend_this_source_cannot_drive(monkeypatch, capsys):
+    # Chainflip can execute — just not from an EVM source. The note is still
+    # the honest thing to print: the price is real and reachable another way.
+    _select(
+        monkeypatch,
+        [_ExecutableBackend(out=1), _VaultSwapBackend(out=10**9)],
+        executors=cli.EVM_EXECUTORS,
+    )
+    assert "chainflip quoted" in capsys.readouterr().err
 
 
 def test_auto_stays_quiet_when_the_price_only_backend_was_not_cheaper(
     monkeypatch, capsys
 ):
     _select(monkeypatch, [_ExecutableBackend(out=10**9), _PriceOnlyBackend(out=1)])
-    assert "chainflip quoted" not in capsys.readouterr().err
+    assert "somevenue quoted" not in capsys.readouterr().err
+
+
+class _PartialVaultSwapBackend(_VaultSwapBackend):
+    """Chainflip's real shape: it *lists* Tron and quotes it happily, but the
+    vault-swap gate cannot encode a Tron destination, so it cannot settle one."""
+
+    def can_execute(self, from_asset, to_asset):
+        return to_asset != "TRON.TRX"
+
+
+def test_auto_routes_around_a_destination_the_backend_cannot_settle(
+    monkeypatch, capsys
+):
+    # Winning on price and then raising in the payload encoder is exit 1 for a
+    # pair that has a working route — so the narrowing belongs at selection.
+    chosen = _select(
+        monkeypatch,
+        [_ExecutableBackend(out=1), _PartialVaultSwapBackend(out=10**9)],
+        executors=cli.UTXO_EXECUTORS,
+        to_asset="TRON.TRX",
+    )
+    assert chosen.name == "thorchain"
+    assert "chainflip quoted" in capsys.readouterr().err
+
+
+def test_auto_still_routes_to_that_backend_for_a_destination_it_can_settle(
+    monkeypatch,
+):
+    chosen = _select(
+        monkeypatch,
+        [_ExecutableBackend(out=1), _PartialVaultSwapBackend(out=10**9)],
+        executors=cli.UTXO_EXECUTORS,
+        to_asset="ETH.ETH",
+    )
+    assert chosen.name == "chainflip"
+
+
+def test_an_explicit_backend_that_cannot_settle_the_destination_is_refused(
+    monkeypatch,
+):
+    with pytest.raises(cli.SwapAborted) as exc:
+        _select(
+            monkeypatch,
+            [_PartialVaultSwapBackend()],
+            backend_arg="chainflip",
+            executors=cli.UTXO_EXECUTORS,
+            to_asset="TRON.TRX",
+        )
+    assert "TRON.TRX" in str(exc.value)
 
 
 def test_auto_aborts_when_only_a_price_only_backend_can_serve(monkeypatch):
@@ -1017,6 +1107,8 @@ def test_balance_probes_maya_only_chains_on_maya_only(monkeypatch):
             pass
 
     class FakeBackend:
+        executor = "memo-deposit"
+
         def __init__(self, name):
             self.name = name
             self.client = FakeClient()
@@ -1642,6 +1734,7 @@ def test_swap_from_btc_insufficient_funds_aborts_cleanly(monkeypatch):
 
     class FakeBackend:
         name = "thorchain"
+        executor = "memo-deposit"
         client = FakeClient()
 
     def fake_scan(*, derive_address, probe, account):
@@ -1754,6 +1847,7 @@ def test_swap_and_send_pass_the_change_path_address_as_change(monkeypatch):
 
     class FakeBackend:
         name = "thorchain"
+        executor = "memo-deposit"
         client = FakeClient()
 
     def fake_scan(*, derive_address, probe, account):
@@ -3990,3 +4084,82 @@ def test_lp_backend_refusal_survives_a_chain_with_no_pools_anywhere():
         ["add-liquidity", "--asset", "USDC-ETH", "--amount", "1"]
     )
     assert cli._lp_backend_refused(args, Poolless()) is True
+
+
+def test_chainflip_vault_swap_refuses_a_sweep(capsys):
+    # Chainflip reads the change output as the refund address and needs it
+    # above dust, so there is nothing to sweep into. This must fail before any
+    # network call, not build a transaction the protocol would reject.
+    from swapsack.swap import SwapRequest
+
+    args = build_parser().parse_args(
+        ["swap", "--from", "BTC", "--to", "ETH", "--amount", "max"]
+    )
+    rc = cli._swap_via_chainflip(
+        args,
+        adapter=None,
+        backend=None,
+        request=SwapRequest(
+            from_asset="BTC.BTC", to_asset="ETH.ETH", amount=0, destination="0xdead"
+        ),
+        dest="0xdead",
+        mnemonic="",
+        utxos=[],
+        fee_rate=2,
+        change_address="bc1qchange",
+        sweep=True,
+    )
+    assert rc == 1
+    assert "--amount max cannot be a Chainflip vault swap" in capsys.readouterr().err
+
+
+def test_the_chainflip_re_quote_is_sent_in_native_source_units(monkeypatch, capsys):
+    """The execution re-quote speaks the source asset's own units, not 1e8.
+
+    ``request.amount`` is in the wallet-wide 1e8 base units every backend is
+    compared in; ``ChainflipClient.quote`` takes the source asset's native ones,
+    which is why ``try_quote`` routes through ``deposit_units``. The two happen
+    to coincide for BTC and *only* for BTC, so a second UTXO source chain would
+    silently quote the wrong amount — and encode the on-chain floor from it.
+    """
+    import swapsack.chainflip as chainflip_mod
+    from swapsack.swap import SwapRequest
+
+    monkeypatch.setitem(
+        chainflip_mod.CHAINFLIP_ASSETS, "BTC.BTC", ("Bitcoin", "BTC", 6)
+    )
+    sent = []
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def quote(self, src, dst, amount):
+            sent.append(amount)
+            raise chainflip_mod.ChainflipError("stop here")
+
+    args = build_parser().parse_args(
+        ["swap", "--from", "BTC", "--to", "ETH", "--amount", "0.1"]
+    )
+    rc = cli._swap_via_chainflip(
+        args,
+        adapter=None,
+        backend=SimpleNamespace(name="chainflip", client=_Client()),
+        request=SwapRequest(
+            from_asset="BTC.BTC",
+            to_asset="ETH.ETH",
+            amount=10_000_000,
+            destination="0xdead",
+        ),
+        dest="0xdead",
+        mnemonic="",
+        utxos=[],
+        fee_rate=2,
+        change_address="bc1qchange",
+        sweep=False,
+    )
+    assert rc == 1
+    assert sent == [chainflip_mod.deposit_units(10_000_000, 6)]

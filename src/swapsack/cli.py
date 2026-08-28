@@ -977,16 +977,42 @@ def _is_cow_order_uid(value: str) -> bool:
     return True
 
 
-# The executors `swap` knows how to drive. A backend outside this set can still
-# price a swap (and so still competes in `quote` and in `auto`'s comparison),
-# but routing a swap to it would hand its quote to a deposit path that cannot
-# settle it — so selection refuses instead. Chainflip's "vault-swap" is the
-# current case; see docs/chainflip-effort.md for what building it takes.
-EXECUTABLE_EXECUTORS = frozenset({"memo-deposit", "signed-order"})
+# Which executors each source path can actually drive. A backend outside its
+# caller's set can still *price* a swap (so it competes in `quote` and in
+# `auto`'s comparison), but routing execution there would hand its quote to a
+# deposit builder that cannot settle it — so selection refuses instead.
+# Declared per path rather than globally because it genuinely differs: a signed
+# CoW order needs an EVM source, and a Chainflip vault swap is a Bitcoin
+# transaction, so neither is drivable from every `swap --from`.
+MEMO_DEPOSIT_ONLY = frozenset({"memo-deposit"})
+UTXO_EXECUTORS = frozenset({"memo-deposit", "vault-swap"})
+EVM_EXECUTORS = frozenset({"memo-deposit", "signed-order"})
+# What the parser's --backend list can reach at all, for the error message.
+EXECUTABLE_EXECUTORS = UTXO_EXECUTORS | EVM_EXECUTORS
 
 
-def _can_execute(backend) -> bool:  # noqa: ANN001 (SwapBackend, lazy import)
-    return getattr(backend, "executor", "") in EXECUTABLE_EXECUTORS
+def _can_execute(
+    backend,  # noqa: ANN001 (SwapBackend, lazy import)
+    executors: frozenset[str] = EXECUTABLE_EXECUTORS,
+    *,
+    from_asset: str | None = None,
+    to_asset: str | None = None,
+) -> bool:
+    """Whether this backend can *settle* the swap, not merely price it.
+
+    The executor answers it for most backends. A backend may also narrow it per
+    pair by defining ``can_execute``: Chainflip lists Tron and quotes it, but a
+    vault swap encodes its destination into the payload the gate re-derives, and
+    the gate has no base58check decoder — so that pair prices here and settles
+    nowhere. Catching it now routes to a backend that can; catching it in the
+    payload encoder is exit 1 for a swap THORChain would have done.
+    """
+    if getattr(backend, "executor", "") not in executors:
+        return False
+    narrower = getattr(backend, "can_execute", None)
+    if narrower is None or from_asset is None or to_asset is None:
+        return True
+    return narrower(from_asset, to_asset)
 
 
 def _select_backend(  # noqa: ANN202 (Backend, lazy import)
@@ -997,6 +1023,7 @@ def _select_backend(  # noqa: ANN202 (Backend, lazy import)
     amount: int,
     destination: str | None,
     tolerance_bps: int | None = None,
+    executors: frozenset[str] = EXECUTABLE_EXECUTORS,
 ):
     """Pick the backend (lowest price when --backend auto).
 
@@ -1016,12 +1043,21 @@ def _select_backend(  # noqa: ANN202 (Backend, lazy import)
     backends = _backends_for(args)
     if len(backends) == 1:
         backend = backends[0]
-        if not _can_execute(backend):
+        if not _can_execute(backend, executors):
             backend.client.close()
             raise SwapAborted(
-                f"{backend.name} can price this swap but cannot execute it yet "
+                f"{backend.name} cannot execute a swap from {from_asset} "
                 f"— use `quote --backend {backend.name}` for the price, and "
                 f"another backend (or --backend auto) to swap"
+            )
+        if not _can_execute(
+            backend, executors, from_asset=from_asset, to_asset=to_asset
+        ):
+            backend.client.close()
+            raise SwapAborted(
+                f"{backend.name} can quote {from_asset} -> {to_asset} but cannot "
+                f"execute it — use `quote --backend {backend.name}` for the "
+                f"price, and another backend (or --backend auto) to swap"
             )
         if not backend.serves(from_asset, to_asset):
             backend.client.close()
@@ -1036,13 +1072,23 @@ def _select_backend(  # noqa: ANN202 (Backend, lazy import)
         tolerance_bps=tolerance_bps,
         **_streaming_kwargs(args),
     )
-    executable = [pair for pair in results if _can_execute(pair[0])]
+    executable = [
+        pair
+        for pair in results
+        if _can_execute(pair[0], executors, from_asset=from_asset, to_asset=to_asset)
+    ]
     if not executable:
         for unused in backends:
             unused.client.close()
         raise SwapAborted("no swap backend can serve this pair/amount")
     backend, quote = best_quote(executable)
-    _note_unexecutable_best(results, chosen=quote, to_asset=to_asset)
+    _note_unexecutable_best(
+        results,
+        chosen=quote,
+        from_asset=from_asset,
+        to_asset=to_asset,
+        executors=executors,
+    )
     if len(executable) > 1:
         print(
             f"routing via {backend.name} (best of {len(executable)})", file=sys.stderr
@@ -1053,14 +1099,27 @@ def _select_backend(  # noqa: ANN202 (Backend, lazy import)
     return backend
 
 
-def _note_unexecutable_best(results, *, chosen, to_asset: str) -> None:  # noqa: ANN001
+def _note_unexecutable_best(
+    results,  # noqa: ANN001 (list[tuple[SwapBackend, quote]])
+    *,
+    chosen,  # noqa: ANN001 (any backend's quote)
+    from_asset: str,
+    to_asset: str,
+    executors: frozenset[str],
+) -> None:
     """Say so when a price-only backend beat the one we can actually execute.
 
     Silently routing around it would hide a real, reachable price — the user can
     take that route by hand today (docs/halt-alternatives.md), so name it and
     say by how much rather than quietly paying more.
     """
-    unexecutable = [pair for pair in results if not _can_execute(pair[0])]
+    unexecutable = [
+        pair
+        for pair in results
+        if not _can_execute(
+            pair[0], executors, from_asset=from_asset, to_asset=to_asset
+        )
+    ]
     if not unexecutable:
         return
     backend, quote = max(unexecutable, key=lambda pair: pair[1].expected_amount_out)
@@ -1623,10 +1682,24 @@ def _swap_from_utxo(
                 amount=amount,
                 destination=dest,
                 tolerance_bps=_tolerance(args),
+                executors=UTXO_EXECUTORS,
             )
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
+        if backend.executor == "vault-swap":
+            return _swap_via_chainflip(
+                args,
+                adapter,
+                backend,
+                request=request,
+                dest=dest,
+                mnemonic=mnemonic,
+                utxos=utxos,
+                fee_rate=fee_rate,
+                change_address=change_address,
+                sweep=sweep,
+            )
         with backend.client as thor:
             try:
                 prepared = prepare_swap(
@@ -1673,6 +1746,141 @@ def _swap_from_utxo(
             )
             print(f"inbound: {prepared.built.fee} on {adapter.chain} {rate}{eur}")
             return _confirm_and_execute(prepared, adapter, args)
+
+
+def _swap_via_chainflip(
+    args: argparse.Namespace,
+    adapter,  # noqa: ANN001 (BtcAdapter)
+    backend,  # noqa: ANN001 (ChainflipBackend)
+    *,
+    request: SwapRequest,
+    dest: str,
+    mnemonic: str,
+    utxos: list,
+    fee_rate: float,
+    change_address: str,
+    sweep: bool,
+) -> int:
+    """Chainflip's execute path: a vault swap, no broker and no memo protocol.
+
+    The transaction is an ordinary Bitcoin payment to a protocol vault, with
+    the swap's parameters — our destination, and a floor the protocol enforces
+    — in its OP_RETURN. Nothing is registered anywhere on our behalf, so the
+    gate can prove the whole intention from the bytes about to be published:
+    see ``verify.verify_chainflip_vault_swap``.
+    """
+    from swapsack.chainflip import (
+        CHAINFLIP_ASSETS,
+        VAULT_SWAP_PLAN_TTL,
+        ChainflipError,
+        ChainflipRpc,
+        deposit_units,
+        parse_chainflip_quote,
+        prepare_vault_swap,
+    )
+    from swapsack.chains.coins import InsufficientFunds
+    from swapsack.verify import ChainflipVaultPlan
+
+    if sweep:
+        # Chainflip reads the change output as the swap's refund address and
+        # requires it above dust, so there is nothing to sweep into. Refusing
+        # beats building a transaction the protocol will not accept.
+        print(
+            "ABORTED: --amount max cannot be a Chainflip vault swap — the "
+            "protocol needs a change output above dust to refund to. Name an "
+            "amount, or swap via another backend.",
+            file=sys.stderr,
+        )
+        return 1
+
+    to_key = args.to_
+    bps = getattr(args, "tolerance_bps", None)
+    src = CHAINFLIP_ASSETS[request.from_asset]
+    dst = CHAINFLIP_ASSETS[request.to_asset]
+    try:
+        with backend.client as client:
+            # Re-quote here rather than reuse selection's: the floor encoded
+            # into the payload has to come from the price we are about to
+            # commit to, not from one taken a few round trips ago.
+            # In the source asset's *native* units, as the API speaks — the
+            # request carries the wallet-wide 1e8 ones, and the two coincide
+            # only because BTC has eight decimals.
+            parsed = parse_chainflip_quote(
+                client.quote(src[:2], dst[:2], deposit_units(request.amount, src[2])),
+                from_asset=request.from_asset,
+                to_asset=request.to_asset,
+            )
+    except (ChainflipError, *HTTP_ERRORS) as exc:
+        print(f"ABORTED: chainflip quote failed: {exc}", file=sys.stderr)
+        return 1
+
+    now = int(time.time())
+    try:
+        with ChainflipRpc() as rpc:
+            vault_swap = prepare_vault_swap(
+                rpc,
+                from_asset=request.from_asset,
+                to_asset=request.to_asset,
+                destination=dest,
+                quote=parsed,
+                bps=bps,
+            )
+    except (ChainflipError, *HTTP_ERRORS) as exc:
+        print(f"ABORTED: {exc}", file=sys.stderr)
+        return 1
+
+    plan = ChainflipVaultPlan(
+        deposit_address=vault_swap.deposit_address,
+        amount=request.amount,
+        payload=vault_swap.payload,
+        expiry=now + VAULT_SWAP_PLAN_TTL,
+        destination_asset_id=vault_swap.destination_asset_id,
+        destination_bytes=vault_swap.destination_bytes,
+        min_output_amount=vault_swap.min_output_amount,
+        known_vaults=vault_swap.known_vaults,
+    )
+    try:
+        prepared = adapter.build_and_verify_vault_swap(
+            plan=plan,
+            now=now,
+            mnemonic=mnemonic,
+            scanned_utxos=utxos,
+            fee_rate=fee_rate,
+            change_address=change_address,
+            max_fee=args.max_fee,
+        )
+    except InsufficientFunds as exc:
+        print(f"ABORTED: {exc}", file=sys.stderr)
+        return 1
+
+    dest_unit = 10 ** dst[2]
+    out = parsed.egress_amount / dest_unit
+    floor = vault_swap.min_output_amount / dest_unit
+    effective_bps = bps if bps is not None else parsed.recommended_slippage_bps
+    print(f"via:     {backend.name} (vault swap — no broker, no memo protocol)")
+    print(
+        f"send:    {request.amount} base units (1e-8 {adapter.chain}) to "
+        f"{plan.deposit_address}"
+    )
+    print(f"expect:  {out:.8f} {to_key} -> {dest}")
+    print(
+        f"floor:   {floor:.8f} {to_key} enforced on-chain "
+        f"({effective_bps} bps tolerance); below it the swap refunds to "
+        f"{change_address}"
+    )
+    print(f"eta:     ~{parsed.estimated_duration_seconds // 60} min")
+    _print_swap_costs(
+        parsed, args.from_, to_key, request.amount, price_check=args.price_check
+    )
+    eur = _eur_suffix(
+        prepared.built.fee / THORCHAIN_UNIT, adapter.chain, price_check=args.price_check
+    )
+    print(f"inbound: {prepared.built.fee} on {adapter.chain} @ {fee_rate}/vB{eur}")
+    print(
+        "track:   this is not a THORChain swap; follow the deposit on "
+        "scan.chainflip.io once it confirms"
+    )
+    return _confirm_and_execute(prepared, adapter, args)
 
 
 def _swap_from_evm(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN001
@@ -1739,6 +1947,7 @@ def _swap_from_evm(args: argparse.Namespace, adapter_factory) -> int:  # noqa: A
                 amount=amount,
                 destination=dest,
                 tolerance_bps=_tolerance(args),
+                executors=EVM_EXECUTORS,
             )
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
@@ -2029,6 +2238,7 @@ def _swap_from_tron(args: argparse.Namespace) -> int:
                 amount=amount,
                 destination=dest,
                 tolerance_bps=_tolerance(args),
+                executors=MEMO_DEPOSIT_ONLY,
             )
             with backend.client as thor:
                 prepared = prepare_swap(
@@ -3015,8 +3225,9 @@ def _add_swap_args(sub: argparse.ArgumentParser) -> None:
         default="auto",
         help="swap backend (auto = lowest price across all; cow = same-chain "
         "ETH-token swaps via a signed intent order, no memo/vault; chainflip = "
-        "an independent cross-chain venue, PRICE ONLY for now — it quotes but "
-        "cannot execute yet, see docs/chainflip-effort.md)",
+        "an independent cross-chain venue, executed from BTC as a vault swap — "
+        "no broker, no deposit channel; EVM destinations only, "
+        "see docs/chainflip-effort.md)",
     )
     _add_price_check_args(sub)
     sub.add_argument(

@@ -6,6 +6,7 @@ non-owned address, an expired quote, or an absurd fee.
 """
 
 from swapsack.verify import (
+    ChainflipVaultPlan,
     EthSendPlan,
     EthSwapPlan,
     EthTokenSendPlan,
@@ -19,6 +20,7 @@ from swapsack.verify import (
     memo_pays_destination,
     verify_btc_send,
     verify_btc_swap,
+    verify_chainflip_vault_swap,
     verify_eth_send,
     verify_eth_swap,
     verify_eth_token_send,
@@ -823,3 +825,198 @@ def test_a_binary_memo_cannot_silently_skip_the_destination_binding():
 
 def test_a_binary_memo_with_no_destination_is_fine():
     assert memo_pays_destination("", BINARY_MEMO)
+
+
+# --- Chainflip vault swaps --------------------------------------------------
+#
+# A vault swap pays a protocol vault with the swap parameters in the OP_RETURN.
+# Nothing is registered with a broker, so the gate's whole job is to prove that
+# the 48 bytes we are about to publish say what we asked for — decoded *here*,
+# from the bytes themselves, never taken on a node's word.
+
+CF_DEST20 = bytes.fromhex("000000000000000000000000000000000000dead")
+CF_VAULT = "bc1p5rrs3gd9tlzucafucuj5jgvaj7rdtgn6je28y44wvvrv4d0vpsdslmnctx"
+CF_VAULTS = frozenset(
+    {CF_VAULT, "bc1p50rzjffd3ac87492wsrefdmyqtyfthfjse9ypeg2pf5l95zclsaq8g9pc5"}
+)
+CF_MIN_OUT = 3 * 10**18
+
+
+def _payload(
+    version=1,
+    asset_id=1,
+    dest=CF_DEST20,
+    retry=100,
+    min_out=CF_MIN_OUT,
+    oracle=255,
+    chunks=1,
+    interval=2,
+    boost=0,
+    broker=0,
+    affiliates=b"\x00",
+):
+    return (
+        bytes([version, asset_id])
+        + dest
+        + retry.to_bytes(2, "little")
+        + min_out.to_bytes(16, "little")
+        + bytes([oracle])
+        + chunks.to_bytes(2, "little")
+        + interval.to_bytes(2, "little")
+        + bytes([boost, broker])
+        + affiliates
+    )
+
+
+# The recorded live encoding must match what _payload builds, or every test
+# below is checking a layout Chainflip does not actually use.
+LIVE_PAYLOAD = bytes.fromhex(
+    "0101000000000000000000000000000000000000dead"
+    "640000002cf61a24a2290000000000000000ff01000200000000"
+)
+
+
+def test_payload_helper_matches_a_live_chainflip_encoding():
+    assert _payload() == LIVE_PAYLOAD
+
+
+def _vault_plan(payload=None, **kw):
+    fields = dict(
+        deposit_address=CF_VAULT,
+        amount=178100,
+        payload=payload if payload is not None else _payload(),
+        expiry=9_999_999_999,
+        destination_asset_id=1,
+        destination_bytes=CF_DEST20,
+        min_output_amount=CF_MIN_OUT,
+        known_vaults=CF_VAULTS,
+    )
+    fields.update(kw)
+    return ChainflipVaultPlan(**fields)
+
+
+def _vault_outputs(payload=None, vault=CF_VAULT, amount=178100):
+    return [
+        TxOutput(address=vault, value=amount),
+        TxOutput(
+            address=None,
+            value=0,
+            op_return_data=payload if payload is not None else _payload(),
+        ),
+        TxOutput(address="bc1qchange", value=1000),
+    ]
+
+
+def _gate(plan=None, outputs=None, fee=500, now=0):
+    return verify_chainflip_vault_swap(
+        outputs if outputs is not None else _vault_outputs(),
+        fee=fee,
+        plan=plan if plan is not None else _vault_plan(),
+        owned_addresses={"bc1qchange"},
+        now=now,
+        max_fee=100_000,
+    )
+
+
+def test_a_well_formed_vault_swap_passes():
+    assert _gate() == []
+
+
+def test_deposit_address_must_be_a_known_protocol_vault():
+    rogue = "bc1qnotavault"
+    problems = _gate(
+        plan=_vault_plan(deposit_address=rogue), outputs=_vault_outputs(vault=rogue)
+    )
+    assert any("vault" in p for p in problems)
+
+
+def test_payload_paying_someone_elses_address_is_caught():
+    # The attack this gate exists for: a node hands back an encoding that pays
+    # the attacker while claiming it is ours.
+    theirs = _payload(dest=bytes.fromhex("11" * 20))
+    problems = _gate(plan=_vault_plan(payload=theirs), outputs=_vault_outputs(theirs))
+    assert any("destination" in p for p in problems)
+
+
+def test_payload_for_the_wrong_output_asset_is_caught():
+    other = _payload(asset_id=3)  # USDC, not ETH
+    problems = _gate(plan=_vault_plan(payload=other), outputs=_vault_outputs(other))
+    assert any("asset" in p for p in problems)
+
+
+def test_min_output_below_our_floor_is_caught():
+    low = _payload(min_out=CF_MIN_OUT - 1)
+    problems = _gate(plan=_vault_plan(payload=low), outputs=_vault_outputs(low))
+    assert any("min output" in p for p in problems)
+
+
+def test_min_output_above_our_floor_is_fine():
+    high = _payload(min_out=CF_MIN_OUT + 1)
+    assert _gate(plan=_vault_plan(payload=high), outputs=_vault_outputs(high)) == []
+
+
+def test_a_broker_fee_is_caught():
+    skim = _payload(broker=25)
+    problems = _gate(plan=_vault_plan(payload=skim), outputs=_vault_outputs(skim))
+    assert any("broker fee" in p for p in problems)
+
+
+def test_a_boost_fee_is_caught():
+    boosted = _payload(boost=30)
+    problems = _gate(plan=_vault_plan(payload=boosted), outputs=_vault_outputs(boosted))
+    assert any("boost fee" in p for p in problems)
+
+
+def test_affiliate_entries_are_caught():
+    shared = _payload(affiliates=b"\x01")
+    problems = _gate(plan=_vault_plan(payload=shared), outputs=_vault_outputs(shared))
+    assert any("affiliate" in p for p in problems)
+
+
+def test_a_payload_carrying_real_affiliate_entries_is_rejected_on_length():
+    # A populated Vec makes the payload longer than 48 bytes, which the length
+    # check refuses before any field is read — we asked for no affiliates, so
+    # any encoding that has them is not ours.
+    shared = _payload(affiliates=b"\x01\x07\x0a")
+    problems = _gate(plan=_vault_plan(payload=shared), outputs=_vault_outputs(shared))
+    assert any("bytes" in p for p in problems)
+
+
+def test_an_unexpected_dca_split_is_caught():
+    split = _payload(chunks=4)
+    problems = _gate(plan=_vault_plan(payload=split), outputs=_vault_outputs(split))
+    assert any("chunk" in p for p in problems)
+
+
+def test_an_unknown_payload_version_is_caught():
+    future = _payload(version=2)
+    problems = _gate(plan=_vault_plan(payload=future), outputs=_vault_outputs(future))
+    assert any("version" in p for p in problems)
+
+
+def test_a_truncated_payload_is_caught_without_an_indexerror():
+    short = _payload()[:20]
+    problems = _gate(plan=_vault_plan(payload=short), outputs=_vault_outputs(short))
+    assert any("bytes" in p for p in problems)
+
+
+def test_the_underlying_bitcoin_checks_still_apply():
+    # Wrong amount to the vault: the payload can be perfect and the transaction
+    # still wrong.
+    problems = _gate(outputs=_vault_outputs(amount=999))
+    assert any("amount" in p for p in problems)
+
+
+def test_change_to_a_foreign_address_is_caught():
+    outputs = _vault_outputs()
+    outputs[2] = TxOutput(address="bc1qsomeoneelse", value=1000)
+    assert any("non-owned" in p for p in _gate(outputs=outputs))
+
+
+def test_an_expired_plan_is_caught():
+    assert any("expired" in p for p in _gate(now=10_000_000_000))
+
+
+def test_the_op_return_must_be_the_payload_we_planned():
+    # Plan says one thing, transaction carries another.
+    assert any("memo" in p for p in _gate(outputs=_vault_outputs(_payload(retry=50))))

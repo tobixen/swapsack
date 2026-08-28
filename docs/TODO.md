@@ -306,7 +306,23 @@ labels, not lookups.
 
 ## Swap backends
 
-- **Chainflip — B1 (quotes) done 2026-08-28**, B2 (execution) is next.
+- **Chainflip — B1 (quotes) and B2 (execution from BTC) both done
+  2026-08-28.** What remains: a **mainnet broadcast** (everything short of it is
+  covered by an opt-in network test that builds and gates a real unsigned tx);
+  **a source other than BTC** — Chainflip is not Bitcoin-only, and neither is
+  its vault-swap API: it covers EVM chains and Solana alongside Bitcoin, so
+  ETH/ARB (a contract call into the Vault contract) and SOL (a program
+  instruction) are reachable brokerlessly too. Neither reuses the UTXO builder
+  or the gate that checks its outputs, so each is its own piece of work; a
+  source the vault-swap API does not cover would need a deposit channel and a
+  broker instead. Today every non-BTC source prices in `auto` and settles
+  nowhere, and says so out loud when it was the cheaper route. A
+  **`status` tracker** — `chainflip-swap.chainflip.io/v2/swaps/{id}` is keyless,
+  but whether the id is derivable from our own BTC txid is untested; a
+  **base58check decoder** so a Tron destination can be gated (Solana also needs
+  the 60-byte payload variant); and `cf_swap_rate_v2/v3` as a node-native quote
+  source, which would drop the hosted service as a dependency.
+  Superseded detail, kept for the reasoning:
   `--backend chainflip`/`auto` price it; `swap` refuses to route there, and
   `auto` notes out loud when it was the cheaper route. Calldata-style
   aggregators (ParaSwap/1inch/0x/LiFi) and custodial instant exchangers: still

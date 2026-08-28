@@ -21,11 +21,13 @@ from swapsack.chains.coins import Utxo
 from swapsack.swap import Prepared, SwapRequest
 from swapsack.thorchain import Quote
 from swapsack.verify import (
+    ChainflipVaultPlan,
     SendPlan,
     SwapPlan,
     TxOutput,
     verify_btc_send,
     verify_btc_swap,
+    verify_chainflip_vault_swap,
 )
 
 
@@ -130,6 +132,49 @@ class GatedTxBuilder:
             inbound_address=vault, amount=amount, memo=memo, expiry=now + 3600
         )
         problems = verify_btc_swap(
+            built.outputs,
+            fee=built.fee,
+            plan=plan,
+            owned_addresses=owned,
+            now=now,
+            max_fee=max_fee,
+        )
+        return Prepared(quote=None, built=built, plan=plan, problems=problems)
+
+    def build_and_verify_vault_swap(
+        self,
+        *,
+        plan: ChainflipVaultPlan,
+        now: int,
+        mnemonic: str,
+        scanned_utxos: list[Utxo],
+        fee_rate: float,
+        change_address: str,
+        max_fee: int,
+    ) -> Prepared:
+        """Build + verify a Chainflip vault swap: pay a vault, say why in bytes.
+
+        The transaction is the shape Chainflip requires and this builder already
+        emits — vault output, nulldata OP_RETURN, change — where the change
+        doubles as the swap's refund address, which is why it must be ours and
+        why a sweep (no change) can never be a vault swap. The gate enforces
+        that on the bytes rather than trusting this note: a selection that folds
+        a sub-dust change into the fee reaches the same shape without a sweep.
+
+        There is no ``sweep`` parameter for that reason, and the plan carries
+        the amount so the gate and the builder cannot be given different ones.
+        """
+        built = self.build_unsigned_swap(
+            mnemonic=mnemonic,
+            utxos=scanned_utxos,
+            vault_address=plan.deposit_address,
+            amount=plan.amount,
+            memo=plan.payload,
+            fee_rate=fee_rate,
+            change_address=change_address,
+        )
+        owned = {change_address} | {u.address for u in scanned_utxos}
+        problems = verify_chainflip_vault_swap(
             built.outputs,
             fee=built.fee,
             plan=plan,
