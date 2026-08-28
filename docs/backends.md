@@ -1,8 +1,10 @@
 # More swap backends — scoping notes
 
 Status: **Phase A (CoW Protocol) done** (2026-07-12) — `--backend cow`/`auto`
-for same-chain ETH-token swaps; see `src/swapsack/cow.py`. Phase B
-(Chainflip) is still scoping-only. This note records what a new backend must
+for same-chain ETH-token swaps; see `src/swapsack/cow.py`. **Phase B1
+(Chainflip quotes) done** (2026-08-28) — `--backend chainflip`/`auto` price it,
+`swap` refuses to route there; see `src/swapsack/chainflip.py` and
+`docs/chainflip-effort.md`. B2 (execution, as a vault swap) is still to build. This note records what a new backend must
 provide, which candidates are actually usable from a keyless CLI, and a
 recommended order — so the work starts from decisions, not mid-way through a
 money path. Style/spirit as `docs/dash.md`.
@@ -95,10 +97,12 @@ refunded — Chainflip has refund parameters worth setting.
    order from an unfunded key clears every orderbook check up to
    `InsufficientBalance`.
 2. **Phase B — Chainflip** (cross-chain): brings SOL/DOT and a second
-   independent cross-chain venue. Read-only first (quote in `auto`), then the
-   broker/channel decision, then execution — which reuses the existing plain-
-   send builders and gates. Feasibility assessment + resolved broker gating +
-   B1/B2/B3 phasing in **`docs/chainflip.md`**.
+   independent cross-chain venue. **B1 (read-only quote in `auto`) is done**;
+   B2 is execution as a **vault swap** — pay a protocol vault with the swap
+   parameters in an OP_RETURN, no broker and no deposit channel, which is the
+   transaction shape `UtxoTxBuilder` already emits. Sizing, and the corrections
+   to the original broker plan, in **`docs/chainflip-effort.md`**
+   (`docs/chainflip.md` is the superseded scoping note).
 3. **Not planned**: keyed aggregators (1inch/0x — key friction for a CLI),
    calldata-style keyless ones (ParaSwap/LiFi — gating problem; revisit only
    if CoW's coverage disappoints), instant exchangers (custodial).

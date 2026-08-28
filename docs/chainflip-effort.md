@@ -1,6 +1,10 @@
 # What integrating Chainflip actually costs
 
-Status: **estimate, live-probed 2026-08-28.** Answers "how much work is it?"
+Status: **estimate, live-probed 2026-08-28 — and B1 has since shipped**
+(`src/swapsack/chainflip.py`, `tests/test_chainflip.py`), which is the estimate
+below being checked against reality rather than left as a guess. It landed at
+~330 lines of module + ~370 of tests + ~70 of CLI/backends wiring, inside the
+~600-line band. B2 is still to build. Answers "how much work is it?"
 against the code as it stands, using the CoW backend (the last one that
 shipped) as the empirical yardstick. Supersedes the execution half of
 `docs/chainflip.md` — see §2, where its central finding turns out to be wrong
@@ -198,8 +202,12 @@ because the broker, the channel and the expiry gate all evaporate.
 
 ## 5. Recommendation
 
-Do **B1 now**: one session, no money path, and it is what makes `quote` still
-answer while THORChain and Maya are halted. Do the **`bytes` memo widening as
+**B1 is done.** It is what makes `quote` still answer while THORChain and Maya
+are halted. Two things came out of building it that the estimate did not
+predict: the generic `SwapFees.breakdown()` wording ("slip/swap fee") is wrong
+for Chainflip, so the fees object overrides it to name ingress/network/egress
+legs; and `auto` needed to *say* when the price-only backend won, rather than
+quietly routing around a cheaper route the user could take by hand. Do the **`bytes` memo widening as
 its own commit** next, on its own test run. Then **B2**, and rewrite
 `docs/chainflip.md` around vault swaps first — leaving a note whose central
 mechanism does not work as its plan of record is how the wrong thing gets built.

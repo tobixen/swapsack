@@ -8,6 +8,9 @@ Two kinds of backend exist behind one small protocol (``name``, ``client``,
   a memo (``executor = "memo-deposit"``).
 - *CoW Protocol*: same-chain ETH-token swaps executed by signing an EIP-712
   order (``executor = "signed-order"``); see ``swapsack.cow``.
+- *Chainflip*: an independent cross-chain venue, quote-only for now
+  (``executor = "vault-swap"``, which the CLI refuses to execute); see
+  ``swapsack.chainflip`` and ``docs/chainflip-effort.md``.
 
 ``gather_quotes`` asks every backend that can serve the pair and normalizes to
 "expected output in 1e8 units", so ``best_quote`` picks the backend giving the
@@ -31,6 +34,7 @@ from swapsack.thorchain import (
 )
 
 if TYPE_CHECKING:
+    from swapsack.chainflip import ChainflipQuote
     from swapsack.cow import CowQuote
 
 # See thorchain.DEFAULT_BASE_URLS for why THORChain has a fallback list rather
@@ -65,7 +69,7 @@ class SwapBackend(Protocol):
         tolerance_bps: int | None = None,
         streaming_interval: int | None = None,
         streaming_quantity: int | None = None,
-    ) -> Quote | CowQuote | None: ...
+    ) -> Quote | CowQuote | ChainflipQuote | None: ...
 
 
 @dataclasses.dataclass(frozen=True)
@@ -133,10 +137,17 @@ def default_backends() -> list[Backend]:
 
 
 def swap_backends() -> list[SwapBackend]:
-    """Every backend a swap/quote can price-route across."""
+    """Every backend a swap/quote can price-route across.
+
+    Chainflip is included as a *price* source: it is an independent protocol, so
+    it keeps answering when THORChain and Maya halt together (as they did on
+    2026-08-18). Its ``vault-swap`` executor is not built yet, so the CLI
+    refuses to swap through it — see ``_refuse_unexecutable_backend``.
+    """
+    from swapsack.chainflip import default_chainflip_backend
     from swapsack.cow import default_cow_backend
 
-    return [*default_backends(), default_cow_backend()]
+    return [*default_backends(), default_cow_backend(), default_chainflip_backend()]
 
 
 def get_backend(name: str) -> SwapBackend:
@@ -156,7 +167,7 @@ def gather_quotes(
     tolerance_bps: int | None = None,
     streaming_interval: int | None = None,
     streaming_quantity: int | None = None,
-) -> list[tuple[SwapBackend, Quote | CowQuote]]:
+) -> list[tuple[SwapBackend, Quote | CowQuote | ChainflipQuote]]:
     """Quote every backend that can serve this pair; drop the ones that can't.
 
     ``tolerance_bps`` is threaded into each quote, so backend selection happens
@@ -165,7 +176,7 @@ def gather_quotes(
     thornode backends — and rule out backends with no streaming concept — so
     selection reflects the price the swap will actually use.
     """
-    results: list[tuple[SwapBackend, Quote | CowQuote]] = []
+    results: list[tuple[SwapBackend, Quote | CowQuote | ChainflipQuote]] = []
     for backend in backends:
         if not backend.serves(from_asset, to_asset):
             continue
@@ -184,7 +195,7 @@ def gather_quotes(
 
 
 def best_quote(
-    results: list[tuple[SwapBackend, Quote | CowQuote]],
-) -> tuple[SwapBackend, Quote | CowQuote]:
+    results: list[tuple[SwapBackend, Quote | CowQuote | ChainflipQuote]],
+) -> tuple[SwapBackend, Quote | CowQuote | ChainflipQuote]:
     """The backend giving the most output (expected_amount_out, 1e8 base units)."""
     return max(results, key=lambda pair: pair[1].expected_amount_out)

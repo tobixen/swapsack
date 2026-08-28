@@ -12,6 +12,7 @@ import pytest
 # spurious in-test failure. Mirrors the other bitcoinlib-backed tests.
 pytest.importorskip("bitcoinlib")
 
+from swapsack import cli  # noqa: E402
 from swapsack.cli import ASSET, build_parser  # noqa: E402
 
 
@@ -663,6 +664,95 @@ def test_quote_backend_choice():
         ["quote", "--amount", "0.001", "--backend", "maya"]
     )
     assert args.backend == "maya"
+
+
+def test_swap_backend_accepts_chainflip():
+    args = build_parser().parse_args(
+        ["swap", "--amount", "0.001", "--backend", "chainflip"]
+    )
+    assert args.backend == "chainflip"
+
+
+# --- price-only backends are quotable but not swappable ---------------------
+
+
+class _PriceOnlyBackend:
+    """A backend that can quote but whose executor `swap` cannot drive."""
+
+    name = "chainflip"
+    executor = "vault-swap"
+
+    def __init__(self, out=10**9):
+        self.out = out
+        self.client = SimpleNamespace(close=lambda: None)
+
+    def serves(self, *a):
+        return True
+
+    def try_quote(self, *a, **kw):
+        return SimpleNamespace(expected_amount_out=self.out)
+
+
+class _ExecutableBackend:
+    name = "thorchain"
+    executor = "memo-deposit"
+
+    def __init__(self, out=1):
+        self.out = out
+        self.client = SimpleNamespace(close=lambda: None)
+
+    def serves(self, *a):
+        return True
+
+    def try_quote(self, *a, **kw):
+        return SimpleNamespace(expected_amount_out=self.out)
+
+
+def _select(monkeypatch, backends, backend_arg="auto"):
+    monkeypatch.setattr(cli, "_backends_for", lambda args: backends)
+    args = build_parser().parse_args(
+        ["swap", "--amount", "0.1", "--backend", backend_arg]
+    )
+    return cli._select_backend(
+        args,
+        from_asset="BTC.BTC",
+        to_asset="ETH.ETH",
+        amount=10_000_000,
+        destination="0xdead",
+    )
+
+
+def test_explicit_price_only_backend_is_refused_with_a_usable_message(monkeypatch):
+    with pytest.raises(cli.SwapAborted) as exc:
+        _select(monkeypatch, [_PriceOnlyBackend()], backend_arg="chainflip")
+    assert "cannot execute it yet" in str(exc.value)
+    assert "quote --backend chainflip" in str(exc.value)
+
+
+def test_auto_routes_around_a_price_only_backend(monkeypatch):
+    chosen = _select(monkeypatch, [_ExecutableBackend(), _PriceOnlyBackend()])
+    assert chosen.name == "thorchain"
+
+
+def test_auto_says_out_loud_when_the_price_only_backend_was_cheaper(
+    monkeypatch, capsys
+):
+    _select(monkeypatch, [_ExecutableBackend(out=1), _PriceOnlyBackend(out=10**9)])
+    err = capsys.readouterr().err
+    assert "chainflip quoted" in err
+    assert "cannot execute yet" in err
+
+
+def test_auto_stays_quiet_when_the_price_only_backend_was_not_cheaper(
+    monkeypatch, capsys
+):
+    _select(monkeypatch, [_ExecutableBackend(out=10**9), _PriceOnlyBackend(out=1)])
+    assert "chainflip quoted" not in capsys.readouterr().err
+
+
+def test_auto_aborts_when_only_a_price_only_backend_can_serve(monkeypatch):
+    with pytest.raises(cli.SwapAborted):
+        _select(monkeypatch, [_PriceOnlyBackend()])
 
 
 def test_status_takes_txid():

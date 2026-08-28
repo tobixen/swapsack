@@ -977,6 +977,18 @@ def _is_cow_order_uid(value: str) -> bool:
     return True
 
 
+# The executors `swap` knows how to drive. A backend outside this set can still
+# price a swap (and so still competes in `quote` and in `auto`'s comparison),
+# but routing a swap to it would hand its quote to a deposit path that cannot
+# settle it — so selection refuses instead. Chainflip's "vault-swap" is the
+# current case; see docs/chainflip-effort.md for what building it takes.
+EXECUTABLE_EXECUTORS = frozenset({"memo-deposit", "signed-order"})
+
+
+def _can_execute(backend) -> bool:  # noqa: ANN001 (SwapBackend, lazy import)
+    return getattr(backend, "executor", "") in EXECUTABLE_EXECUTORS
+
+
 def _select_backend(  # noqa: ANN202 (Backend, lazy import)
     args: argparse.Namespace,
     *,
@@ -993,12 +1005,24 @@ def _select_backend(  # noqa: ANN202 (Backend, lazy import)
     backends we don't return are closed before returning (the chosen one is
     closed by the caller's ``with backend.client``); a single explicit backend
     is returned unquoted and closed by the caller.
+
+    Price-only backends (see :data:`EXECUTABLE_EXECUTORS`) are dropped here
+    rather than in ``gather_quotes``: they are still worth quoting, and when one
+    of them wins on price that is worth *saying* — a cheaper route exists, just
+    not through this command yet.
     """
     from swapsack.backends import best_quote, gather_quotes
 
     backends = _backends_for(args)
     if len(backends) == 1:
         backend = backends[0]
+        if not _can_execute(backend):
+            backend.client.close()
+            raise SwapAborted(
+                f"{backend.name} can price this swap but cannot execute it yet "
+                f"— use `quote --backend {backend.name}` for the price, and "
+                f"another backend (or --backend auto) to swap"
+            )
         if not backend.serves(from_asset, to_asset):
             backend.client.close()
             raise SwapAborted(f"{backend.name} cannot serve {from_asset} -> {to_asset}")
@@ -1012,17 +1036,46 @@ def _select_backend(  # noqa: ANN202 (Backend, lazy import)
         tolerance_bps=tolerance_bps,
         **_streaming_kwargs(args),
     )
-    if not results:
+    executable = [pair for pair in results if _can_execute(pair[0])]
+    if not executable:
         for unused in backends:
             unused.client.close()
         raise SwapAborted("no swap backend can serve this pair/amount")
-    backend, _ = best_quote(results)
-    if len(results) > 1:
-        print(f"routing via {backend.name} (best of {len(results)})", file=sys.stderr)
+    backend, quote = best_quote(executable)
+    _note_unexecutable_best(results, chosen=quote, to_asset=to_asset)
+    if len(executable) > 1:
+        print(
+            f"routing via {backend.name} (best of {len(executable)})", file=sys.stderr
+        )
     for unused in backends:
         if unused is not backend:
             unused.client.close()
     return backend
+
+
+def _note_unexecutable_best(results, *, chosen, to_asset: str) -> None:  # noqa: ANN001
+    """Say so when a price-only backend beat the one we can actually execute.
+
+    Silently routing around it would hide a real, reachable price — the user can
+    take that route by hand today (docs/halt-alternatives.md), so name it and
+    say by how much rather than quietly paying more.
+    """
+    unexecutable = [pair for pair in results if not _can_execute(pair[0])]
+    if not unexecutable:
+        return
+    backend, quote = max(unexecutable, key=lambda pair: pair[1].expected_amount_out)
+    if quote.expected_amount_out <= chosen.expected_amount_out:
+        return
+    unit = asset_unit(to_asset)
+    better = (quote.expected_amount_out - chosen.expected_amount_out) / unit
+    theirs = quote.expected_amount_out / unit
+    ours = chosen.expected_amount_out / unit
+    print(
+        f"note: {backend.name} quoted {better:.8f} more ({theirs:.8f} vs "
+        f"{ours:.8f}) but cannot execute yet; swapping via the best "
+        f"backend that can",
+        file=sys.stderr,
+    )
 
 
 def _market_comparison(
@@ -2958,10 +3011,12 @@ def _add_swap_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--key", help="keystore HD key label (default: first)")
     sub.add_argument(
         "--backend",
-        choices=["thorchain", "maya", "cow", "auto"],
+        choices=["thorchain", "maya", "cow", "chainflip", "auto"],
         default="auto",
         help="swap backend (auto = lowest price across all; cow = same-chain "
-        "ETH-token swaps via a signed intent order, no memo/vault)",
+        "ETH-token swaps via a signed intent order, no memo/vault; chainflip = "
+        "an independent cross-chain venue, PRICE ONLY for now — it quotes but "
+        "cannot execute yet, see docs/chainflip-effort.md)",
     )
     _add_price_check_args(sub)
     sub.add_argument(

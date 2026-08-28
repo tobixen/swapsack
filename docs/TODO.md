@@ -306,14 +306,23 @@ labels, not lookups.
 
 ## Swap backends
 
-- **Chainflip** — the remaining non-thornode backend from the
-  `docs/backends.md` scoping: a second independent cross-chain venue; adds
-  SOL/DOT. Deposits are plain sends to a per-swap channel, so the existing
-  send builders/gates get reused — but executing needs a broker/deposit-
-  channel decision first (see `docs/backends.md`'s Chainflip execution notes,
-  and `docs/chainflip.md` for the feasibility assessment). Calldata-style
-  aggregators (ParaSwap/1inch/0x/LiFi) and custodial instant exchangers: not
-  planned (gating problem / custody).
+- **Chainflip — B1 (quotes) done 2026-08-28**, B2 (execution) is next.
+  `--backend chainflip`/`auto` price it; `swap` refuses to route there, and
+  `auto` notes out loud when it was the cheaper route. Calldata-style
+  aggregators (ParaSwap/1inch/0x/LiFi) and custodial instant exchangers: still
+  not planned (gating problem / custody — and, measured 2026-08-28, the
+  custodial ones lose on price too).
+  **B2 is a vault swap, not a deposit channel**: `cf_request_swap_parameter_
+  encoding` (keyless) returns an OP_RETURN payload carrying our own destination
+  and an on-chain `min_output_amount` floor, paid to a vault that
+  `cf_get_vault_addresses` confirms, and `cf_decode_vault_swap_parameter` reads
+  every field back for the gate. No broker, no channel expiry. The order of
+  work, from `docs/chainflip-effort.md`: **first** widen
+  `build_unsigned_swap`'s `memo` from `str` to `bytes` as its own commit (the
+  payload is binary SCALE; this touches the shared BTC/DASH/ZEC money path and
+  can break three chains at once), **then** the gate and the CLI path. Note
+  `--amount max` can never work here — Chainflip requires a non-zero,
+  above-dust change output.
   **Priority raised 2026-08-28**: THORChain and Maya were halted simultaneously
   (Maya's $1.7M exploit on 08-18), leaving BTC→ETH with no route through this
   wallet at all. B1 — the keyless quote as a read-only source in `auto` — is

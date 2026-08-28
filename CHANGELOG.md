@@ -8,6 +8,26 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Chainflip is priced alongside THORChain, Maya and CoW** (`--backend
+  chainflip`, and in `--backend auto`). Chainflip is an independent protocol
+  with its own validators and pools, so it keeps quoting when THORChain and Maya
+  halt together — which they did on 2026-08-18, leaving BTC→ETH with no route at
+  all through this wallet. Quoting is keyless; see `docs/halt-alternatives.md`
+  for the measured price comparison that picked it over custodial exchangers and
+  CEX orderbooks.
+  - **Price only, and it says so.** Chainflip settles by paying a protocol vault
+    with the swap parameters encoded in the transaction, not by the thornode
+    `=:` memo — a path that is not built yet, so `swap --backend chainflip`
+    refuses with an actionable message instead of handing its quote to a deposit
+    builder that cannot settle it. `docs/chainflip-effort.md` sizes the work.
+  - **`auto` routes around it, out loud.** When Chainflip quotes the best price
+    but cannot execute, the swap goes to the best backend that *can* — and a
+    note names Chainflip and the difference, because a cheaper route you could
+    take by hand is worth knowing about rather than silently paying more.
+  - The cost breakdown names Chainflip's own fee legs — ingress, network,
+    egress — rather than borrowing THORChain's "slip/swap fee" wording, which
+    would be a lie here: Chainflip's slip is in the price, not in a fee field.
+
 - **`balance` is one aligned sheet, valued and totalled.** Every row lines up,
   each carries what it is worth, and the bottom adds it up — in EUR by default,
   or `--unit BTC/USD/USDT/USDC/ETH/SATS`. Rows print together at the end

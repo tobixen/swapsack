@@ -2,7 +2,7 @@
 
 It's a **Python library** and a **CLI** for holding, sending, receiving and swapping **multiple** cryptocurrencies.
 
-Non-custodial cross-chain swaps are supported via [THORChain](https://thorchain.org/) and [Maya](https://www.mayaprotocol.com/); same-chain ETH-token swaps additionally route through [CoW Protocol](https://cow.fi/)'s keyless intent API.
+Non-custodial cross-chain swaps are supported via [THORChain](https://thorchain.org/) and [Maya](https://www.mayaprotocol.com/); same-chain ETH-token swaps additionally route through [CoW Protocol](https://cow.fi/)'s keyless intent API, and [Chainflip](https://chainflip.io/) is priced alongside them (quotes only for now).
 
 ⚠️ This project is vibed-up ... what could possibly go wrong?
 
@@ -62,7 +62,8 @@ Other features:
 
 * `quote` — read-only price preview for any supported asset
 * `status` — track a swap by its inbound txid. For a BTC hash it also prints what the transaction did on-chain (inputs, each output, change, fee in sats and EUR) — so a plain `send`, which no swap vault ever observes, still shows something useful instead of an empty stage list.
-* `--backend auto` — compares **THORChain + Maya + CoW** (CoW only quotes same-chain ETH-token pairs) and routes to the best price (`quote`, `swap`). `--backend cow` forces it: a same-chain USDT-ETH/USDC-ETH/ETH swap settles via a signed EIP-712 order (no vault, no memo) instead of THORChain/Maya's two-pool-leg route — see [docs/backends.md](docs/backends.md). `status <order-uid>` tracks a submitted CoW order (auto-detected by its 56-byte uid shape, vs. a chain txid).
+* `--backend auto` — compares **THORChain + Maya + CoW + Chainflip** (CoW only quotes same-chain ETH-token pairs) and routes to the best price (`quote`, `swap`). `--backend cow` forces it: a same-chain USDT-ETH/USDC-ETH/ETH swap settles via a signed EIP-712 order (no vault, no memo) instead of THORChain/Maya's two-pool-leg route — see [docs/backends.md](docs/backends.md). `status <order-uid>` tracks a submitted CoW order (auto-detected by its 56-byte uid shape, vs. a chain txid).
+* `--backend chainflip` — **price only.** Chainflip is an independent cross-chain protocol, so it keeps quoting when THORChain and Maya halt together (as they did on 2026-08-18 — see [docs/halt-alternatives.md](docs/halt-alternatives.md)). `quote` prices it like any other backend and `auto` includes it in the comparison, but its execution path is not built yet: `swap --backend chainflip` refuses, and `auto` routes around it while *saying so* when it was the cheaper route, rather than quietly paying more. What building execution takes is measured in [docs/chainflip-effort.md](docs/chainflip-effort.md).
 * `swap --tolerance-bps N` — raise the slippage/fee tolerance (default 300 = 3%). Small or thinly-traded swaps whose fees exceed the default are *refused* by THORChain; the wallet aborts with a clear message instead of a traceback, and you can opt into a wider tolerance here.
 * **cost breakdown** — `quote` and `swap` itemise what you lose: the slip/swap (liquidity) fee, the flat outbound fee, and the quoted total (with `bps`), plus the inbound (source-chain) tx fee shown separately. On THORChain the *liquidity fee is the slippage* — the two are one number, not two.
 * **`Market:` block** — by default `quote`/`swap` also compare the quoted output against a public spot price (CoinGecko), surfacing the *total* realised cost including the pool-vs-market spread arbitrageurs capture (which the protocol's own fee fields don't include). Three lines: a source header, the per-asset comparison (`~X DEST at spot → ~N bps total vs market`), and the estimated absolute loss in **EUR**. Best-effort: silently dropped if the feed is unreachable or the asset isn't mapped (the EUR line is dropped if the feed has no EUR price). Disable with `--no-price-check`, which is accepted by every command that prices anything (`quote`, `swap`, `send`, `add-liquidity`, `withdraw-liquidity`, `status`, `balance`) and suppresses the request itself, not merely its output — the lookup would otherwise tell a third party that you are about to spend that asset.
@@ -341,10 +342,14 @@ the short version:
   this wallet's verify-gate philosophy — unlike calldata-style aggregators
   (ParaSwap/1inch/0x/LiFi), whose opaque router calldata can't be
   independently gated.
-- **Chainflip** — the recommended next: a second *independent* non-custodial
-  cross-chain venue (keyless quotes probed) that adds **SOL and DOT** and
-  price-competes on BTC/ETH. Deposits are plain sends to per-swap deposit
-  addresses, so the existing send builders and gates get reused.
+- **Chainflip** — **quotes done** (`--backend chainflip`, and in `auto`):
+  a second *independent* non-custodial cross-chain venue that price-competes on
+  BTC/ETH and keeps answering when THORChain and Maya halt together. Execution
+  is still to build, and it is a **vault swap** — one Bitcoin transaction paying
+  a protocol vault with the swap parameters in an OP_RETURN, no broker and no
+  deposit channel — which is the transaction shape the wallet already builds.
+  Sized in [docs/chainflip-effort.md](docs/chainflip-effort.md). It also adds
+  **SOL and DOT**, which need wallet keys of their own first.
 - **Instant-exchange APIs (LightningEX, ChangeNOW, SideShift, …)** — huge coin
   coverage behind a trivial REST API, but the operator holds your funds
   mid-swap (custodial in flight, occasionally KYC/AML-frozen), which cuts
@@ -440,7 +445,7 @@ Deeper topic notes live in [`docs/`](docs/). Most are also linked inline above
 where they're relevant; this is the full index:
 
 - [docs/TODO.md](docs/TODO.md) — the running backlog and roadmap (the live source of "what's next")
-- [docs/backends.md](docs/backends.md) — swap backends (THORChain, Maya, CoW, and the scoped-but-unbuilt Chainflip)
+- [docs/backends.md](docs/backends.md) — swap backends (THORChain, Maya, CoW, and Chainflip)
 - [docs/chainflip.md](docs/chainflip.md) — Chainflip execution notes (deposit channels, broker decision)
 - [docs/streaming.md](docs/streaming.md) — streaming swaps and the streaming-vs-tolerance interaction
 - [docs/liquidity-symmetric.md](docs/liquidity-symmetric.md) — two-sided (symmetric) liquidity mechanics + the two-leg safety protocol
