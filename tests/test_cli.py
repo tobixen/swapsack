@@ -1611,6 +1611,27 @@ def test_main_prints_aborted_for_escaped_swap_aborted(monkeypatch, capsys):
     assert "ABORTED: test escape" in capsys.readouterr().err
 
 
+def test_main_prints_one_line_for_an_escaped_network_failure(monkeypatch, capsys):
+    # A read timeout against a public API is not a bug in swapsack: the read
+    # paths that have no local handler (the HD scan, for one) must still exit
+    # with a one-liner naming the host, not a 60-line traceback.
+    import niquests
+
+    import swapsack.cli as cli
+
+    def boom(args):
+        raise niquests.exceptions.ReadTimeout(
+            "HTTPSConnectionPool(host='blockstream.info', port=443): Read timed out."
+        )
+
+    monkeypatch.setattr(cli, "cmd_quote", boom)
+    rc = cli.main(["quote", "--amount", "1"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "blockstream.info" in err
+    assert "Traceback" not in err
+
+
 @pytest.mark.parametrize(
     ("from_asset", "expected"),
     [("CACAO", 100 * 10**10), ("BTC", 100 * 10**8)],

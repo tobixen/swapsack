@@ -17,6 +17,16 @@ from swapsack.chains.utxo import UtxoTxBuilder
 from swapsack.net import HttpClient
 
 DEFAULT_ESPLORA = "https://blockstream.info/api"
+# The public Esplora is best-effort and drops a few percent of requests (see
+# HttpClient._get). Reads retry, but a user hitting it repeatedly wants to know
+# the endpoint is swappable — any Esplora-compatible instance will do.
+ESPLORA_HINT = (
+    "hint: this public endpoint is best-effort. Another Esplora-compatible one "
+    "works too: --esplora https://mempool.space/api (or $SWAPSACK_ESPLORA)"
+)
+# A stalled Esplora read never recovers and a healthy one answers in under a
+# second, so reads give up well before a write does and let the retry run.
+ESPLORA_READ_TIMEOUT = 8.0
 DEFAULT_DERIVATION = "m/84'/0'/0'/0/0"  # receive chain, first index
 ACCOUNT = "m/84'/0'/0'"
 CHANGE_PATH = "m/84'/0'/0'/1/0"  # internal (change) chain, first index
@@ -128,8 +138,9 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
         timeout: float = 20.0,
         bip39_passphrase: str = "",
         network: str = "bitcoin",
+        read_timeout: float = ESPLORA_READ_TIMEOUT,
     ) -> None:
-        super().__init__(timeout)
+        super().__init__(timeout, read_timeout=read_timeout, hint=ESPLORA_HINT)
         self.esplora_url = esplora_url.rstrip("/")
         self.bip39_passphrase = bip39_passphrase
         # bitcoinlib network name: "bitcoin" (mainnet) or "testnet"/"signet".

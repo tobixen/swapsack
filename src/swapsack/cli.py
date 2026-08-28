@@ -35,7 +35,7 @@ from swapsack.addresses import (
 from swapsack.chains.coins import Utxo, cpfp_surcharge
 from swapsack.cow import DEFAULT_COW_TOLERANCE_BPS
 from swapsack.keystore import HdKey, Keystore
-from swapsack.net import HTTP_ERRORS
+from swapsack.net import HTTP_ERRORS, HostUnreachable
 from swapsack.swap import (
     DEFAULT_TOLERANCE_BPS,
     BroadcastError,
@@ -3591,6 +3591,18 @@ def main(argv: list[str] | None = None) -> int:
         # Backstop for handlers with no local handler (e.g. _base_units raising
         # from cmd_quote): the standard ABORTED message, never a traceback.
         print(f"ABORTED: {exc}", file=sys.stderr)
+        return 1
+    except HTTP_ERRORS as exc:
+        # Same backstop for the read paths that never got a local handler (the
+        # HD account scan, for one). A public API timing out is not a bug in
+        # this program, and a 60-line urllib3 traceback says nothing a user can
+        # act on. Anything past the point of no return — a broadcast, an order —
+        # is handled where it happens, and keeps its own more careful wording.
+        # HostUnreachable already reads as a sentence (host, reason, attempts,
+        # and where else to look); anything else gets the "network:" label so
+        # it is not mistaken for a wallet-side failure.
+        label = "" if isinstance(exc, HostUnreachable) else "network: "
+        print(f"ERROR: {label}{exc}", file=sys.stderr)
         return 1
 
 

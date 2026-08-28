@@ -724,3 +724,14 @@ def test_a_spend_of_an_unconfirmed_input_carries_the_surcharge_to_the_chain():
     pays = [o for o in lifted.built.outputs if o.address == recipient]
     assert len(pays) == 1 and pays[0].value == 100_000
     assert a.sign(lifted.built) and lifted.built.tx.verify() is True
+
+
+def test_esplora_reads_give_up_early_and_name_an_alternative():
+    # blockstream.info answers in ~0.5 s when it answers at all, and a stalled
+    # read never recovers: waiting the full write timeout on one is pure delay
+    # (measured 2026-08-28: ~1 request in 20 black-holed, curl included).
+    a = BtcAdapter()
+    assert a._read_timeout < a._timeout
+    # And when it has failed every attempt, the error says where else to look.
+    assert "--esplora" in a._hint
+    assert "mempool.space" in a._hint

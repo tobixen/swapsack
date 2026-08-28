@@ -301,6 +301,27 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Fixed
 
+- **A dropped reply from a public API no longer aborts a swap.** The default
+  Bitcoin endpoint, `blockstream.info`, black-holes a small share of requests:
+  the connection and TLS handshake succeed, then no answer ever comes. Measured
+  on 2026-08-28 at roughly **1 request in 20**, with plain `curl`, sequentially
+  as well as concurrently, over both IPv4 and IPv6 — so it is the service, not
+  this program or its HTTP library. An HD account scan makes dozens of calls,
+  which made hitting one near-certain, and it took the whole command down after
+  the passphrase prompt with a 60-line urllib3 traceback.
+  - Every **GET** is now retried twice with exponential backoff, and Bitcoin
+    reads give up after 8 seconds rather than 20 (a stalled read never
+    recovers, and a healthy reply takes well under a second).
+  - **POSTs are deliberately not retried**: a broadcast or an order that times
+    out is ambiguous — the peer may have taken it — so re-sending it could
+    double-submit. It is still raised for a human to resolve.
+  - When a host does fail every attempt, the error is one line naming the host,
+    what it did, and how many attempts it got, followed by a hint that the
+    endpoint is swappable: `--esplora https://mempool.space/api` (or
+    `$SWAPSACK_ESPLORA`) — any Esplora-compatible instance works. Neither that
+    message nor the per-retry note prints the URL *path*, which carries one of
+    your addresses.
+
 - **`withdraw-liquidity` could not exit a two-sided position** — it sent the
   trigger on the asset chain, where the protocol has no record of such a
   position, so the transaction was spent and nothing came back. It now detects
