@@ -8,21 +8,29 @@ derivation and the Esplora-shaped UTXO / balance / fee / broadcast layer.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Sequence
 
 from bitcoinlib.mnemonic import Mnemonic
 
 from swapsack.chains.base import AddressInfo, BalanceReport
 from swapsack.chains.coins import Utxo, cpfp_deficit
 from swapsack.chains.utxo import UtxoTxBuilder
-from swapsack.net import HttpClient
+from swapsack.net import FailoverHttpClient
 
 DEFAULT_ESPLORA = "https://blockstream.info/api"
 # The public Esplora is best-effort and drops a few percent of requests (see
 # HttpClient._get). Reads retry, but a user hitting it repeatedly wants to know
 # the endpoint is swappable — any Esplora-compatible instance will do.
+DEFAULT_ESPLORA_MIRROR = "https://mempool.space/api"
+# Tried in order, and the one that answers is pinned. Both are public,
+# best-effort explorers run by different operators; measured 2026-08-28,
+# blockstream.info black-holed ~1 request in 20 while mempool.space answered
+# every one. Two is enough to survive that; naming one with --esplora turns
+# the fallback off, since an endpoint you chose is not one to be second-guessed.
+DEFAULT_ESPLORA_NODES = (DEFAULT_ESPLORA, DEFAULT_ESPLORA_MIRROR)
 ESPLORA_HINT = (
-    "hint: this public endpoint is best-effort. Another Esplora-compatible one "
-    "works too: --esplora https://mempool.space/api (or $SWAPSACK_ESPLORA)"
+    "hint: these public endpoints are best-effort. Any Esplora-compatible one "
+    "works: --esplora https://your-instance/api (or $SWAPSACK_ESPLORA)"
 )
 # A stalled Esplora read never recovers and a healthy one answers in under a
 # second, so reads give up well before a write does and let the retry run.
@@ -121,7 +129,7 @@ def parse_tx_summary(payload: dict) -> TxSummary:
     )
 
 
-class BtcAdapter(HttpClient, UtxoTxBuilder):
+class BtcAdapter(FailoverHttpClient, UtxoTxBuilder):
     """ChainAdapter for Bitcoin (native segwit / P2WPKH)."""
 
     chain = "BTC"
@@ -134,18 +142,27 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
 
     def __init__(
         self,
-        esplora_url: str = DEFAULT_ESPLORA,
+        esplora_url: str | Sequence[str] = DEFAULT_ESPLORA_NODES,
         timeout: float = 20.0,
         bip39_passphrase: str = "",
         network: str = "bitcoin",
         read_timeout: float = ESPLORA_READ_TIMEOUT,
     ) -> None:
-        super().__init__(timeout, read_timeout=read_timeout, hint=ESPLORA_HINT)
-        self.esplora_url = esplora_url.rstrip("/")
+        super().__init__(
+            esplora_url,
+            timeout=timeout,
+            read_timeout=read_timeout,
+            hint=ESPLORA_HINT,
+        )
         self.bip39_passphrase = bip39_passphrase
         # bitcoinlib network name: "bitcoin" (mainnet) or "testnet"/"signet".
         # Set alongside a matching testnet Esplora URL to spend on a testnet.
         self.network = network
+
+    @property
+    def esplora_url(self) -> str:
+        """The endpoint currently pinned — what a broadcast will be sent to."""
+        return self.base_url
 
     def derive_address(self, mnemonic: str, path: str = DEFAULT_DERIVATION) -> str:
         return self._hdkey(mnemonic, path).address(
@@ -156,7 +173,7 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
 
     def address_info(self, address: str) -> AddressInfo:
         """History + confirmed/pending balance from a single /address call."""
-        resp = self._get(f"{self.esplora_url}/address/{address}")
+        resp = self._get_with_fallback(f"address/{address}")
         resp.raise_for_status()
         return parse_address_info(resp.json())
 
@@ -169,7 +186,7 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
         mempool outputs, marked ``confirmed=False`` so the fee maths can price
         their parents — see :meth:`cpfp_deficits`.
         """
-        resp = self._get(f"{self.esplora_url}/address/{address}/utxo")
+        resp = self._get_with_fallback(f"address/{address}/utxo")
         resp.raise_for_status()
         # Fail closed: an output counts as confirmed only if it says so (L1).
         return [
@@ -222,7 +239,7 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
 
     def fetch_tx(self, txid: str) -> TxSummary | None:
         """What a broadcast tx did, or None if this chain has never seen it."""
-        resp = self._get(f"{self.esplora_url}/tx/{txid}")
+        resp = self._get_with_fallback(f"tx/{txid}")
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -239,7 +256,7 @@ class BtcAdapter(HttpClient, UtxoTxBuilder):
         )
 
     def fetch_fee_rate(self, target_blocks: int = 2) -> float:
-        resp = self._get(f"{self.esplora_url}/fee-estimates")
+        resp = self._get_with_fallback("fee-estimates")
         resp.raise_for_status()
         estimates = resp.json()
         # Fall back to the *highest* known rate, never the cheapest/slowest (M2).

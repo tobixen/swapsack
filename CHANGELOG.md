@@ -315,12 +315,20 @@ automatically from git tags (PEP 440 / SemVer).
   - **POSTs are deliberately not retried**: a broadcast or an order that times
     out is ambiguous — the peer may have taken it — so re-sending it could
     double-submit. It is still raised for a human to resolve.
-  - When a host does fail every attempt, the error is one line naming the host,
-    what it did, and how many attempts it got, followed by a hint that the
-    endpoint is swappable: `--esplora https://mempool.space/api` (or
-    `$SWAPSACK_ESPLORA`) — any Esplora-compatible instance works. Neither that
-    message nor the per-retry note prints the URL *path*, which carries one of
-    your addresses.
+  - **Bitcoin now has two default endpoints** — `blockstream.info` first, then
+    `mempool.space` — and moves to the second when the first stops answering,
+    pinning whichever works so the rest of a scan doesn't keep paying for the
+    dead one. Both are public explorers run by different operators, and a
+    failover therefore tells the second one which addresses you are asking
+    about; it is announced on stderr when it happens. Naming your own endpoint
+    with `--esplora` / `$SWAPSACK_ESPLORA` (any Esplora-compatible instance,
+    including a self-hosted one) uses **only** that one — choosing an operator
+    is not an invitation to add another.
+  - When every endpoint fails, the error is one line naming them, what they
+    did, and how many attempts they got. Neither that message nor the
+    per-retry note prints the URL *path*, which carries one of your addresses.
+    THORChain/Maya node exhaustion reports the same way (it already tried its
+    node list in order; now it says so).
 
 - **`withdraw-liquidity` could not exit a two-sided position** — it sent the
   trigger on the asset chain, where the protocol has no record of such a

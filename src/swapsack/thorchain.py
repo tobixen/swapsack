@@ -14,12 +14,11 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any
 
-from swapsack.net import HTTP_ERRORS, HttpClient
+from swapsack.net import FailoverHttpClient
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    import niquests
 
 THORCHAIN_UNIT = 100_000_000
 # thornode.thorchain.liquify.com's TLS cert expired 2024-02-07 (never renewed),
@@ -328,7 +327,7 @@ def parse_quote(payload: dict[str, Any]) -> Quote:
     )
 
 
-class ThorchainClient(HttpClient):
+class ThorchainClient(FailoverHttpClient):
     """Thin wrapper around a thornode-style REST API.
 
     Used for both THORChain (``path_prefix="thorchain"``) and its fork Maya
@@ -342,43 +341,9 @@ class ThorchainClient(HttpClient):
         timeout: float = 20.0,
         path_prefix: str = "thorchain",
     ) -> None:
-        super().__init__(timeout)
-        candidates = (base_url,) if isinstance(base_url, str) else tuple(base_url)
-        if not candidates:
-            raise ValueError("base_url must contain at least one node")
-        self._candidates = tuple(c.rstrip("/") for c in candidates)
-        self.base_url = self._candidates[0]
+        super().__init__(base_url, timeout=timeout)
         self.path_prefix = path_prefix
         self._headers = {"x-client-id": client_id} if client_id else {}
-
-    def _get_with_fallback(self, suffix: str, **kwargs: object) -> niquests.Response:
-        """GET ``{node}/{suffix}`` against each configured node in turn.
-
-        Starts from the currently pinned node (``self.base_url``) and only
-        advances on a connection-level failure (DNS, refused, timeout) — an
-        HTTP error response is a real answer from a live node, not an outage,
-        so it's returned as-is for the caller's own ``raise_for_status()``.
-        The first node that answers is pinned to ``self.base_url`` so later
-        calls skip the dead ones instead of re-probing every time.
-        """
-        start = (
-            self._candidates.index(self.base_url)
-            if self.base_url in self._candidates
-            else 0
-        )
-        ordered = self._candidates[start:] + self._candidates[:start]
-        last_exc: Exception | None = None
-        for base in ordered:
-            try:
-                resp = self._get(f"{base}/{suffix}", **kwargs)
-            except HTTP_ERRORS as exc:
-                last_exc = exc
-                continue
-            self.base_url = base
-            return resp
-        # ordered is non-empty (__init__ checked candidates), so the loop ran.
-        assert last_exc is not None
-        raise last_exc
 
     def inbound_addresses(self) -> dict[str, ChainStatus]:
         resp = self._get_with_fallback(

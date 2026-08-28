@@ -10,31 +10,13 @@ from __future__ import annotations
 import niquests
 import pytest
 
-from swapsack.net import DEFAULT_RETRIES, HostUnreachable, HttpClient
-
-
-class FakeSession:
-    """Stands in for ``niquests.Session``: scripted outcomes, recorded calls."""
-
-    def __init__(self, *outcomes: object) -> None:
-        self._outcomes = list(outcomes)
-        self.gets: list[str] = []
-        self.posts: list[str] = []
-        self.timeouts: list[float] = []
-
-    def _next(self, url: str, recorded: list[str], timeout: float) -> object:
-        recorded.append(url)
-        self.timeouts.append(timeout)
-        outcome = self._outcomes.pop(0) if self._outcomes else "ok"
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
-
-    def get(self, url: str, timeout: float = 0, **_kwargs: object) -> object:
-        return self._next(url, self.gets, timeout)
-
-    def post(self, url: str, timeout: float = 0, **_kwargs: object) -> object:
-        return self._next(url, self.posts, timeout)
+from conftest import FakeSession
+from swapsack.net import (
+    DEFAULT_RETRIES,
+    FailoverHttpClient,
+    HostUnreachable,
+    HttpClient,
+)
 
 
 @pytest.fixture
@@ -175,3 +157,112 @@ def test_read_timeout_defaults_to_the_general_timeout(no_sleep):
     client, session = _client("ok", timeout=12.0)
     client._get("https://example.org/x")
     assert session.timeouts == [12.0]
+
+
+# --- failover between interchangeable endpoints --------------------------------
+
+BLOCKSTREAM = "https://blockstream.info/api"
+MEMPOOL = "https://mempool.space/api"
+
+
+def _failover(
+    *outcomes: object, **kwargs: object
+) -> tuple[FailoverHttpClient, FakeSession]:
+    client = FailoverHttpClient([BLOCKSTREAM, MEMPOOL], **kwargs)  # type: ignore[arg-type]
+    session = FakeSession(*outcomes)
+    client._session = session  # type: ignore[assignment]
+    return client, session
+
+
+def test_a_stalled_endpoint_is_abandoned_for_the_next_one(no_sleep, capsys):
+    client, session = _failover(niquests.exceptions.ReadTimeout("stalled"), "body")
+    assert client._get_with_fallback("address/bc1q") == "body"
+    assert session.gets == [f"{BLOCKSTREAM}/address/bc1q", f"{MEMPOOL}/address/bc1q"]
+    # Switching hosts is itself the mitigation, so it happens without a pause.
+    assert no_sleep == []
+
+
+def test_the_switch_is_announced_because_it_is_a_different_operator(no_sleep, capsys):
+    # Failing over hands the queried address to somebody else. That is a fact
+    # about the user's privacy, not an implementation detail: say it out loud.
+    client, _ = _failover(niquests.exceptions.ReadTimeout("stalled"), "body")
+    client._get_with_fallback("address/bc1qsecretaddress")
+    err = capsys.readouterr().err
+    assert "blockstream.info" in err and "mempool.space" in err
+    assert "bc1qsecretaddress" not in err
+
+
+def test_the_endpoint_that_answered_is_pinned(no_sleep):
+    client, session = _failover(
+        niquests.exceptions.ReadTimeout("stalled"), "body", "body2"
+    )
+    client._get_with_fallback("address/bc1q")
+    assert client.base_url == MEMPOOL
+    # The next call starts where the last one succeeded: no re-probing the
+    # dead host on every single address of a 60-call scan.
+    client._get_with_fallback("fee-estimates")
+    assert session.gets[-1] == f"{MEMPOOL}/fee-estimates"
+
+
+def test_an_http_error_response_is_an_answer_not_an_outage(no_sleep):
+    # A 404/429/500 came *from* the endpoint. Asking a second one would only
+    # duplicate the question (and leak the address) — hand it to the caller's
+    # own raise_for_status().
+    client, session = _failover("500-response")
+    assert client._get_with_fallback("address/bc1q") == "500-response"
+    assert len(session.gets) == 1
+
+
+def test_every_endpoint_failing_names_them_all(no_sleep):
+    fail = niquests.exceptions.ReadTimeout("stalled")
+    client, session = _failover(*[fail] * 20, retries=1)
+    with pytest.raises(HostUnreachable) as exc:
+        client._get_with_fallback("address/bc1q")
+    message = str(exc.value)
+    assert "blockstream.info" in message and "mempool.space" in message
+    # Two endpoints × (1 retry + 1) laps, with a backoff between laps only.
+    assert len(session.gets) == 4
+    assert len(no_sleep) == 1
+
+
+def test_a_single_endpoint_still_behaves_like_a_plain_client(no_sleep):
+    # No alternatives configured (the user named one with --esplora): same
+    # retry-in-place as before, and no invented second operator.
+    client = FailoverHttpClient([MEMPOOL])
+    session = FakeSession(*[niquests.exceptions.ReadTimeout("stalled")] * 10)
+    client._session = session  # type: ignore[assignment]
+    with pytest.raises(HostUnreachable):
+        client._get_with_fallback("address/bc1q")
+    assert len(session.gets) == DEFAULT_RETRIES + 1
+    assert {u.split("/api")[0] for u in session.gets} == {"https://mempool.space"}
+
+
+def test_at_least_one_endpoint_is_required():
+    with pytest.raises(ValueError, match="at least one"):
+        FailoverHttpClient([])
+
+
+def test_get_forwards_query_parameters_to_the_session(no_sleep):
+    # The retry loop sits between `_get` and the session, and a client that
+    # drops `params` on the way through still issues a request that *looks*
+    # right: same URL, HTTP 200, an answer the caller then fails to parse.
+    # Chainflip's whole quote and CoinGecko's `ids`/`vs_currencies` ride here.
+    client, session = _client("body")
+    params = {"srcChain": "Bitcoin", "amount": "500000"}
+    assert client._get("https://chainflip.io/v2/quote", params=params) == "body"
+    assert session.kwargs == [{"params": params}]
+
+
+def test_a_retried_get_repeats_the_query_parameters(no_sleep):
+    timeout = niquests.exceptions.ReadTimeout("read timed out")
+    client, session = _client(timeout, "body")
+    client._get("https://chainflip.io/v2/quote", params={"amount": "1"})
+    assert session.kwargs == [{"params": {"amount": "1"}}] * 2
+
+
+def test_failover_forwards_query_parameters_to_every_endpoint(no_sleep):
+    client = FailoverHttpClient(["https://one.invalid", "https://two.invalid"])
+    session = FakeSession(niquests.exceptions.ReadTimeout("stalled"), "body")
+    client._session = session
+    client._get_with_fallback("api/tx", params={"verbose": "1"})
+    assert session.kwargs == [{"params": {"verbose": "1"}}] * 2

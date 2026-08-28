@@ -11,6 +11,7 @@ import pytest
 
 pytest.importorskip("bitcoinlib")
 
+from conftest import FakeSession
 from swapsack.chains.btc import BtcAdapter  # noqa: E402
 from swapsack.chains.coins import Utxo  # noqa: E402
 from swapsack.verify import SwapPlan, verify_btc_swap  # noqa: E402
@@ -602,7 +603,7 @@ def _utxo_adapter(monkeypatch) -> BtcAdapter:
             return ESPLORA_UTXOS
 
     a = BtcAdapter()
-    monkeypatch.setattr(a, "_get", lambda url: FakeResp())
+    a._session = FakeSession(FakeResp())
     return a
 
 
@@ -732,6 +733,23 @@ def test_esplora_reads_give_up_early_and_name_an_alternative():
     # (measured 2026-08-28: ~1 request in 20 black-holed, curl included).
     a = BtcAdapter()
     assert a._read_timeout < a._timeout
-    # And when it has failed every attempt, the error says where else to look.
+    # And when every endpoint has failed, the error says where else to look.
     assert "--esplora" in a._hint
-    assert "mempool.space" in a._hint
+
+
+def test_two_default_endpoints_so_one_going_quiet_is_survivable():
+    a = BtcAdapter()
+    assert a._candidates == (
+        "https://blockstream.info/api",
+        "https://mempool.space/api",
+    )
+    # The pinned one is what a broadcast goes to, and what `esplora_url` reports.
+    assert a.esplora_url == "https://blockstream.info/api"
+
+
+def test_naming_an_endpoint_turns_the_fallback_off():
+    # --esplora / $SWAPSACK_ESPLORA is a deliberate choice of operator (or a
+    # self-hosted instance): never silently ask a second one about the wallet's
+    # addresses behind the user's back.
+    a = BtcAdapter("https://my-own-instance.example/api/")
+    assert a._candidates == ("https://my-own-instance.example/api",)

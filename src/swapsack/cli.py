@@ -186,9 +186,11 @@ def _passphrase(*, confirm: bool = False) -> str:
 
 
 def _btc_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
-    from swapsack.chains.btc import DEFAULT_ESPLORA, BtcAdapter
+    from swapsack.chains.btc import DEFAULT_ESPLORA_NODES, BtcAdapter
 
-    url = args.esplora or os.environ.get("SWAPSACK_ESPLORA") or DEFAULT_ESPLORA
+    # A named endpoint is used alone — see DEFAULT_ESPLORA_NODES on why the
+    # default is a list and an override is not.
+    url = args.esplora or os.environ.get("SWAPSACK_ESPLORA") or DEFAULT_ESPLORA_NODES
     return BtcAdapter(url, bip39_passphrase=passphrase)
 
 
@@ -3385,7 +3387,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--version", "-V", action="version", version=f"%(prog)s {__version__}"
     )
     parser.add_argument("--keystore", help="keystore path ($SWAPSACK_KEYSTORE)")
-    parser.add_argument("--esplora", help="Esplora API base URL ($SWAPSACK_ESPLORA)")
+    parser.add_argument(
+        "--esplora",
+        help="Esplora API base URL ($SWAPSACK_ESPLORA); used alone, in place of "
+        "the built-in blockstream.info/mempool.space pair",
+    )
     sub = parser.add_subparsers(dest="command")
 
     s = sub.add_parser("init", help="create an empty encrypted keystore")

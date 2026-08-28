@@ -6,6 +6,8 @@ Fixtures are trimmed real responses captured from the live API; see README.
 import niquests
 import pytest
 
+from conftest import FakeSession
+from swapsack.net import HostUnreachable
 from swapsack.report import lp_row
 from swapsack.thorchain import (
     ThorchainClient,
@@ -240,7 +242,6 @@ def test_tx_status_queries_without_0x_prefix(monkeypatch):
     """Regression: a 0x-prefixed hash must not be sent verbatim, or Maya/THOR
     return an empty 'never observed' status for an already-confirmed inbound."""
     client = ThorchainClient("https://node.example", path_prefix="mayachain")
-    captured: dict[str, str] = {}
 
     class _Resp:
         def raise_for_status(self) -> None: ...
@@ -248,15 +249,10 @@ def test_tx_status_queries_without_0x_prefix(monkeypatch):
         def json(self) -> dict[str, object]:
             return {"ok": True}
 
-    def fake_get(url: str, **_kw: object) -> _Resp:
-        captured["url"] = url
-        return _Resp()
-
-    monkeypatch.setattr(client, "_get", fake_get)
+    session = FakeSession(_Resp())
+    client._session = session
     client.tx_status("0x3a8927cc190f91d9")
-    assert (
-        captured["url"] == "https://node.example/mayachain/tx/status/3a8927cc190f91d9"
-    )
+    assert session.gets == ["https://node.example/mayachain/tx/status/3a8927cc190f91d9"]
 
 
 # --- liquidity-provider parsing (for the `balance` LP report) ----------------
@@ -392,7 +388,6 @@ def test_liquidity_position_row_maya_labels_cacao_and_pending():
 
 def test_liquidity_provider_client_builds_url(monkeypatch):
     client = ThorchainClient("https://node.example", path_prefix="mayachain")
-    captured: dict[str, str] = {}
 
     class _Resp:
         status_code = 200
@@ -402,15 +397,12 @@ def test_liquidity_provider_client_builds_url(monkeypatch):
         def json(self) -> dict[str, object]:
             return EMPTY_LP
 
-    def fake_get(url: str, **_kw: object) -> _Resp:
-        captured["url"] = url
-        return _Resp()
-
-    monkeypatch.setattr(client, "_get", fake_get)
+    session = FakeSession(_Resp())
+    client._session = session
     assert client.liquidity_provider("BTC.BTC", "bc1qnope") is None
-    assert captured["url"] == (
+    assert session.gets == [
         "https://node.example/mayachain/pool/BTC.BTC/liquidity_provider/bc1qnope"
-    )
+    ]
 
 
 class _MimirResp:
@@ -424,36 +416,30 @@ def test_falls_back_to_next_node_on_connection_error(monkeypatch):
     """Regression: thornode.thorchain.network going dark (DNS outage, 2026-07)
     must not take the client down with it when a second node is configured."""
     client = ThorchainClient(("https://dead.example", "https://alive.example"))
-    calls: list[str] = []
-
-    def fake_get(url: str, **_kw: object):
-        calls.append(url)
-        if url.startswith("https://dead.example"):
-            raise niquests.exceptions.ConnectionError("simulated outage")
-        return _MimirResp()
-
-    monkeypatch.setattr(client, "_get", fake_get)
+    outage = niquests.exceptions.ConnectionError("simulated outage")
+    session = FakeSession(outage, _MimirResp(), _MimirResp())
+    client._session = session
     assert client.mimir() == {"PAUSELP": 0}
-    assert calls == [
+    assert session.gets == [
         "https://dead.example/thorchain/mimir",
         "https://alive.example/thorchain/mimir",
     ]
     # The dead node is now known-bad; pin to the one that answered so later
     # calls don't pay its connection-timeout cost again.
     assert client.base_url == "https://alive.example"
-    calls.clear()
+    session.gets.clear()
     client.mimir()
-    assert calls == ["https://alive.example/thorchain/mimir"]
+    assert session.gets == ["https://alive.example/thorchain/mimir"]
 
 
 def test_raises_when_every_node_is_unreachable(monkeypatch):
     client = ThorchainClient(("https://dead1.example", "https://dead2.example"))
-
-    def fake_get(url: str, **_kw: object):
-        raise niquests.exceptions.ConnectionError(url)
-
-    monkeypatch.setattr(client, "_get", fake_get)
-    with pytest.raises(niquests.exceptions.ConnectionError):
+    monkeypatch.setattr("swapsack.net.time.sleep", lambda _s: None)
+    outage = niquests.exceptions.ConnectionError("simulated outage")
+    client._session = FakeSession(*[outage] * 20)
+    # HostUnreachable is a RequestException, so callers catching HTTP_ERRORS
+    # are unaffected; what it adds is a message naming every node tried.
+    with pytest.raises(HostUnreachable, match="dead1.example, dead2.example"):
         client.mimir()
 
 

@@ -14,13 +14,17 @@ destination — so each has to be converted at the quote's own rates before the
 cost display and ``best_quote`` can treat it like any other backend's quote.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
+from conftest import FakeSession
 from swapsack.backends import Backend, best_quote, gather_quotes
 from swapsack.chainflip import (
     CHAINFLIP_ASSETS,
     VAULT_SWAP_ASSET_IDS,
     ChainflipBackend,
+    ChainflipClient,
     ChainflipError,
     ChainflipQuote,
     bitcoin_vault_addresses,
@@ -734,3 +738,27 @@ def test_a_change_output_below_dust_is_refused_too():
         max_fee=100_000,
     )
     assert any("dust" in p for p in problems), problems
+
+
+def test_the_quote_request_carries_the_pair_and_the_amount():
+    # The query parameters *are* the request: a bare GET /v2/quote cannot be
+    # answered, and `try_quote` turns the resulting error into "no quote" — so
+    # a client that drops them takes the whole backend offline in silence.
+    client = ChainflipClient("https://chainflip.invalid/v2")
+    client._session = FakeSession(
+        SimpleNamespace(status_code=200, json=lambda: QUOTE_PAYLOAD)
+    )
+    client.quote(("Bitcoin", "BTC"), ("Ethereum", "ETH"), 500_000)
+    session = client._session
+    assert session.gets == ["https://chainflip.invalid/v2/quote"]
+    assert session.kwargs == [
+        {
+            "params": {
+                "srcChain": "Bitcoin",
+                "srcAsset": "BTC",
+                "destChain": "Ethereum",
+                "destAsset": "ETH",
+                "amount": "500000",
+            }
+        }
+    ]

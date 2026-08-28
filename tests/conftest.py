@@ -112,6 +112,44 @@ def _offline_guard(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
     yield
 
 
+class FakeSession:
+    """Stands in for ``niquests.Session``: scripted outcomes, recorded calls.
+
+    This is the seam to patch when a test wants to steer a client's HTTP. Its
+    own ``_get``/``_get_with_fallback`` are *not*: the retry and endpoint-
+    failover loops live there (``swapsack.net``), so replacing them tests a
+    client that no longer exists.
+
+    Each call pops the next outcome — an exception to raise, or an object to
+    return — and falls back to ``"ok"`` once the script runs out.
+    """
+
+    def __init__(self, *outcomes: object) -> None:
+        self._outcomes = list(outcomes)
+        self.gets: list[str] = []
+        self.posts: list[str] = []
+        self.timeouts: list[float] = []
+        # Query parameters and the rest, recorded per call: a client that drops
+        # them still sends a URL, so only this can tell the difference.
+        self.kwargs: list[dict[str, object]] = []
+
+    def _next(self, url: str, recorded: list[str], timeout: float) -> object:
+        recorded.append(url)
+        self.timeouts.append(timeout)
+        outcome = self._outcomes.pop(0) if self._outcomes else "ok"
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def get(self, url: str, timeout: float = 0, **kwargs: object) -> object:
+        self.kwargs.append(kwargs)
+        return self._next(url, self.gets, timeout)
+
+    def post(self, url: str, timeout: float = 0, **kwargs: object) -> object:
+        self.kwargs.append(kwargs)
+        return self._next(url, self.posts, timeout)
+
+
 # Shaped like a real Esplora /tx response, with synthetic addresses: a partial
 # send (one recipient + one change output), the case a sweep never produces.
 # Lives here rather than in a test module because two suites use it — and

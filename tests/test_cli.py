@@ -4360,3 +4360,25 @@ def test_allow_unconfirmed_is_offered_on_every_utxo_spend_command():
     # ...and nowhere else: `balance` spends nothing, so the flag would be noise.
     with pytest.raises(SystemExit):
         parser.parse_args(["balance", "--allow-unconfirmed"])
+
+
+def test_btc_adapter_uses_both_default_endpoints(monkeypatch):
+    # Nothing chosen: two interchangeable public explorers, so one going quiet
+    # mid-scan is survivable.
+    monkeypatch.delenv("SWAPSACK_ESPLORA", raising=False)
+    args = build_parser().parse_args(["balance"])
+    assert len(cli._btc_adapter(args)._candidates) == 2
+
+
+@pytest.mark.parametrize("via", ["flag", "env"])
+def test_a_chosen_esplora_is_the_only_one_used(monkeypatch, via):
+    # Naming an endpoint is a choice of operator (or a self-hosted instance):
+    # the fallback must not hand a second one the wallet's addresses.
+    monkeypatch.delenv("SWAPSACK_ESPLORA", raising=False)
+    argv = ["balance"]
+    if via == "flag":
+        argv = ["--esplora", "https://my-own.example/api", *argv]  # a global flag
+    else:
+        monkeypatch.setenv("SWAPSACK_ESPLORA", "https://my-own.example/api")
+    args = build_parser().parse_args(argv)
+    assert cli._btc_adapter(args)._candidates == ("https://my-own.example/api",)

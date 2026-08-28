@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Sequence
 from urllib.parse import urlsplit
 
 import niquests
@@ -40,7 +41,11 @@ class HostUnreachable(niquests.exceptions.RequestException):
 
 
 def _describe(
-    host: str, exc: Exception, attempts: int, timeout: float, hint: str | None
+    hosts: Sequence[str],
+    exc: Exception,
+    attempts: int,
+    timeout: float,
+    hint: str | None,
 ) -> str:
     """One actionable line: which host, what went wrong, how hard we tried.
 
@@ -56,8 +61,8 @@ def _describe(
         niquests.exceptions.SSLError: "failed the TLS handshake",
     }.get(type(exc), "could not be reached")
     line = (
-        f"{host} {reason} — gave up after {attempts} attempts "
-        f"({type(exc).__name__}, {timeout:g}s timeout)"
+        f"{', '.join(dict.fromkeys(hosts))} {reason} — gave up after "
+        f"{attempts} attempts ({type(exc).__name__}, {timeout:g}s timeout)"
     )
     return f"{line}\n{hint}" if hint else line
 
@@ -117,26 +122,99 @@ class HttpClient:
         GETs only. A POST here is a broadcast or an order, where a read timeout
         is *ambiguous*: the peer may well have taken it, so re-sending it could
         double-submit. Those are raised as-is, for a human to resolve.
+
+        ``kwargs`` reach ``session.get`` untouched — ``params`` above all, which
+        is the *whole request* for a Chainflip quote or a CoinGecko lookup.
         """
-        host = urlsplit(url).netloc
-        attempt = 0
-        while True:
-            try:
-                return self._http.get(url, timeout=self._read_timeout, **kwargs)
-            except TRANSIENT_ERRORS as exc:
-                if attempt >= self._retries:
-                    raise HostUnreachable(
-                        _describe(
-                            host, exc, attempt + 1, self._read_timeout, self._hint
-                        )
-                    ) from exc
-                print(
-                    f"note: {host} {type(exc).__name__}, "
-                    f"retrying ({attempt + 1}/{self._retries})",
-                    file=sys.stderr,
-                )
-                time.sleep(self._backoff * 2**attempt)
-                attempt += 1
+        return self._attempt([url], **kwargs)[0]
+
+    def _attempt(
+        self, urls: Sequence[str], **kwargs: object
+    ) -> tuple[niquests.Response, int]:
+        """GET the equivalent ``urls`` in turn until one answers.
+
+        ``urls`` are the *same request* against interchangeable endpoints (one
+        entry when there is nothing to fall back to). Each lap tries them all,
+        and there are ``retries + 1`` laps, with backoff between laps only:
+        moving to another host is itself the mitigation, so it needs no pause,
+        while trying the same host again does.
+
+        Returns the response and the index of the URL that produced it, so a
+        caller can pin the endpoint that works. An HTTP error *status* is a
+        real answer and is returned as-is; only transport failures move on.
+        """
+        hosts = [urlsplit(u).netloc for u in urls]
+        last: Exception | None = None
+        for lap in range(self._retries + 1):
+            for index, url in enumerate(urls):
+                try:
+                    resp = self._http.get(url, timeout=self._read_timeout, **kwargs)
+                except TRANSIENT_ERRORS as exc:
+                    last = exc
+                    self._report(hosts, index, lap, type(exc).__name__)
+                else:
+                    return resp, index
+            if lap < self._retries:
+                time.sleep(self._backoff * 2**lap)
+        assert last is not None  # urls is non-empty, so the loop ran
+        raise HostUnreachable(
+            _describe(
+                hosts,
+                last,
+                (self._retries + 1) * len(urls),
+                self._read_timeout,
+                self._hint,
+            )
+        ) from last
+
+    def _report(self, hosts: Sequence[str], index: int, lap: int, why: str) -> None:
+        """Say what failed and what is being tried instead — host, never path.
+
+        An Esplora path is one of the wallet's own addresses, and this note
+        lands in terminals that get pasted into bug reports. The *next* host is
+        named because falling over to it hands that address to a different
+        operator, which the user is entitled to see.
+        """
+        following = hosts[index + 1 :] or hosts[:1]
+        laps = self._retries + 1
+        print(
+            f"note: {hosts[index]} {why} (attempt {lap + 1}/{laps}), "
+            f"trying {following[0]}",
+            file=sys.stderr,
+        )
 
     def _post(self, url: str, **kwargs: object) -> niquests.Response:
         return self._http.post(url, timeout=self._timeout, **kwargs)
+
+
+class FailoverHttpClient(HttpClient):
+    """An :class:`HttpClient` over interchangeable endpoints for the same API.
+
+    The public explorers this wallet depends on are best-effort and go quiet
+    without warning, so a second endpoint is the difference between a swap that
+    proceeds and one that dies after the passphrase prompt. The endpoint that
+    answers is pinned, so a 60-call scan does not re-probe a dead host every
+    time. Give it a single candidate — as ``--esplora`` does — and it degrades
+    to a plain retrying client: naming an endpoint means naming *the* endpoint,
+    not opting into a second operator seeing your addresses.
+    """
+
+    def __init__(self, candidates: str | Sequence[str], **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        urls = (candidates,) if isinstance(candidates, str) else tuple(candidates)
+        if not urls:
+            raise ValueError("need at least one endpoint URL")
+        self._candidates = tuple(u.rstrip("/") for u in urls)
+        self.base_url = self._candidates[0]
+
+    def _get_with_fallback(self, suffix: str, **kwargs: object) -> niquests.Response:
+        """GET ``{endpoint}/{suffix}``, starting from the pinned endpoint."""
+        start = (
+            self._candidates.index(self.base_url)
+            if self.base_url in self._candidates
+            else 0
+        )
+        ordered = self._candidates[start:] + self._candidates[:start]
+        resp, index = self._attempt([f"{base}/{suffix}" for base in ordered], **kwargs)
+        self.base_url = ordered[index]
+        return resp
