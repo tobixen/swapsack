@@ -8,6 +8,35 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **`bump <txid>`: unstick a fee-starved BTC transaction (BIP125 replace-by-fee).**
+  Every spend already *signalled* opt-in RBF; this is the half that does the
+  replacing. It rebuilds the transaction identically — the same inputs, the
+  same recipient/vault output for the same amount, the same OP_RETURN memo
+  byte-for-byte — and takes the higher fee out of the change output alone. That
+  is not a stylistic choice: a THORChain/Maya deposit is matched against exactly
+  those bytes, and a shifted vault amount or memo fails or refunds. The rebuild
+  goes back through the same `verify` gate a first-time spend passes, and is a
+  dry run until `--confirm` like everything else that spends.
+  - Fee target via `--fee-rate N` (sats/vB) or `--fee-blocks N`, floored by what
+    BIP125 needs to relay at all: 1 sat/vB of the replacement's size on top of
+    the original's fee. Asking for a rate the transaction already pays therefore
+    bumps by that minimum rather than doing nothing.
+  - **It drags its own unconfirmed ancestors too.** If the transaction spent
+    mempool inputs (`--allow-unconfirmed`), the bump pays their shortfall on top
+    — raising one transaction's rate achieves nothing while a parent holds the
+    package down, which is the stall being fixed.
+  - Refuses, with the reason, anything it cannot do safely: an already-confirmed
+    transaction, one that does not signal RBF, inputs this wallet cannot sign, a
+    sweep with no change output to take the bump from, a change output that
+    would fall below dust (naming the highest rate that *would* fit), and any
+    transaction shape this wallet does not itself build.
+  - BTC only. Dash implements no mempool replacement (deliberately, for
+    InstantSend) and Zcash's transparent spends do not signal RBF; on both,
+    `--allow-unconfirmed`'s child-pays-for-parent remains the only lever.
+    Bumping a swap deposit does not re-quote it — the memo still carries the
+    min-out limit it was quoted at — and does not shorten the backend's own
+    confirmation count. `docs/TODO.md` carries what is still open.
+
 - **`--allow-unconfirmed`: spend money that is still in the mempool.** Off by
   default, as before — a UTXO the wallet cannot see confirmed is a UTXO whose
   parent can still be replaced or evicted, taking the spend built on it along

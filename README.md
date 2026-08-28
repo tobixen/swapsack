@@ -218,6 +218,8 @@ swapsack send  0x...recipient --asset ETH --amount 0.01        # native ETH
 swapsack send  0x...recipient --asset USDT-ETH --amount max    # sweep tokens
 swapsack send  T...recipient --asset USDT-TRON --amount 25     # TRC-20
 swapsack send  bitcoin:bc1q...?label=Alice --amount 0.001      # BIP21 URI / QR code
+swapsack bump  <txid>                                          # unstick a BTC tx (DRY RUN)
+swapsack bump  <txid> --fee-rate 25 --confirm                  # …at an explicit sats/vB
 ```
 
 Recipients and `--dest` also accept BIP21-style payment URIs (`bitcoin:…`,
@@ -276,6 +278,35 @@ not make a *swap* settle sooner — THORChain, Maya and Chainflip all wait for
 their own confirmation count on the deposit regardless. On DASH the flag
 spends mempool outputs with no surcharge (no replacement, flat fee rate); on
 ZEC it has nothing to act on, and says so.
+
+**Unsticking a transaction you already sent.** Every BTC spend signals BIP125
+opt-in replace-by-fee, so `swapsack bump <txid>` can replace one that is sitting
+in the mempool with an identical transaction paying more. Identical is meant
+literally: the same inputs, the same recipient (or vault) output for the same
+amount, the same OP_RETURN memo byte-for-byte — the extra fee comes out of the
+change output and nothing else moves, because a THORChain/Maya deposit is
+matched against exactly those bytes. The rebuild goes back through the same
+verify gate a first-time spend passes, and like every spend it is a dry run
+until `--confirm`. The replacement gets a **new txid**; the old one leaves the
+mempool.
+
+The fee target is `--fee-rate N` (sats/vB) or `--fee-blocks N` as everywhere
+else, floored by what BIP125 requires to relay at all (1 sat/vB of the
+transaction's size on top of the old fee). If the transaction spends inputs
+whose own parents are still unconfirmed, the bump pays their shortfall too —
+raising one transaction's rate is no use while an ancestor holds the package
+down.
+
+It is BTC-only and deliberately narrow. It refuses, with the reason, a
+transaction that is already confirmed, one that does not signal RBF, one with
+inputs this wallet cannot sign, one with no change output to take the bump from
+(a `--amount max` sweep), one whose change would drop below dust (it names the
+highest rate that *would* fit), and any shape it did not build itself. Dash
+implements no mempool replacement at all — deliberately, for InstantSend — and
+Zcash's transparent spends do not signal RBF; on both, child-pays-for-parent
+(`--allow-unconfirmed`, above) is the only lever. Bumping a *swap* deposit does
+not re-quote it: the memo still carries the min-out limit it was quoted at, so a
+market that moved on refunds rather than fills.
 
 **Shell tab-completion** (via argcomplete) for commands, subcommands and
 options should need no setup at all: the install ships a completion file into

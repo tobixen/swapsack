@@ -1659,6 +1659,139 @@ def _send_utxo(
         return _confirm_and_execute(prepared, adapter, args)
 
 
+def _owned_addresses(adapter, mnemonic: str) -> dict[str, str]:  # noqa: ANN001
+    """This wallet's used addresses on ``adapter``'s account, mapped to their paths.
+
+    The same gap-limit scan :func:`_spendable_utxos` runs, but keeping the
+    address→path map rather than the outputs: a fee bump re-spends outpoints it
+    is told about by the chain, and needs the path for each one to sign, plus
+    the whole set to tell its own change from a payee.
+    """
+    from swapsack.chains.scan import scan_account
+
+    records = scan_account(
+        derive_address=lambda p: adapter.derive_address(mnemonic, p),
+        probe=adapter.address_info,
+        account=adapter.account,
+    )
+    return {address: path for path, address, _ in records}
+
+
+def cmd_bump(args: argparse.Namespace) -> int:
+    """Fee-bump a stuck BTC transaction by replacing it (BIP125 replace-by-fee).
+
+    BTC only: DASH implements no mempool replacement at all (deliberately, for
+    InstantSend) and ZEC's transparent spends do not signal RBF, so a
+    replacement there is one no node would accept.
+    """
+    from swapsack.chains.rbf import NotReplaceable, plan_replacement
+
+    mnemonic, passphrase = _load_mnemonic(args)
+    with _btc_adapter(args, passphrase) as adapter:
+        tx = adapter.fetch_tx(args.txid)
+        if tx is None:
+            print(
+                f"ABORTED: this chain has never seen {args.txid} — nothing to "
+                "bump. (Only BTC transactions can be bumped.)",
+                file=sys.stderr,
+            )
+            return 1
+        fee_rate = args.fee_rate or adapter.fetch_fee_rate(_fee_blocks(args))
+        owned = _owned_addresses(adapter, mnemonic)
+        plan_kwargs = {
+            "owned": owned,
+            "change_prefix": f"{adapter.account}/1/",
+            "fee_rate": fee_rate,
+        }
+        try:
+            # Plan once to get every refusal out of the way — including the
+            # cheap ones — before spending a network round trip per input on
+            # the surcharge below.
+            replacement = plan_replacement(tx, **plan_kwargs)
+            extra_fee = _bump_cpfp_surcharge(adapter, replacement, fee_rate)
+            if extra_fee:
+                replacement = plan_replacement(tx, extra_fee=extra_fee, **plan_kwargs)
+        except NotReplaceable as exc:
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
+
+        prepared = adapter.build_and_verify_replacement(
+            mnemonic=mnemonic,
+            replacement=replacement,
+            now=int(time.time()),
+            max_fee=args.max_fee,
+        )
+        _print_bump(args, replacement, extra_fee)
+        return _confirm_and_execute(prepared, adapter, args)
+
+
+def _bump_cpfp_surcharge(adapter, replacement, fee_rate: float) -> int:  # noqa: ANN001
+    """What the bump owes this transaction's own unconfirmed parents.
+
+    Raising a transaction's rate does nothing for a package still held down by
+    an unconfirmed ancestor — which is the very stall a bump is meant to clear.
+    So the inputs are priced the same way a fresh spend of mempool money is
+    (:meth:`BtcAdapter.cpfp_deficits`); an input whose parent is mined prices at
+    zero, which is the usual answer and costs one lookup to establish.
+    """
+    unpriced = [
+        dataclasses.replace(u, confirmed=False, ancestor_deficit=0)
+        for u in replacement.inputs
+    ]
+    try:
+        return cpfp_surcharge(adapter.cpfp_deficits(unpriced, fee_rate))
+    except RuntimeError as exc:
+        # The parent of a mempool transaction is on the chain by definition, so
+        # this is the explorer failing us rather than a real gap. Refuse instead
+        # of guessing: guessing low leaves the package stuck anyway.
+        from swapsack.chains.rbf import NotReplaceable
+
+        raise NotReplaceable(f"cannot price this transaction's inputs: {exc}") from exc
+
+
+def _print_bump(args: argparse.Namespace, replacement, extra_fee: int) -> None:  # noqa: ANN001
+    """Show what changes and — more importantly — what does not."""
+    kind = "swap deposit" if replacement.memo is not None else "send"
+    print(f"bump:    {args.txid} ({kind}, {replacement.vsize} vB)")
+    print(f"  pays:  {replacement.amount} sats to {replacement.recipient} (unchanged)")
+    if replacement.memo is not None:
+        try:
+            print(f"  memo:  {replacement.memo.decode()} (unchanged)")
+        except UnicodeDecodeError:
+            print(f"  memo:  {replacement.memo.hex()} (binary, unchanged)")
+    print(
+        f"  change: {replacement.change + replacement.bump} -> "
+        f"{replacement.change} sats to {replacement.change_address}"
+    )
+    eur = _eur_suffix(
+        replacement.fee / THORCHAIN_UNIT, "BTC", price_check=args.price_check
+    )
+    print(
+        f"  fee:   {replacement.old_fee} -> {replacement.fee} sats "
+        f"({replacement.old_fee_rate:.2f} -> {replacement.fee_rate:.2f} sats/vB)"
+        f"{eur}"
+    )
+    if extra_fee:
+        print(
+            f"         includes {extra_fee} sats of child-pays-for-parent for "
+            "this transaction's own unconfirmed inputs"
+        )
+    if replacement.memo is not None:
+        _warn(
+            "a bump does not re-quote the swap:",
+            "The memo above carries the min-out limit the swap was quoted at. "
+            "If the market moved past it while the deposit sat in the mempool, "
+            "the protocol refunds rather than fills — confirming it faster does "
+            "not change that.",
+            "Nor does it settle sooner than the backend's own confirmation "
+            "count on the deposit.",
+        )
+    print(
+        "\nnote: this replaces the transaction above; the replacement gets a "
+        "NEW txid, and the old one disappears from the mempool."
+    )
+
+
 def _report_cpfp_surcharge(prepared) -> None:  # noqa: ANN001 (swap.Prepared)
     """What the mempool inputs this transaction *actually* spends cost it.
 
@@ -3240,6 +3373,24 @@ def _nonneg_int(value: str) -> int:
     return n
 
 
+def _pos_float(value: str) -> float:
+    """argparse type for a positive fee rate in sats/vB.
+
+    Zero (or less) would build an unrelayable transaction, which for a *bump* is
+    worse than useless: it would be refused as a replacement while the original
+    stays stuck.
+    """
+    try:
+        rate = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a fee rate in sats/vB, got {value!r}"
+        ) from None
+    if rate <= 0:
+        raise argparse.ArgumentTypeError(f"must be > 0, got {rate}")
+    return rate
+
+
 def _pos_int(value: str) -> int:
     """argparse type for a positive integer (streaming interval: 0 is NOT "off" —
     it would request streaming handling, dropping the price tolerance, while the
@@ -3562,6 +3713,45 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
     _add_price_check_args(s)
     s.set_defaults(func=cmd_send)
+
+    s = sub.add_parser(
+        "bump",
+        help="fee-bump a stuck BTC transaction (BIP125 replace-by-fee)",
+        description="Replace an unconfirmed BTC transaction with an identical "
+        "one paying a higher fee. The recipient/vault output and any swap memo "
+        "are kept byte-for-byte; the extra fee comes out of the change, and the "
+        "replacement goes through the same verify gate as the original. "
+        "BTC only: Dash implements no mempool replacement, and Zcash's spends "
+        "do not signal RBF.",
+    )
+    s.add_argument("txid", help="the unconfirmed transaction to replace")
+    rate = s.add_mutually_exclusive_group()
+    rate.add_argument(
+        "--fee-rate",
+        type=_pos_float,
+        help="target fee rate in sats/vB (default: whatever --fee-blocks "
+        "estimates). BIP125 still forces a 1 sat/vB increment over the old fee, "
+        "so a rate at or below the current one bumps by that minimum",
+    )
+    rate.add_argument(
+        "--fee-blocks",
+        type=int,
+        help="fee target in blocks (lower = faster & pricier); "
+        "overrides config.toml [fees] target_blocks and $SWAPSACK_FEE_BLOCKS",
+    )
+    s.add_argument("--key", help="keystore HD key label (default: first)")
+    s.add_argument("--confirm", action="store_true", help="actually broadcast")
+    s.add_argument(
+        "--yes", action="store_true", help="skip the interactive confirm (automation)"
+    )
+    s.add_argument(
+        "--max-fee",
+        type=int,
+        default=50_000,
+        help="max BTC fee in sats for the replacement",
+    )
+    _add_price_check_args(s)
+    s.set_defaults(func=cmd_bump)
 
     s = sub.add_parser("status", help="track a swap by inbound txid")
     s.add_argument("txid")

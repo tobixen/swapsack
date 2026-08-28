@@ -218,35 +218,41 @@ cross-referenced addresses within a time window.
 - Wire the testnet secrets into the CI **Integration (network)** workflow so the
   broadcast loops run there, not just locally.
 
-## Full RBF support — a `bump` command to unstick a low-fee tx
+## RBF — what the `bump` command still leaves open
 
-Every spend now **signals** BIP125 opt-in RBF (`nSequence 0xfffffffd`, set in
-`chains/utxo.py`), so a stuck **BTC** transaction *can* be fee-replaced — but
-nothing yet *does* the replacing. Build the other half:
+`swapsack bump <txid>` shipped (see `CHANGELOG.md`): it rebuilds a signalling
+mempool transaction byte-identically, takes the higher fee out of the change,
+re-runs the verify gate, signs and rebroadcasts. These are the gaps it was
+knowingly shipped with.
 
-- `swapsack bump <txid> [--fee-rate N | --fee-blocks N]` that rebuilds the same
-  transaction (same inputs, same recipient/vault output, same OP_RETURN memo —
-  all byte-identical) with a higher fee taken out of the change output, re-runs
-  the **verify gate** (this is the whole point — never hand-roll a replacement
-  outside the gate), signs and rebroadcasts.
-- BIP125 rules the replacement must satisfy: pays a higher absolute fee *and* a
-  higher feerate than the original; the original's inputs are all still
-  available. Reducing only the change output keeps the vault output/memo exact,
-  which a THORChain/Maya swap deposit **requires** (the memo carries a min-out
-  limit; a changed vault amount would fail or refund).
-- Edge: if change was folded into the fee (no change output), there's nothing to
-  take the bump from without adding an input — either pull in another confirmed
-  UTXO or refuse with a clear message.
-- The ZEC bespoke signer (`chains/zcash_tx.py`) still hardcodes
-  `sequence 0xffffffff`; Zcash has no standard mempool RBF, so leave it unless a
-  concrete need appears — but note it here so it isn't forgotten.
-- DASH inherits the signal from the shared builder but cannot use it: Dash Core
-  implements no mempool replacement (deliberate, for InstantSend). So `bump`
-  should be BTC-only and say so, rather than building a replacement no Dash node
-  will accept. Dash's own answer to a stuck tx is InstantSend, not RBF.
-- Pairs naturally with the CPFP work below, which has since shipped as
-  `--allow-unconfirmed` (the other way to rescue a stuck tx —
-  child-pays-for-parent — for when *we* don't control the parent).
+- **A sweep cannot be bumped at all.** `--amount max` leaves no change output,
+  so there is nothing to take the bump from without pulling in another
+  confirmed UTXO. That is implementable — select an extra input, rebuild with
+  it — but it changes *what is being spent*, so it needs its own confirmation
+  step rather than happening silently. Today it refuses and says why.
+- **Nor can one whose change is under (dust + the BIP125 increment).** Same
+  shape of fix. The refusal names the highest rate that would fit, or says
+  outright that no rate does.
+- **Only the one-recipient-plus-change shape** this wallet builds is
+  recognised; anything else is refused rather than guessed at. Fine while the
+  wallet is the only thing creating these transactions.
+- **The gate cannot re-check the swap's intent.** It verifies the rebuild did
+  not drift from the original's own outputs — same vault, same amount,
+  byte-identical memo, change still ours, fee inside `--max-fee` — but the
+  quote that authorised the deposit is gone by then, and the destination lives
+  inside a memo `bump` does not parse. So a bump inherits the original's
+  correctness. Parsing the memo back into a destination check
+  (`memo_pays_destination`) would close this for text memos; Chainflip's binary
+  payload already has `decode_vault_swap_payload`.
+- **No `--force` past the BIP125 relay floor**, and no attempt to check
+  Bitcoin's other replacement rules (notably rule 2: the replacement must not
+  add new unconfirmed inputs — we never do — and rule 5: at most 100
+  descendants evicted). A node rejecting the replacement is the backstop.
+- **DASH and ZEC are out**, and stay out. Dash Core implements no mempool
+  replacement (deliberate, for InstantSend); Dash's own answer to a stuck tx is
+  InstantSend. The ZEC bespoke signer (`chains/zcash_tx.py`) hardcodes
+  `sequence 0xffffffff` and Zcash has no standard mempool RBF — leave it unless
+  a concrete need appears.
 
 ## Unconfirmed spending — what `--allow-unconfirmed` still leaves open
 

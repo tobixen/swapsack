@@ -13,7 +13,8 @@ from collections.abc import Sequence
 from bitcoinlib.mnemonic import Mnemonic
 
 from swapsack.chains.base import AddressInfo, BalanceReport
-from swapsack.chains.coins import Utxo, cpfp_deficit
+from swapsack.chains.coins import Utxo, cpfp_deficit, decode_op_return
+from swapsack.chains.rbf import RBF_SEQUENCE_MAX
 from swapsack.chains.utxo import UtxoTxBuilder
 from swapsack.net import FailoverHttpClient
 
@@ -57,11 +58,24 @@ def parse_address_info(stats: dict) -> AddressInfo:
 
 @dataclasses.dataclass(frozen=True)
 class TxEntry:
-    """One input or output of a broadcast transaction, in sats."""
+    """One input or output of a broadcast transaction, in sats.
+
+    The display fields (``value``/``address``) are all a ``status`` view needs.
+    The rest are what it takes to *rebuild* the transaction for a fee bump: an
+    input must name the outpoint it spends and the nSequence it spent it with,
+    and an OP_RETURN output must carry its payload byte-for-byte — a swap memo
+    re-encoded from a lossy summary is a mis-sent deposit.
+    """
 
     value: int
     address: str | None = None  # None for an OP_RETURN (or an unparsed script)
     op_return: bool = False
+    # Inputs only: the outpoint being spent, and its nSequence (the RBF signal).
+    txid: str | None = None
+    vout: int | None = None
+    sequence: int | None = None
+    # Outputs only: the decoded OP_RETURN payload (None if not one, or unreadable).
+    op_return_data: bytes | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -98,6 +112,20 @@ class TxSummary:
         """True if the tx carries a memo — i.e. it is a swap deposit, not a send."""
         return any(o.op_return for o in self.outputs)
 
+    @property
+    def signals_rbf(self) -> bool:
+        """True if BIP125 opt-in Replace-By-Fee applies: any input below 0xfffffffe.
+
+        Standard-policy nodes replace a mempool transaction only when it signals,
+        so this is the difference between a bump that relays and one that is
+        dropped by every peer. An input whose sequence the explorer did not
+        report counts as not signalling — fail closed.
+        """
+        return any(
+            i.sequence is not None and i.sequence < RBF_SEQUENCE_MAX
+            for i in self.inputs
+        )
+
 
 def parse_tx_summary(payload: dict) -> TxSummary:
     """Parse an Esplora ``/tx/<txid>`` response into a :class:`TxSummary`.
@@ -112,10 +140,26 @@ def parse_tx_summary(payload: dict) -> TxSummary:
 
     def entry(item: dict) -> TxEntry:
         is_data = item.get("scriptpubkey_type") == "op_return"
+        data = None
+        if is_data and (script := item.get("scriptpubkey")):
+            try:
+                data = decode_op_return(bytes.fromhex(script))
+            except ValueError:
+                data = None  # an OP_RETURN we cannot read; nothing to rebuild from
         return TxEntry(
             value=item.get("value", 0),
             address=item.get("scriptpubkey_address"),
             op_return=is_data,
+            op_return_data=data,
+        )
+
+    def spend(item: dict) -> TxEntry:
+        """An input: the prevout being spent, plus the outpoint naming it."""
+        return dataclasses.replace(
+            entry(item.get("prevout") or {}),
+            txid=item.get("txid"),
+            vout=item.get("vout"),
+            sequence=item.get("sequence"),
         )
 
     return TxSummary(
@@ -124,7 +168,7 @@ def parse_tx_summary(payload: dict) -> TxSummary:
         block_height=status.get("block_height"),
         fee=payload.get("fee", 0),
         vsize=vsize,
-        inputs=tuple(entry(i.get("prevout") or {}) for i in payload.get("vin", [])),
+        inputs=tuple(spend(i) for i in payload.get("vin", [])),
         outputs=tuple(entry(o) for o in payload.get("vout", [])),
     )
 

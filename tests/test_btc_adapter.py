@@ -466,8 +466,8 @@ def test_built_tx_signals_bip125_rbf():
 
     Without it a stuck low-fee tx cannot be fee-bumped (the wallet targets a
     handful of blocks by default, so this is a real risk), and standard-policy
-    nodes reject a replacement outright. Signalling is harmless today and
-    unlocks a future `bump` command.
+    nodes reject a replacement outright. It is what `swapsack bump` relies on;
+    see the replacement tests at the bottom of this file.
     """
     a = BtcAdapter()
     p0, p1 = "m/84'/0'/0'/0/0", "m/84'/0'/0'/0/1"
@@ -753,3 +753,156 @@ def test_naming_an_endpoint_turns_the_fallback_off():
     # addresses behind the user's back.
     a = BtcAdapter("https://my-own-instance.example/api/")
     assert a._candidates == ("https://my-own-instance.example/api",)
+
+
+# --- rebuilding a fee-bumped replacement (RBF) ------------------------------
+#
+# The planner (tests/test_rbf.py) decides what the replacement must look like;
+# these cover the half that turns that plan into a signable transaction and puts
+# it back through the same verify gate a first-time spend goes through.
+
+
+def _stuck_deposit(memo=MEMO):
+    """A mempool swap deposit from this wallet, as Esplora would report it."""
+    a = BtcAdapter()
+    spend_path, change_path = "m/84'/0'/0'/0/0", "m/84'/0'/0'/1/0"
+    spender = a.derive_address(MNEMONIC, spend_path)
+    change = a.derive_address(MNEMONIC, change_path)
+    vout = [
+        {
+            "scriptpubkey_type": "v0_p2wpkh",
+            "scriptpubkey_address": VAULT,
+            "value": 1_000_000,
+        }
+    ]
+    if memo is not None:
+        payload = memo.encode() if isinstance(memo, str) else memo
+        vout.append(
+            {
+                "scriptpubkey": (b"\x6a" + bytes([len(payload)]) + payload).hex(),
+                "scriptpubkey_type": "op_return",
+                "value": 0,
+            }
+        )
+    vout.append(
+        {
+            "scriptpubkey_type": "v0_p2wpkh",
+            "scriptpubkey_address": change,
+            "value": 100_000,
+        }
+    )
+    payload = {
+        "txid": "cc" * 32,
+        "weight": 1000,  # -> 250 vB
+        "fee": 250,  # -> 1 sat/vB, stuck
+        "status": {"confirmed": False},
+        "vin": [
+            {
+                "txid": "dd" * 32,
+                "vout": 1,
+                "sequence": 0xFFFFFFFD,
+                "prevout": {
+                    "scriptpubkey_type": "v0_p2wpkh",
+                    "scriptpubkey_address": spender,
+                    "value": 1_100_250,
+                },
+            }
+        ],
+        "vout": vout,
+    }
+    owned = {spender: spend_path, change: change_path}
+    return a, payload, owned, change
+
+
+def _plan_bump(fee_rate=10.0, memo=MEMO):
+    from swapsack.chains.btc import parse_tx_summary
+    from swapsack.chains.rbf import plan_replacement
+
+    a, payload, owned, change = _stuck_deposit(memo)
+    plan = plan_replacement(
+        parse_tx_summary(payload),
+        owned=owned,
+        change_prefix="m/84'/0'/0'/1/",
+        fee_rate=fee_rate,
+    )
+    return a, plan, change
+
+
+def test_replacement_passes_the_verify_gate_and_signs():
+    """A bump is a second irreversible spend: it goes through the same gate.
+
+    Hand-rolling a replacement outside the gate is the one thing this must never
+    do — the gate is what proves the rebuild did not drift off the vault output
+    or mangle the memo.
+    """
+    a, plan, _ = _plan_bump()
+    prepared = a.build_and_verify_replacement(
+        mnemonic=MNEMONIC, replacement=plan, now=1_700_000_000, max_fee=50_000
+    )
+    assert prepared.problems == []
+    assert prepared.built.fee == 2500
+    (raw_hex,) = a.sign(prepared.built)
+    assert prepared.built.tx.verify() is True
+    assert raw_hex
+
+
+def test_replacement_respends_the_same_outpoints_and_still_signals_rbf():
+    """Same inputs is what makes it a replacement; still signalling allows another."""
+    a, plan, _ = _plan_bump()
+    prepared = a.build_and_verify_replacement(
+        mnemonic=MNEMONIC, replacement=plan, now=1_700_000_000, max_fee=50_000
+    )
+    inputs = prepared.built.tx.inputs
+    assert [(i.prev_txid.hex(), i.output_n_int) for i in inputs] == [("dd" * 32, 1)]
+    assert all(i.sequence == 0xFFFFFFFD for i in inputs)
+
+
+def test_replacement_moves_only_the_change_output():
+    """The vault amount and the memo bytes are what the protocol matched on."""
+    a, plan, change = _plan_bump()
+    prepared = a.build_and_verify_replacement(
+        mnemonic=MNEMONIC, replacement=plan, now=1_700_000_000, max_fee=50_000
+    )
+    assert [(o.address, o.value) for o in prepared.built.outputs] == [
+        (VAULT, 1_000_000),
+        (None, 0),
+        (change, 97_750),
+    ]
+    assert prepared.built.outputs[1].op_return_data == MEMO.encode()
+
+
+def test_replacement_of_a_plain_send_is_gated_as_a_send():
+    """No memo means the send gate, which refuses an OP_RETURN outright."""
+    a, plan, change = _plan_bump(memo=None)
+    prepared = a.build_and_verify_replacement(
+        mnemonic=MNEMONIC, replacement=plan, now=1_700_000_000, max_fee=50_000
+    )
+    assert prepared.problems == []
+    assert [(o.address, o.value) for o in prepared.built.outputs] == [
+        (VAULT, 1_000_000),
+        (change, 97_750),
+    ]
+
+
+def test_replacement_is_refused_when_it_blows_past_max_fee():
+    """--max-fee guards the bump exactly as it guards the original spend."""
+    a, plan, _ = _plan_bump()
+    prepared = a.build_and_verify_replacement(
+        mnemonic=MNEMONIC, replacement=plan, now=1_700_000_000, max_fee=1000
+    )
+    assert any("max_fee" in p for p in prepared.problems)
+
+
+def test_replacement_plan_outlasts_the_confirmation_prompt():
+    """The CLI re-checks `plan.expiry` between printing and broadcasting.
+
+    There is no quote here to expire, so a placeholder that lapses while the
+    user reads the summary would abort every interactive bump with a
+    "quote expired" that means nothing.
+    """
+    a, plan, _ = _plan_bump()
+    now = 1_700_000_000
+    prepared = a.build_and_verify_replacement(
+        mnemonic=MNEMONIC, replacement=plan, now=now, max_fee=50_000
+    )
+    assert prepared.plan.expiry >= now + 600

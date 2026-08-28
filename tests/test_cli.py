@@ -4382,3 +4382,212 @@ def test_a_chosen_esplora_is_the_only_one_used(monkeypatch, via):
         monkeypatch.setenv("SWAPSACK_ESPLORA", "https://my-own.example/api")
     args = build_parser().parse_args(argv)
     assert cli._btc_adapter(args)._candidates == ("https://my-own.example/api",)
+
+
+# --- bump: fee-replacing a stuck BTC transaction (BIP125 RBF) ---------------
+
+
+def test_bump_defaults_to_the_configured_fee_target():
+    args = build_parser().parse_args(["bump", "cc" * 32])
+    assert args.txid == "cc" * 32
+    assert args.fee_rate is None  # -> fetch_fee_rate(--fee-blocks)
+    assert args.confirm is False  # a bump is a spend: dry run unless asked
+
+
+def test_bump_refuses_a_rate_and_a_block_target_at_once():
+    """Two different ways to say what to pay is a contradiction, not a default."""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["bump", "cc" * 32, "--fee-rate", "10", "--fee-blocks", "2"]
+        )
+
+
+def _bump_adapter(monkeypatch, *, memo=True, confirmed=False, parent_confirmed=True):
+    """A BtcAdapter whose Esplora reads are canned: one stuck deposit, ours."""
+    import swapsack.cli as cli
+    from swapsack.chains.base import AddressInfo
+    from swapsack.chains.btc import BtcAdapter, parse_tx_summary
+
+    mnemonic = (
+        "abandon abandon abandon abandon abandon abandon "
+        "abandon abandon abandon abandon abandon about"
+    )
+    real = BtcAdapter()
+    spend_path, change_path = "m/84'/0'/0'/0/0", "m/84'/0'/0'/1/0"
+    spender = real.derive_address(mnemonic, spend_path)
+    change = real.derive_address(mnemonic, change_path)
+    memo_bytes = b"=:ETH.ETH:0x1111111111111111111111111111111111111111"
+    vout = [
+        {
+            "scriptpubkey_type": "v0_p2wpkh",
+            "scriptpubkey_address": "bc1qct4mxayrdy96d4py20l4u02mu06r667f42p9fp",
+            "value": 1_000_000,
+        }
+    ]
+    if memo:
+        vout.append(
+            {
+                "scriptpubkey": (b"\x6a" + bytes([len(memo_bytes)]) + memo_bytes).hex(),
+                "scriptpubkey_type": "op_return",
+                "value": 0,
+            }
+        )
+    vout.append(
+        {
+            "scriptpubkey_type": "v0_p2wpkh",
+            "scriptpubkey_address": change,
+            "value": 100_000,
+        }
+    )
+    payload = {
+        "txid": "cc" * 32,
+        "weight": 1000,
+        "fee": 250,
+        "status": (
+            {"confirmed": True, "block_height": 959260}
+            if confirmed
+            else {"confirmed": False}
+        ),
+        "vin": [
+            {
+                "txid": "dd" * 32,
+                "vout": 1,
+                "sequence": 0xFFFFFFFD,
+                "prevout": {
+                    "scriptpubkey_type": "v0_p2wpkh",
+                    "scriptpubkey_address": spender,
+                    "value": 1_100_250,
+                },
+            }
+        ],
+        "vout": vout,
+    }
+    broadcast: list[str] = []
+
+    class FakeBtc(BtcAdapter):
+        def address_info(self, address):
+            used = address in {spender, change}
+            return AddressInfo(
+                has_history=used, confirmed=1_100_250 if used else 0, pending=0
+            )
+
+        def fetch_tx(self, txid):
+            if txid == payload["txid"]:
+                return parse_tx_summary(payload)
+            if txid == "dd" * 32:  # the parent, priced for CPFP
+                return parse_tx_summary(
+                    {
+                        "txid": txid,
+                        "weight": 800,  # -> 200 vB
+                        "fee": 4000 if parent_confirmed else 200,
+                        "status": (
+                            {"confirmed": True, "block_height": 959000}
+                            if parent_confirmed
+                            else {"confirmed": False}
+                        ),
+                        "vin": [],
+                        "vout": [],
+                    }
+                )
+            return None
+
+        def fetch_fee_rate(self, target_blocks=2):
+            return 10.0
+
+        def broadcast(self, raws):
+            broadcast.extend(raws)
+            return "ee" * 32
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (mnemonic, ""))
+    monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": FakeBtc())
+    return broadcast, change
+
+
+def test_bump_dry_run_shows_the_new_fee_and_broadcasts_nothing(monkeypatch, capsys):
+    """The default is a dry run: a bump re-spends real coins."""
+    import swapsack.cli as cli
+
+    broadcast, change = _bump_adapter(monkeypatch)
+    args = build_parser().parse_args(["bump", "cc" * 32])
+    assert cli.cmd_bump(args) == 0
+    out = capsys.readouterr().out
+    assert "250" in out and "2500" in out  # old fee -> new fee
+    assert "97750" in out or "97,750" in out  # the change it comes out of
+    assert change in out
+    assert "DRY RUN" in out
+    assert broadcast == []
+
+
+def test_bump_broadcasts_the_replacement_when_confirmed(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    broadcast, _ = _bump_adapter(monkeypatch)
+    args = build_parser().parse_args(["bump", "cc" * 32, "--confirm", "--yes"])
+    assert cli.cmd_bump(args) == 0
+    assert len(broadcast) == 1
+    out = capsys.readouterr().out
+    assert "ee" * 32 in out  # the replacement's own txid, which is a new one
+
+
+def test_bump_warns_that_a_swap_quote_may_have_gone_stale(monkeypatch, capsys):
+    """Unsticking a deposit faster does not re-quote it — say so before broadcast.
+
+    The memo carries the min-out limit the swap was quoted at; if the market has
+    moved past it while the transaction sat in the mempool, the protocol refunds
+    rather than fills.
+    """
+    import swapsack.cli as cli
+
+    _bump_adapter(monkeypatch)
+    args = build_parser().parse_args(["bump", "cc" * 32])
+    assert cli.cmd_bump(args) == 0
+    combined = "".join(capsys.readouterr())
+    assert "memo" in combined.lower()
+    assert "refund" in combined.lower() or "stale" in combined.lower()
+
+
+def test_bump_of_a_plain_send_says_nothing_about_swaps(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    _bump_adapter(monkeypatch, memo=False)
+    args = build_parser().parse_args(["bump", "cc" * 32])
+    assert cli.cmd_bump(args) == 0
+    combined = "".join(capsys.readouterr())
+    assert "refund" not in combined.lower()
+
+
+def test_bump_refuses_a_confirmed_transaction(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    _bump_adapter(monkeypatch, confirmed=True)
+    args = build_parser().parse_args(["bump", "cc" * 32])
+    assert cli.cmd_bump(args) == 1
+    assert "959260" in capsys.readouterr().err
+
+
+def test_bump_says_so_when_the_chain_has_never_seen_the_txid(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    _bump_adapter(monkeypatch)
+    args = build_parser().parse_args(["bump", "ab" * 32])
+    assert cli.cmd_bump(args) == 1
+    assert "never seen" in capsys.readouterr().err
+
+
+def test_bump_also_drags_its_own_unconfirmed_parent(monkeypatch, capsys):
+    """Raising this transaction's rate is no use while an ancestor holds it down.
+
+    A miner takes the package or none of it, so the bump pays the parent's
+    shortfall too — otherwise the "faster" replacement confirms no sooner than
+    the transaction it replaced.
+    """
+    import swapsack.cli as cli
+
+    _bump_adapter(monkeypatch, parent_confirmed=False)
+    args = build_parser().parse_args(["bump", "cc" * 32])
+    assert cli.cmd_bump(args) == 0
+    out = capsys.readouterr().out
+    # Parent is 200 vB paying 200 sats; lifting it to 10 sat/vB costs 1800 on
+    # top of this transaction's own 2500.
+    assert "4300" in out
+    assert "1800" in out and "child-pays-for-parent" in out

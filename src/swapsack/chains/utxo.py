@@ -32,14 +32,23 @@ from swapsack.chains.coins import (
     select_coins,
 )
 from swapsack.chains.gated import GatedTxBuilder
-from swapsack.verify import TxOutput
+from swapsack.chains.rbf import Replacement
+from swapsack.swap import Prepared
+from swapsack.verify import (
+    SendPlan,
+    SwapPlan,
+    TxOutput,
+    verify_btc_send,
+    verify_btc_swap,
+)
 
 # Signal BIP125 opt-in Replace-By-Fee on every input. 0xfffffffd is the largest
 # nSequence that still signals RBF (< 0xfffffffe) while leaving locktime enabled.
 # The wallet fee-targets only a few blocks, so a low-fee spend can get stuck;
-# signalling lets a future `bump` command fee-replace it (standard-policy nodes
-# reject replacing a non-signalling tx). Harmless today — miners treat a
-# signalling tx identically. See docs/TODO.md for the planned bump/RBF command.
+# signalling is what lets `swapsack bump` fee-replace it afterwards, since
+# standard-policy nodes refuse to replace a non-signalling tx. Costs nothing —
+# miners treat a signalling tx identically. The replacement itself is planned in
+# chains/rbf.py and rebuilt by build_replacement below.
 #
 # This builder is shared with DASH, where the signal is inert: Dash Core
 # implements no mempool replacement (deliberately, for InstantSend). Setting it
@@ -186,6 +195,119 @@ class UtxoTxBuilder(GatedTxBuilder):
             keys=keys,
             inputs=chosen,
         )
+
+    def build_replacement(
+        self, *, mnemonic: str, replacement: Replacement
+    ) -> BuiltSwap:
+        """Rebuild a mempool transaction with a higher fee (BIP125 replace-by-fee).
+
+        Unlike :meth:`build_unsigned_swap` there is no coin selection and no fee
+        maths: :func:`~swapsack.chains.rbf.plan_replacement` has already fixed
+        the inputs (the original's, which is what makes this a replacement) and
+        the outputs (the original's, with only the change reduced). This turns
+        that plan into a signable transaction and nothing more.
+        """
+        tx = Transaction(network=self.network, witness_type=self.witness_type)
+        keys: list[HDKey] = []
+        for utxo in replacement.inputs:
+            key = self._hdkey(mnemonic, utxo.path or self.default_derivation)
+            tx.add_input(
+                prev_txid=utxo.txid,
+                output_n=utxo.vout,
+                value=utxo.value,
+                keys=key,
+                witness_type=self.witness_type,
+                sequence=RBF_SEQUENCE,
+            )
+            keys.append(key)
+        for out in replacement.outputs:
+            if out.op_return_data is not None:
+                tx.add_output(
+                    out.value, lock_script=encode_op_return(out.op_return_data)
+                )
+            else:
+                tx.add_output(out.value, address=out.address)
+
+        return BuiltSwap(
+            tx=tx,
+            outputs=extract_outputs(tx),
+            fee=replacement.fee,
+            change_address=replacement.change_address,
+            keys=keys,
+            inputs=replacement.inputs,
+        )
+
+    def build_and_verify_replacement(
+        self,
+        *,
+        mnemonic: str,
+        replacement: Replacement,
+        now: int,
+        max_fee: int,
+    ) -> Prepared:
+        """Build + gate a fee bump, through the same gate a first spend passes.
+
+        The plan is reconstructed from the original transaction's own outputs,
+        so the gate cannot re-derive the *intent* — the quote that authorised
+        the deposit is long gone, and its destination is inside a memo this does
+        not parse. What it does prove is that the rebuild did not drift: same
+        vault/recipient, same amount, byte-identical memo, change still ours,
+        and the raised fee still inside ``--max-fee``. That is the whole risk a
+        replacement adds over the original, which passed the full gate when it
+        was built.
+        """
+        built = self.build_replacement(mnemonic=mnemonic, replacement=replacement)
+        owned = {replacement.change_address} | {u.address for u in replacement.inputs}
+        if replacement.memo is None:
+            plan: SendPlan | SwapPlan = SendPlan(
+                recipient=replacement.recipient, amount=replacement.amount
+            )
+            problems = verify_btc_send(
+                built.outputs,
+                fee=built.fee,
+                plan=plan,
+                owned_addresses=owned,
+                max_fee=max_fee,
+            )
+        else:
+            plan = SwapPlan(
+                inbound_address=replacement.recipient,
+                amount=replacement.amount,
+                memo=replacement.memo,
+                # Not a quote expiry: nothing is being re-quoted, and the
+                # original's expiry is unknowable after the fact. The memo's own
+                # min-out limit is what protects the swap, and the CLI warns
+                # that it may have gone stale in the mempool. The hour is the
+                # same placeholder build_and_verify_deposit uses for the other
+                # unquoted deposit, and must outlast the confirmation prompt:
+                # the CLI re-checks it before broadcasting.
+                expiry=now + 3600,
+                # The payout destination lives inside the memo, which is
+                # carried verbatim off the chain from a transaction the full
+                # gate already passed when it was built. Empty makes that skip
+                # deliberate and greppable rather than accidental.
+                destination="",
+            )
+            problems = verify_btc_swap(
+                built.outputs,
+                fee=built.fee,
+                plan=plan,
+                owned_addresses=owned,
+                now=now,
+                max_fee=max_fee,
+            )
+        # The gate reads the outputs but takes the fee on trust, and here the
+        # fee is planned rather than derived from a selection — so reconcile it
+        # against the transaction itself. A change value the builder got wrong
+        # would otherwise be paid straight to a miner, silently.
+        real_fee = sum(u.value for u in replacement.inputs) - sum(
+            o.value for o in built.outputs
+        )
+        if real_fee != built.fee:
+            problems.append(
+                f"replacement pays {real_fee} sats in fee, not the planned {built.fee}"
+            )
+        return Prepared(quote=None, built=built, plan=plan, problems=problems)
 
     def sign(self, built: BuiltSwap) -> list[str]:
         # Each input carries its own key; a given key signs only the input(s) it
