@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is derived
 automatically from git tags (PEP 440 / SemVer).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-30
 
 ### Added
 
@@ -65,8 +65,9 @@ automatically from git tags (PEP 440 / SemVer).
     a flat fee rate); on ZEC, whose lightwalletd indexes mined outputs only, it
     says it has nothing to act on.
 
-- **Chainflip is priced alongside THORChain, Maya and CoW** (`--backend
-  chainflip`, and in `--backend auto`). Chainflip is an independent protocol
+- **Chainflip is a fourth swap backend: priced against the others, and
+  executed from BTC** (`--backend chainflip`, and in `--backend auto`).
+  Chainflip is an independent protocol
   with its own validators and pools, so it keeps quoting when THORChain and Maya
   halt together — which they did on 2026-08-18, leaving BTC→ETH with no route at
   all through this wallet. Quoting is keyless; see `docs/halt-alternatives.md`
@@ -91,8 +92,8 @@ automatically from git tags (PEP 440 / SemVer).
     otherwise be signed with nowhere to be refunded to.
   - **Pairs it can only quote say so, out loud.** Chainflip prices more than it
     can settle: EVM and Tron *sources* (a vault swap is a Bitcoin transaction),
-    and Tron and Solana *destinations*, whose address the gate cannot re-derive
-    from the payload it is checking. When one of those wins on price, the swap
+    and Tron *destinations*, whose address the gate cannot re-derive from the
+    payload it is checking. When one of those wins on price, the swap
     goes to the best backend that *can* execute and a note names the cheaper
     route and the difference, rather than silently paying more.
   - The cost breakdown names Chainflip's own fee legs — ingress, network,
@@ -122,7 +123,7 @@ automatically from git tags (PEP 440 / SemVer).
     suffix (`+LP maya ETH.USDC`), and sit directly under the balance row of the
     token they belong to.
 
-- **Arbitrum is now a chain you can spend from, not just pay to.** `ETH-ARB`
+- **Arbitrum is now a chain you can hold, spend and swap from.** `ETH-ARB`
   (native ETH on Arbitrum) and `USDC-ARB` gain hold, balance, `send`/sweep,
   `swap --from`, and liquidity — single- and two-sided. Your Arbitrum address
   *is* your Ethereum address, so `--dest ARB` is now derived automatically
@@ -130,9 +131,8 @@ automatically from git tags (PEP 440 / SemVer).
   - `balance` calls the Arbitrum row **`ETH-ARB`** — the name `--asset` takes,
     so it can't be confused with the Ethereum row above it (same coin, same
     address). Not `ARB`, which is the ARB *token* and not tradeable.
-  - **Moving USDC on Arbitrum costs cents.** That was always the point of the
-    `USDC-ARB` destination; until now you could only receive it and had to use
-    another wallet to do anything with it.
+  - **Moving USDC on Arbitrum costs cents** — which is the point of holding it
+    there rather than on Ethereum.
   - **Maya only.** THORChain has no Arbitrum pools, so `add-liquidity` refuses
     `--backend thorchain` for ARB up front rather than failing later.
   - **`USDC-ARB` is Circle's native USDC** (`0xaf88d065…`), not the bridged
@@ -194,7 +194,7 @@ automatically from git tags (PEP 440 / SemVer).
     you whether it is for Ethereum, Arbitrum or Avalanche. A self-custodial
     address is usually fine on all of them, but an exchange deposit address is
     not, and funds arriving over the wrong chain are a support ticket at best.
-    The warning covers the existing `ETH-ARB` destination too.
+    The warning covers the `ETH-ARB` destination too.
   - Avalanche addresses are checked as **C-Chain** (`0x…`, EIP-55) only: an
     X-/P-Chain `X-avax1…` address is a valid Avalanche address that a swap
     payout could never credit, so it is refused rather than paid.
@@ -227,9 +227,6 @@ automatically from git tags (PEP 440 / SemVer).
   (BCH) and EIP-55 (ETH), before any keystore or network work happens. Where an
   address carries no checksum to verify — an all-lowercase EVM address, a chain
   with no rule yet — it is still accepted, so nothing valid is newly rejected.
-  This also fixes a **one-character typo in a ZEC `t1…` recipient printing a
-  `ValueError: Invalid checksum` traceback** from deep inside the signer instead
-  of a plain "that is not a valid address".
 
 - **Configurable UTXO fee target, with a faster default.** BTC/DASH spends
   previously always targeted 6-block confirmation, which could leave a spend
@@ -240,13 +237,13 @@ automatically from git tags (PEP 440 / SemVer).
   Lower N is faster and pricier. Adds the first support for a config file
   (`$SWAPSACK_CONFIG` relocates it).
 - **Spends now signal opt-in RBF (BIP125).** Every BTC/DASH transaction sets
-  `nSequence 0xfffffffd`, so a **BTC** spend that gets stuck in the mempool can
-  be fee-replaced rather than only waited out. Nothing bumps yet — the `bump`
-  command is still to come (see `docs/TODO.md`) — but signalling has to be in
-  place *before* a tx is broadcast for a replacement to be accepted, so it ships
-  now. No effect on how a tx is mined today. DASH transactions get the same
-  signal from the shared builder, but Dash Core implements no mempool
-  replacement (a deliberate choice, for InstantSend), so there it is inert.
+  `nSequence 0xfffffffd`, which is what lets `bump` (above) replace a stuck
+  **BTC** spend rather than leaving you to wait it out — the signal has to be
+  in place *before* a transaction is broadcast for any replacement to be
+  accepted. No effect on how a transaction is mined today. DASH transactions
+  get the same signal from the shared builder, but Dash Core implements no
+  mempool replacement (a deliberate choice, for InstantSend), so there it is
+  inert.
 - **`status <txid>` now shows what a BTC transaction did on-chain** — inputs,
   each output with its address, the change coming back to you, and the fee in
   both sats and EUR — queried straight from Esplora (no keystore needed). A
@@ -282,8 +279,8 @@ automatically from git tags (PEP 440 / SemVer).
   signing (`verify_cow_order`). Funds the CoW vault relayer's ERC-20 allowance
   first when short (handling USDT's reset-to-zero quirk) and waits for the
   approval to mine before submitting the order, and widens the
-  `Backend` protocol (`serves()`/`try_quote()`/`executor`) so THORChain, Maya
-  and CoW all price-compare under `--backend auto`. `status <order-uid>`
+  `Backend` protocol (`serves()`/`try_quote()`/`executor`) so every backend
+  price-compares under `--backend auto`. `status <order-uid>`
   tracks a submitted order. Live-signature-tested: a throwaway, unfunded key's
   signed order clears every orderbook check up to the balance check.
 - **ZEC support (hold, balance, send, sweep, swap-from, liquidity):**

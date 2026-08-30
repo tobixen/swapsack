@@ -3603,7 +3603,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_price_check_args(s)
     s.set_defaults(func=cmd_balance)
 
-    s = sub.add_parser("quote", help="show a THORChain swap quote")
+    s = sub.add_parser("quote", help="show a swap quote (best price across backends)")
     _add_swap_args(s)
     s.set_defaults(func=cmd_quote)
 
