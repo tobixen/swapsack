@@ -253,6 +253,21 @@ knowingly shipped with.
   InstantSend. The ZEC bespoke signer (`chains/zcash_tx.py`) hardcodes
   `sequence 0xffffffff` and Zcash has no standard mempool RBF — leave it unless
   a concrete need appears.
+- **Signalling cannot be turned off.** `RBF_SEQUENCE = 0xFFFFFFFD`
+  (`chains/utxo.py`) is applied unconditionally by both `build_unsigned_swap`
+  and `build_replacement`; there is no flag, env var or config key for it. The
+  one concrete reason to want one: some merchants and exchanges refuse to
+  credit a zero-conf payment that signals RBF, so a spend from this wallet can
+  sit uncredited until it confirms, where a non-signalling one would not have.
+
+  Anyone building a `--no-rbf` must not sell it as more than that. Bitcoin Core
+  has had `mempoolfullrbf` on by default since 28.0, so on much of the network
+  a transaction that does *not* signal is replaceable anyway — the nSequence
+  bit is a courtesy marker to whoever is reading it, not protection against
+  replacement. A flag that implies otherwise would be worse than no flag.
+  It would also have to refuse, or at least warn, on a swap deposit: THORChain,
+  Maya and Chainflip all wait for confirmations, so opting out there buys
+  nothing and forfeits `bump` as the way to unstick the deposit.
 
 ## Unconfirmed spending — what `--allow-unconfirmed` still leaves open
 
