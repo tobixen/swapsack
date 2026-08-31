@@ -14,19 +14,23 @@ destination — so each has to be converted at the quote's own rates before the
 cost display and ``best_quote`` can treat it like any other backend's quote.
 """
 
+import hashlib
 from types import SimpleNamespace
 
+import base58
 import pytest
 
 from conftest import FakeSession
 from swapsack.backends import Backend, best_quote, gather_quotes
 from swapsack.chainflip import (
     CHAINFLIP_ASSETS,
+    DEFAULT_BROKER_ACCOUNTS,
     VAULT_SWAP_ASSET_IDS,
     ChainflipBackend,
     ChainflipClient,
     ChainflipError,
     ChainflipQuote,
+    NoBrokerAvailable,
     bitcoin_vault_addresses,
     deposit_units,
     destination_bytes,
@@ -457,11 +461,23 @@ class _StubRpc:
     response instead.
     """
 
-    def __init__(self, encoding=None, vaults=None, error=None):
+    def __init__(self, encoding=None, vaults=None, error=None, broker_errors=None):
         self.encoding = encoding
         self.vaults = vaults if vaults is not None else _vault_rpc_result()
         self.error = error
+        # account id -> the DispatchError text that account answers with, as
+        # a broker that will not encode for us does on the live chain.
+        self.broker_errors = broker_errors or {}
         self.calls = []
+
+    @property
+    def brokers_tried(self):
+        """The broker accounts, in order, the encode RPC was asked with."""
+        return [
+            params[0]
+            for method, params in self.calls
+            if method == "cf_request_swap_parameter_encoding"
+        ]
 
     def call(self, method, params):
         self.calls.append((method, params))
@@ -470,6 +486,11 @@ class _StubRpc:
         if method == "cf_get_vault_addresses":
             return self.vaults
         if method == "cf_request_swap_parameter_encoding":
+            broker = params[0]
+            if broker in self.broker_errors:
+                raise ChainflipError(
+                    f"{method}: DispatchError: {self.broker_errors[broker]}"
+                )
             if self.encoding is not None:
                 return self.encoding
             _broker, _src, dst, dest, _commission, extra = params
@@ -489,7 +510,12 @@ class _StubRpc:
                     min_out=int(extra["min_output_amount"], 16),
                     retry=extra["retry_duration"],
                 ).hex(),
-                "deposit_address": VAULT,
+                # The deposit address follows the broker account, as it does on
+                # the chain: each broker has its own private channel into a
+                # protocol vault, and both of these are in the vault list.
+                "deposit_address": (
+                    VAULT if broker == DEFAULT_BROKER_ACCOUNTS[0] else OTHER_VAULT
+                ),
             }
         raise AssertionError(f"unexpected method {method}")
 
@@ -572,9 +598,134 @@ def test_prepare_vault_swap_asks_for_our_destination_and_floor():
     )
     method, params = rpc.calls[-1]
     assert method == "cf_request_swap_parameter_encoding"
+    assert params[0] == DEFAULT_BROKER_ACCOUNTS[0]
     assert params[3] == DEST
     assert params[4] == 0  # broker commission: nobody skims
     assert int(params[5]["min_output_amount"], 16) == min_output_amount(_quote(), 250)
+
+
+def test_every_broker_account_is_a_valid_chainflip_address():
+    # These are hand-copied SS58 addresses, and a typo in the first one would
+    # break every swap in production while the network test stayed green on the
+    # others — so check the checksum they carry, offline. SS58 is base58 over
+    # (network prefix || public key || 2 checksum bytes), the checksum being the
+    # first two bytes of blake2b-512 over "SS58PRE" and everything before it.
+    # 2112 is Chainflip's registered network id, which in SS58's two-byte prefix
+    # encoding is 0x50 0x08.
+    assert len(set(DEFAULT_BROKER_ACCOUNTS)) == len(DEFAULT_BROKER_ACCOUNTS)
+    for account in DEFAULT_BROKER_ACCOUNTS:
+        raw = base58.b58decode(account)
+        assert len(raw) == 36, f"{account} is not a 32-byte SS58 account id"
+        assert raw[:2] == bytes([0x50, 0x08]), f"{account} is not a Chainflip id"
+        checksum = hashlib.blake2b(b"SS58PRE" + raw[:-2], digest_size=64).digest()
+        assert raw[-2:] == checksum[:2], f"{account} fails its SS58 checksum"
+
+
+def test_zero_commission_is_never_escalated():
+    # The list is a fallback chain, not a preference to be averaged: a
+    # commission asked for anywhere in the chain is a skim the gate refuses, so
+    # retrying with a bigger one would only build a transaction our own gate
+    # throws away.
+    rpc = _StubRpc(
+        broker_errors=dict.fromkeys(
+            DEFAULT_BROKER_ACCOUNTS[:-1], "Broker commission is too low"
+        )
+    )
+    prepare_vault_swap(
+        rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+    )
+    commissions = {
+        params[4]
+        for method, params in rpc.calls
+        if method == "cf_request_swap_parameter_encoding"
+    }
+    assert commissions == {0}
+
+
+def test_a_broker_demanding_a_commission_is_skipped_for_the_next_one():
+    # 2026-08-31: the account this wallet had hardcoded started enforcing a
+    # 5 bps minimum commission, which broke every vault swap. A broker's
+    # minimum is not readable from the chain, so the only way to find a usable
+    # broker is to ask and read the rejection.
+    rpc = _StubRpc(
+        broker_errors={DEFAULT_BROKER_ACCOUNTS[0]: "Broker commission is too low"}
+    )
+    swap = prepare_vault_swap(
+        rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+    )
+    assert rpc.brokers_tried == list(DEFAULT_BROKER_ACCOUNTS[:2])
+    # The swap that comes back is the second broker's, gate-checked the same
+    # way: its own vault deposit address, and our destination in the payload.
+    assert swap.deposit_address == OTHER_VAULT
+    assert swap.deposit_address in swap.known_vaults
+    assert swap.destination_bytes == bytes.fromhex(DEST[2:])
+
+
+def test_a_broker_without_a_private_channel_is_skipped_too():
+    # The other per-broker rejection: on 2026-08-31, 128 of the 134 registered
+    # brokers could not encode a Bitcoin vault swap at all.
+    rpc = _StubRpc(
+        broker_errors={
+            DEFAULT_BROKER_ACCOUNTS[0]: "NoPrivateChannelExistsForBroker",
+            DEFAULT_BROKER_ACCOUNTS[1]: "Broker commission is too low",
+        }
+    )
+    prepare_vault_swap(
+        rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+    )
+    assert rpc.brokers_tried == list(DEFAULT_BROKER_ACCOUNTS[:3])
+
+
+def test_a_rejection_about_the_swap_itself_is_not_retried_at_another_broker():
+    # Trying five brokers with the same bad swap would turn one clear error
+    # into five requests and a misleading "no broker would encode" summary.
+    rpc = _StubRpc(
+        broker_errors=dict.fromkeys(
+            DEFAULT_BROKER_ACCOUNTS, "InvalidDestinationAddress"
+        )
+    )
+    with pytest.raises(ChainflipError, match="InvalidDestinationAddress"):
+        prepare_vault_swap(
+            rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+        )
+    assert rpc.brokers_tried == list(DEFAULT_BROKER_ACCOUNTS[:1])
+
+
+def test_no_broker_left_reports_every_one_it_asked():
+    rpc = _StubRpc(
+        broker_errors=dict.fromkeys(
+            DEFAULT_BROKER_ACCOUNTS, "Broker commission is too low"
+        )
+    )
+    with pytest.raises(NoBrokerAvailable) as excinfo:
+        prepare_vault_swap(
+            rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+        )
+    message = str(excinfo.value)
+    assert rpc.brokers_tried == list(DEFAULT_BROKER_ACCOUNTS)
+    # The message has to be actionable: which accounts were asked, and what each
+    # one said.
+    for account in DEFAULT_BROKER_ACCOUNTS:
+        assert account in message
+    assert "Broker commission is too low" in message
+
+
+def test_the_give_up_message_diagnoses_nothing_the_brokers_did_not_say():
+    # A commission is only one of the two reasons a broker refuses. Telling a
+    # user their swap was refused as a skim when every broker had merely lost
+    # its private channel sends them looking for the wrong thing.
+    rpc = _StubRpc(
+        broker_errors=dict.fromkeys(
+            DEFAULT_BROKER_ACCOUNTS, "NoPrivateChannelExistsForBroker"
+        )
+    )
+    with pytest.raises(NoBrokerAvailable) as excinfo:
+        prepare_vault_swap(
+            rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+        )
+    message = str(excinfo.value)
+    assert "NoPrivateChannelExistsForBroker" in message
+    assert "skim" not in message
 
 
 def test_prepare_vault_swap_returns_a_gateable_plan():
@@ -654,6 +805,37 @@ def test_prepare_vault_swap_rejects_a_payload_that_is_not_hex():
         }
     )
     with pytest.raises(ChainflipError):
+        prepare_vault_swap(
+            rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [("broker", "broker fee"), ("boost", "boost fee"), ("affiliates", "affiliate")],
+)
+def test_prepare_vault_swap_refuses_a_payload_that_skims(field, expected):
+    # The encoding is asked for a zero commission, so a payload that carries a
+    # fee anyway is a payload that does not do what we asked. The gate refuses
+    # it too, but this is the layer that turns it into one sentence — and it is
+    # what keeps a broker who answers with a fee instead of an error from
+    # stopping the fallback dead.
+    skimming = (
+        "0x"
+        + _build_payload(
+            bytes.fromhex(DEST[2:]),
+            min_out=min_output_amount(_quote(), 250),  # everything else is in order
+            **{field: 5},
+        ).hex()
+    )
+    rpc = _StubRpc(
+        encoding={
+            "chain": "Bitcoin",
+            "nulldata_payload": skimming,
+            "deposit_address": VAULT,
+        }
+    )
+    with pytest.raises(ChainflipError, match=expected):
         prepare_vault_swap(
             rpc, from_asset=BTC, to_asset=ETH, destination=DEST, quote=_quote(), bps=250
         )

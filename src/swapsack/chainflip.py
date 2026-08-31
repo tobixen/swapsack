@@ -60,6 +60,16 @@ class ChainflipError(RuntimeError):
     """Raised when the Chainflip quote API returns an error or a junk body."""
 
 
+class NoBrokerAvailable(ChainflipError):
+    """Every broker refused to encode on the terms this wallet asks for.
+
+    Separate from a plain :class:`ChainflipError` so that "we recognised a
+    refusal and ran out of accounts" can be told from "the chain said something
+    we do not understand" — a distinction the live tests lean on, since a
+    refusal the wallet stops recognising is a fallback that has silently died.
+    """
+
+
 @dataclasses.dataclass(frozen=True)
 class ChainflipFees(SwapFees):
     """Chainflip's three fee legs, converted to destination 1e8 units.
@@ -404,11 +414,46 @@ DEFAULT_RETRY_DURATION_BLOCKS = 100
 
 # The encode RPC wants a broker account. It is **inert for what we broadcast**:
 # with a zero commission the payload is byte-identical whichever account is
-# named (checked against two on 2026-08-28), and the account only selects which
-# of the protocol's published vault addresses to pay — every one of which the
-# gate confirms against cf_get_vault_addresses. It is not a liveness dependency
-# either: the account is a constant here, not a service we call.
-DEFAULT_BROKER_ACCOUNT = "cFJZVRaybb2PBwxTiAiRLiQfHY4KPB3RpJK22Q7Fhqk979aCH"
+# named (checked against all five below on 2026-08-31), and the account only
+# selects which of the protocol's published vault addresses to pay — every one
+# of which the gate confirms against cf_get_vault_addresses.
+#
+# What it is *not* is free of the chain: the id is a constant here, but whether
+# the account named will encode for us is on-chain state that can change under
+# us, and did. That is the difference between this and a service we call — no
+# host has to be up for a vault swap to be built, but a usable broker has to
+# exist, which is why there is a list and a live test watching it.
+#
+# It is a *list* because a broker can set a minimum commission it will encode
+# for, and a broker demanding one is a broker this wallet cannot use: a
+# commission is a skim verify.verify_chainflip_vault_swap refuses. That is not
+# hypothetical — the single account hardcoded here until 2026-08-31
+# ("Broker as a Service") started enforcing 5 bps and broke every vault swap.
+# The chain exposes no way to read a broker's minimum (cf_account_info does not
+# carry one), so the only way to find a usable broker is to ask and read the
+# rejection, which is what prepare_vault_swap does.
+#
+# Only a broker with a private Bitcoin channel can encode a vault swap at all:
+# of the 134 accounts cf_all_account_infos listed as brokers on 2026-08-31, 128
+# answered NoPrivateChannelExistsForBroker, one demanded a commission, and these
+# five encoded at zero. Named accounts come first as the likelier to be
+# long-lived.
+DEFAULT_BROKER_ACCOUNTS = (
+    "cFLRQDfEdmnv6d2XfHJNRBQHi4fruPMReLSfvB8WWD2ENbqj7",  # Chainflip SDK
+    "cFNx21kQWmr9wsqq29zWM7RpDBKv4bctudEUE6J22Hd4NUUHR",  # Rango
+    "cFL4To8Uow6B1hk4dNrhWhvKpkBtnUTrVdWCEKCaXiXMMztjM",  # sk-dev
+    "cFKpid38PmmZ8V81AHaZAhHzzpRbsf7Xw5PYt5ajTXAUvHoTQ",
+    "cFNwtr2mPhpUEB5AyJq38DqMKMkSdzaL9548hajN2DRTwh7Mq",
+)
+
+# Rejections that mean "this broker will not encode for us", as opposed to
+# "this swap is wrong". Both arrive as a DispatchError with nothing but its text
+# to tell them apart, and the distinction matters: a bad swap retried at every
+# broker turns one clear error into five requests and a misleading summary.
+BROKER_REFUSALS = (
+    "Broker commission is too low",
+    "NoPrivateChannelExistsForBroker",
+)
 
 # A u8 in the payload; 255 is what the protocol encodes when it is not asked
 # for. Its units are documented as basis points, which a u8 cannot express past
@@ -536,6 +581,85 @@ def bitcoin_vault_addresses(rpc: ChainflipRpc) -> frozenset[str]:
         raise ChainflipError(f"malformed vault address list: {exc!r}") from exc
 
 
+def _encode_params(
+    *,
+    account: str,
+    from_asset: str,
+    to_asset: str,
+    destination: str,
+    floor: int,
+) -> list[Any]:
+    """The parameter list cf_request_swap_parameter_encoding takes.
+
+    One place, because the live test asks each broker in turn through this same
+    builder: a test that hand-rolled the list could keep passing while the
+    wallet sent something else.
+    """
+    return [
+        account,
+        dict(zip(("chain", "asset"), CHAINFLIP_ASSETS[from_asset][:2], strict=True)),
+        dict(zip(("chain", "asset"), CHAINFLIP_ASSETS[to_asset][:2], strict=True)),
+        destination,
+        0,  # broker commission: nobody skims a swap this wallet builds
+        {
+            "chain": "Bitcoin",
+            "min_output_amount": hex(floor),
+            "retry_duration": DEFAULT_RETRY_DURATION_BLOCKS,
+        },
+    ]
+
+
+def _request_encoding(
+    rpc: ChainflipRpc,
+    *,
+    from_asset: str,
+    to_asset: str,
+    destination: str,
+    floor: int,
+    accounts: Sequence[str] = DEFAULT_BROKER_ACCOUNTS,
+) -> Any:  # noqa: ANN401 (JSON)
+    """Ask the brokers in turn to encode the swap; return the first answer.
+
+    The commission is zero at every attempt and never escalates: a commission
+    is a skim the gate refuses, so asking for one would only build a
+    transaction this wallet's own gate throws away. A broker that will not
+    encode on those terms (:data:`BROKER_REFUSALS`) is skipped for the next;
+    any other error is about the *swap* and is raised as it comes, unretried.
+
+    ``accounts`` exists for the live tests, which ask one named broker at a
+    time; nothing in the wallet passes it.
+    """
+    refusals = []
+    for account in accounts:
+        try:
+            return rpc.call(
+                "cf_request_swap_parameter_encoding",
+                _encode_params(
+                    account=account,
+                    from_asset=from_asset,
+                    to_asset=to_asset,
+                    destination=destination,
+                    floor=floor,
+                ),
+            )
+        except ChainflipError as exc:
+            if not any(refusal in str(exc) for refusal in BROKER_REFUSALS):
+                raise
+            refusals.append(f"{account} ({exc})")
+    listed = "; ".join(refusals)
+    # No diagnosis of our own: a broker refuses either because it wants a
+    # commission or because it has no private channel, and telling a user the
+    # wrong one of those sends them looking for the wrong thing. Each account's
+    # own words, and what to do about it.
+    raise NoBrokerAvailable(
+        f"no Chainflip broker would encode this vault swap — the wallet asks "
+        f"every broker for a zero commission, and each of these refused: "
+        f"{listed}. Swap via another backend, or report this: the account list "
+        f"may need widening, or paying a commission may need to become an "
+        f"explicit, disclosed option"
+    )
+
+
 def prepare_vault_swap(
     rpc: ChainflipRpc,
     *,
@@ -561,22 +685,12 @@ def prepare_vault_swap(
     asset_id = VAULT_SWAP_ASSET_IDS[to_asset]
     floor = min_output_amount(quote, bps)
     vaults = bitcoin_vault_addresses(rpc)
-    result = rpc.call(
-        "cf_request_swap_parameter_encoding",
-        [
-            DEFAULT_BROKER_ACCOUNT,
-            dict(
-                zip(("chain", "asset"), CHAINFLIP_ASSETS[from_asset][:2], strict=True)
-            ),
-            dict(zip(("chain", "asset"), CHAINFLIP_ASSETS[to_asset][:2], strict=True)),
-            destination,
-            0,  # broker commission: nobody skims a swap this wallet builds
-            {
-                "chain": "Bitcoin",
-                "min_output_amount": hex(floor),
-                "retry_duration": DEFAULT_RETRY_DURATION_BLOCKS,
-            },
-        ],
+    result = _request_encoding(
+        rpc,
+        from_asset=from_asset,
+        to_asset=to_asset,
+        destination=destination,
+        floor=floor,
     )
     try:
         deposit_address = str(result["deposit_address"])
@@ -611,6 +725,20 @@ def prepare_vault_swap(
             f"the encoding's min output {decoded.min_output_amount} is below "
             f"the floor {floor} we asked for"
         )
+    # The encoding was asked for a zero commission, so a payload carrying a fee
+    # anyway is not the swap we asked for. The gate refuses it too — this is the
+    # layer that says so in one sentence, and it is also what stops a broker who
+    # answers with a fee instead of an error from ending the fallback silently.
+    for fee, label in (
+        (decoded.broker_fee, "broker fee"),
+        (decoded.boost_fee, "boost fee"),
+        (decoded.affiliates, "affiliate fee entries"),
+    ):
+        if fee:
+            raise ChainflipError(
+                f"the encoding carries {fee} {label}; a zero commission was "
+                f"asked for, and a swap this wallet builds pays no skim"
+            )
     return VaultSwap(
         deposit_address=deposit_address,
         payload=payload,

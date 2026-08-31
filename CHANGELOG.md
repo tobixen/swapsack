@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is derived
 automatically from git tags (PEP 440 / SemVer).
 
+## [Unreleased]
+
+### Fixed
+
+- **Chainflip vault swaps work again.** The broker account this wallet named
+  when asking the Chainflip chain to encode a vault swap started enforcing a
+  minimum commission of 5 bps, and since a commission is a skim the verify gate
+  refuses, every BTC swap through Chainflip aborted with `DispatchError: Broker
+  commission is too low`. The account is now a fallback list, tried in order
+  until one encodes at zero commission. What the transaction says is unchanged
+  — the swap parameters are byte-identical whichever broker answers — and it
+  may pay a different one of the protocol's vaults, which is checked against
+  the vault list the protocol publishes, as before.
+
 ## [0.2.0] - 2026-08-30
 
 Note: this section is a hand-rewritten, slimmed-down version. Most people
