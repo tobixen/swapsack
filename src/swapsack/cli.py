@@ -33,6 +33,7 @@ from swapsack.addresses import (
     validate_destination_address,
 )
 from swapsack.chains.coins import Utxo, cpfp_surcharge
+from swapsack.chains.history import DEFAULT_TX_LIMIT
 from swapsack.cow import DEFAULT_COW_TOLERANCE_BPS
 from swapsack.keystore import HdKey, Keystore
 from swapsack.net import HTTP_ERRORS, HostUnreachable
@@ -3212,6 +3213,198 @@ def _liquidity_tron(
         return _confirm_and_execute(prepared, adapter, args)
 
 
+# --- history / utxos --------------------------------------------------------
+
+# Why a chain cannot produce a transaction listing. Keyed by chain, printed
+# verbatim: an empty listing would read as "you have no transactions", which is
+# the opposite of "I could not look".
+# The generic reason, for a chain not spelled out below.
+NO_HISTORY_GENERIC = (
+    "{chain} transaction history is not available: its data source has no "
+    "address history index for this wallet to read."
+)
+NO_HISTORY_SOURCE = {
+    "ZEC": (
+        "ZEC transaction history is not available. lightwalletd's address index "
+        "hands back raw transactions rather than txids, and a post-NU5 (v5) "
+        "transaction's txid is a ZIP-244 tree hash this wallet does not compute. "
+        "Unspent outputs are served directly, so `utxos --asset ZEC` still works "
+        "— it just cannot show the spent ones."
+    ),
+}
+# The listings cover the UTXO chains only. ETH/ARB/BSC talk plain JSON-RPC and
+# TRON the java-tron HTTP API; neither has an address history index, so a
+# listing there would need an indexer (Etherscan/Blockscout/TronGrid) that this
+# wallet deliberately does not depend on yet.
+LISTING_CHAINS = ("BTC", "DASH", "ZEC")
+
+
+def _no_history_reason(chain: str) -> str:
+    return NO_HISTORY_SOURCE.get(chain) or NO_HISTORY_GENERIC.format(chain=chain)
+
+
+def _scan_records(adapter, mnemonic: str) -> list[tuple[str, str]]:  # noqa: ANN001
+    """The wallet's used ``(path, address)`` pairs on a UTXO chain."""
+    from swapsack.chains.scan import scan_account
+
+    print(
+        f"scanning {adapter.chain} addresses (this can take ~10s):",
+        file=sys.stderr,
+        flush=True,
+    )
+    found = scan_account(
+        derive_address=lambda path: adapter.derive_address(mnemonic, path),
+        probe=adapter.address_info,
+        account=adapter.account,
+    )
+    return [(path, address) for path, address, _ in found]
+
+
+def _wallet_history(adapter, mnemonic: str, limit: int):  # noqa: ANN001, ANN202
+    """Fetch this chain's full history, or ``None`` if the source cannot serve one."""
+    from swapsack.chains.history import wallet_history
+
+    address_txs = getattr(adapter, "address_txs", None)
+    if address_txs is None:
+        return None
+    records = _scan_records(adapter, mnemonic)
+    return wallet_history(
+        records=records,
+        address_txs=lambda address: address_txs(address, limit=limit),
+    )
+
+
+def _warn_truncated(history, limit: int) -> None:  # noqa: ANN001
+    """A capped walk cannot tell spent from unspent — say so, do not imply it."""
+    if not history.truncated:
+        return
+    _warn(
+        f"the listing is INCOMPLETE: {len(history.truncated)} address(es) could "
+        "not be walked to the end.",
+        f"either the --limit of {limit} transactions was reached, or the "
+        "address's history kept moving while it was being read",
+        "an output shown as unspent may in fact have been spent out of view",
+        f"re-run; raise --limit if an address has more than {limit} transactions",
+    )
+
+
+def _tx_json(tx) -> dict:  # noqa: ANN001
+    return {
+        "txid": tx.txid,
+        "confirmed": tx.confirmed,
+        "block_height": tx.block_height,
+        "block_time": tx.block_time,
+        "fee": tx.fee,
+        "received": tx.received,
+        "sent": tx.sent,
+        "net": tx.net,
+        # Hex, not a decoded string: a Chainflip vault-swap payload is binary,
+        # and JSON has no way to carry the bytes that are not text.
+        "memo": tx.memo.hex() if tx.memo else None,
+        "counterparties": list(tx.counterparties),
+    }
+
+
+def _output_json(out) -> dict:  # noqa: ANN001
+    return {
+        "outpoint": out.outpoint,
+        "txid": out.txid,
+        "vout": out.vout,
+        "value": out.value,
+        "address": out.address,
+        "path": out.path,
+        "confirmed": out.confirmed,
+        "block_height": out.block_height,
+        "block_time": out.block_time,
+        "spent_by": out.spent_by,
+    }
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    from swapsack.report import render_history
+
+    mnemonic, passphrase = _load_mnemonic(args)
+    with _UTXO_ADAPTERS[args.asset](args, passphrase) as adapter:
+        history = _wallet_history(adapter, mnemonic, args.limit)
+    if history is None:
+        print(_no_history_reason(args.asset), file=sys.stderr)
+        return 1
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "chain": args.asset,
+                    "transactions": [_tx_json(tx) for tx in history.transactions],
+                    "truncated": list(history.truncated),
+                },
+                indent=2,
+            )
+        )
+    else:
+        for line in render_history(history.transactions, symbol=args.asset):
+            print(line)
+    _warn_truncated(history, args.limit)
+    return 0
+
+
+def _unspent_only(adapter, mnemonic: str) -> list:  # noqa: ANN001
+    """The fallback for a chain with no history source: its unspent outputs.
+
+    Half an answer — spent outputs are simply not knowable this way — but the
+    unspent set is the half that says what you still hold, and the caller names
+    the missing half on stderr.
+    """
+    from swapsack.chains.history import Output
+
+    records = _scan_records(adapter, mnemonic)
+    return [
+        Output(
+            txid=utxo.txid,
+            vout=utxo.vout,
+            value=utxo.value,
+            address=utxo.address,
+            path=path,
+            confirmed=utxo.confirmed,
+        )
+        for path, address in records
+        for utxo in adapter.fetch_utxos(address, include_unconfirmed=True)
+    ]
+
+
+def cmd_utxos(args: argparse.Namespace) -> int:
+    from swapsack.report import render_outputs
+
+    mnemonic, passphrase = _load_mnemonic(args)
+    with _UTXO_ADAPTERS[args.asset](args, passphrase) as adapter:
+        history = _wallet_history(adapter, mnemonic, args.limit)
+        outputs = (
+            _unspent_only(adapter, mnemonic) if history is None else history.outputs
+        )
+    if history is None:
+        print(_no_history_reason(args.asset), file=sys.stderr)
+    if args.unspent:
+        outputs = [o for o in outputs if not o.spent]
+    elif args.spent:
+        outputs = [o for o in outputs if o.spent]
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "chain": args.asset,
+                    "outputs": [_output_json(o) for o in outputs],
+                    "unspent_total": sum(o.value for o in outputs if not o.spent),
+                },
+                indent=2,
+            )
+        )
+    else:
+        for line in render_outputs(outputs, symbol=args.asset):
+            print(line)
+    if history is not None:
+        _warn_truncated(history, args.limit)
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     # A CoW order uid (56 bytes: digest + owner + validTo) looks nothing like a
     # chain txid, so it's auto-detected and routed to the orderbook directly —
@@ -3602,6 +3795,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_price_check_args(s)
     s.set_defaults(func=cmd_balance)
+
+    for name, handler, extra_help in (
+        ("history", cmd_history, "list the transactions touching the wallet"),
+        ("utxos", cmd_utxos, "list the wallet's outputs, spent ones included"),
+    ):
+        s = sub.add_parser(name, help=extra_help)
+        s.add_argument("--key")
+        s.add_argument(
+            "--asset",
+            type=str.upper,
+            default="BTC",
+            choices=list(LISTING_CHAINS),
+            help="which UTXO chain to list (default BTC). The account-model "
+            "chains are absent on purpose: their RPCs have no address history "
+            "index, so there is nothing to list them from",
+        )
+        s.add_argument(
+            "--limit",
+            type=_pos_int,
+            default=DEFAULT_TX_LIMIT,
+            help=f"stop after this many transactions per address "
+            f"(default {DEFAULT_TX_LIMIT}); a capped walk is reported as "
+            "INCOMPLETE rather than presented as the whole picture",
+        )
+        s.add_argument(
+            "--json", action="store_true", help="emit JSON instead of a table"
+        )
+        s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
+        s.add_argument(
+            "--zec-lwd", help="Zcash lightwalletd host:port ($SWAPSACK_ZEC_LWD)"
+        )
+        if name == "utxos":
+            which = s.add_mutually_exclusive_group()
+            which.add_argument(
+                "--unspent", action="store_true", help="only outputs still unspent"
+            )
+            which.add_argument(
+                "--spent", action="store_true", help="only outputs already spent"
+            )
+        else:
+            s.set_defaults(unspent=False, spent=False)
+        s.set_defaults(func=handler)
 
     s = sub.add_parser("quote", help="show a swap quote (best price across backends)")
     _add_swap_args(s)

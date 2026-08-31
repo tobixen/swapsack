@@ -12,9 +12,9 @@ from collections.abc import Sequence
 
 from bitcoinlib.mnemonic import Mnemonic
 
-from swapsack.chains.base import AddressInfo, BalanceReport
+from swapsack.chains.base import AddressInfo, BalanceReport, TxEntry, TxSummary
 from swapsack.chains.coins import Utxo, cpfp_deficit, decode_op_return
-from swapsack.chains.rbf import RBF_SEQUENCE_MAX
+from swapsack.chains.history import DEFAULT_TX_LIMIT, AddressTxs, collect_pages
 from swapsack.chains.utxo import UtxoTxBuilder
 from swapsack.net import FailoverHttpClient
 
@@ -56,77 +56,6 @@ def parse_address_info(stats: dict) -> AddressInfo:
     return AddressInfo(has_history=has_history, confirmed=confirmed, pending=pending)
 
 
-@dataclasses.dataclass(frozen=True)
-class TxEntry:
-    """One input or output of a broadcast transaction, in sats.
-
-    The display fields (``value``/``address``) are all a ``status`` view needs.
-    The rest are what it takes to *rebuild* the transaction for a fee bump: an
-    input must name the outpoint it spends and the nSequence it spent it with,
-    and an OP_RETURN output must carry its payload byte-for-byte — a swap memo
-    re-encoded from a lossy summary is a mis-sent deposit.
-    """
-
-    value: int
-    address: str | None = None  # None for an OP_RETURN (or an unparsed script)
-    op_return: bool = False
-    # Inputs only: the outpoint being spent, and its nSequence (the RBF signal).
-    txid: str | None = None
-    vout: int | None = None
-    sequence: int | None = None
-    # Outputs only: the decoded OP_RETURN payload (None if not one, or unreadable).
-    op_return_data: bytes | None = None
-
-
-@dataclasses.dataclass(frozen=True)
-class TxSummary:
-    """What a broadcast transaction actually did, as the chain reports it.
-
-    Built from an Esplora ``/tx`` body. ``inputs``/``outputs`` are in order, so
-    a partial send reads as "one recipient, one change" — the shape a user needs
-    to confirm their remainder came back.
-    """
-
-    txid: str
-    confirmed: bool
-    block_height: int | None
-    fee: int  # sats
-    vsize: int  # virtual bytes; fee/vsize is the fee rate
-    inputs: tuple[TxEntry, ...]
-    outputs: tuple[TxEntry, ...]
-
-    @property
-    def total_in(self) -> int:
-        return sum(i.value for i in self.inputs)
-
-    @property
-    def total_out(self) -> int:
-        return sum(o.value for o in self.outputs)
-
-    @property
-    def fee_rate(self) -> float:
-        return self.fee / self.vsize if self.vsize else 0.0
-
-    @property
-    def has_op_return(self) -> bool:
-        """True if the tx carries a memo — i.e. it is a swap deposit, not a send."""
-        return any(o.op_return for o in self.outputs)
-
-    @property
-    def signals_rbf(self) -> bool:
-        """True if BIP125 opt-in Replace-By-Fee applies: any input below 0xfffffffe.
-
-        Standard-policy nodes replace a mempool transaction only when it signals,
-        so this is the difference between a bump that relays and one that is
-        dropped by every peer. An input whose sequence the explorer did not
-        report counts as not signalling — fail closed.
-        """
-        return any(
-            i.sequence is not None and i.sequence < RBF_SEQUENCE_MAX
-            for i in self.inputs
-        )
-
-
 def parse_tx_summary(payload: dict) -> TxSummary:
     """Parse an Esplora ``/tx/<txid>`` response into a :class:`TxSummary`.
 
@@ -166,6 +95,7 @@ def parse_tx_summary(payload: dict) -> TxSummary:
         txid=payload.get("txid", ""),
         confirmed=bool(status.get("confirmed")),
         block_height=status.get("block_height"),
+        block_time=status.get("block_time"),
         fee=payload.get("fee", 0),
         vsize=vsize,
         inputs=tuple(spend(i) for i in payload.get("vin", [])),
@@ -280,6 +210,34 @@ class BtcAdapter(FailoverHttpClient, UtxoTxBuilder):
 
     def fetch_balance(self, address: str) -> int:
         return self.address_info(address).confirmed
+
+    def address_txs(self, address: str, *, limit: int = DEFAULT_TX_LIMIT) -> AddressTxs:
+        """Every transaction this address takes part in, newest first.
+
+        Esplora answers ``/address/<a>/txs`` with the mempool transactions plus
+        the first page of confirmed ones (25 on both default instances), and
+        ``/address/<a>/txs/chain/<txid>`` continues from a **confirmed** txid.
+        Paging from a mempool txid would restart the walk, so the cursor is
+        always the last confirmed transaction of the page.
+
+        The page size is not assumed: the walk ends when a page brings nothing
+        new (see :func:`~swapsack.chains.history.collect_pages`), which costs
+        one extra request per address and survives an instance that pages
+        differently. Guessing the size instead would stop the walk early — and
+        an unseen spend reads as money still sitting there.
+        """
+
+        def page(cursor: object | None) -> tuple[list[TxSummary], object | None]:
+            suffix = f"address/{address}/txs"
+            if cursor:
+                suffix = f"{suffix}/chain/{cursor}"
+            resp = self._get_with_fallback(suffix)
+            resp.raise_for_status()
+            txs = [parse_tx_summary(item) for item in resp.json()]
+            confirmed = [tx.txid for tx in txs if tx.confirmed]
+            return txs, (confirmed[-1] if confirmed else None)
+
+        return collect_pages(page, limit=limit)
 
     def fetch_tx(self, txid: str) -> TxSummary | None:
         """What a broadcast tx did, or None if this chain has never seen it."""

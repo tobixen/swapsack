@@ -1,5 +1,6 @@
 """Tests for CLI argument parsing (handlers do I/O and are tested manually)."""
 
+import json
 import time
 from decimal import Decimal
 from types import SimpleNamespace
@@ -4591,3 +4592,197 @@ def test_bump_also_drags_its_own_unconfirmed_parent(monkeypatch, capsys):
     # top of this transaction's own 2500.
     assert "4300" in out
     assert "1800" in out and "child-pays-for-parent" in out
+
+
+# --- history / utxos --------------------------------------------------------
+
+
+HISTORY_MNEMONIC = (
+    "abandon abandon abandon abandon abandon abandon "
+    "abandon abandon abandon abandon abandon about"
+)
+
+
+def _history_btc(monkeypatch, *, per_address=None, no_history=False):
+    """A BtcAdapter whose scan finds two addresses and whose history is scripted."""
+    from swapsack.chains.base import AddressInfo, TxEntry, TxSummary
+    from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.history import AddressTxs
+
+    adapter = BtcAdapter()
+    recv = adapter.derive_address(HISTORY_MNEMONIC, "m/84'/0'/0'/0/0")
+    change = adapter.derive_address(HISTORY_MNEMONIC, "m/84'/0'/0'/1/0")
+    used = {recv, change}
+
+    funding = TxSummary(
+        txid="aa" * 32,
+        confirmed=True,
+        block_height=900_000,
+        block_time=1_756_000_000,
+        fee=200,
+        vsize=110,
+        inputs=(
+            TxEntry(value=1_000_000, address="bc1qstranger", txid="00" * 32, vout=0),
+        ),
+        outputs=(TxEntry(value=500_000, address=recv),),
+    )
+    deposit = TxSummary(
+        txid="bb" * 32,
+        confirmed=False,
+        block_height=None,
+        block_time=None,
+        fee=1_000,
+        vsize=200,
+        inputs=(TxEntry(value=500_000, address=recv, txid="aa" * 32, vout=0),),
+        outputs=(
+            TxEntry(value=300_000, address="bc1qvault"),
+            TxEntry(value=0, op_return=True, op_return_data=b"=:ETH.USDT:0xdead"),
+            TxEntry(value=199_000, address=change),
+        ),
+    )
+    scripted = per_address or {recv: [funding, deposit], change: [deposit]}
+
+    class FakeBtc(BtcAdapter):
+        def address_info(self, address):
+            return AddressInfo(has_history=address in used, confirmed=0, pending=0)
+
+        def address_txs(self, address, *, limit=500):
+            return AddressTxs(transactions=list(scripted.get(address, ())))
+
+        def fetch_utxos(self, address, *, include_unconfirmed=False):
+            from swapsack.chains.coins import Utxo
+
+            if address != change:
+                return []
+            return [Utxo(txid="bb" * 32, vout=2, value=199_000, address=address)]
+
+    if no_history:
+        # How a chain with no address index looks to the dispatch: ZecAdapter
+        # simply never defines the method (pinned by the test below).
+        FakeBtc.address_txs = None
+    fake = FakeBtc()
+    # The registry holds a reference taken at import time, so patching
+    # cli._btc_adapter by name would not reach it.
+    for chain in ("BTC", "ZEC"):
+        monkeypatch.setitem(cli._UTXO_ADAPTERS, chain, lambda args, passphrase="": fake)
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (HISTORY_MNEMONIC, ""))
+    return fake, recv, change
+
+
+def test_history_lists_the_transactions_newest_first(monkeypatch, capsys):
+    _history_btc(monkeypatch)
+    args = build_parser().parse_args(["history"])
+    assert cli.cmd_history(args) == 0
+    out = capsys.readouterr().out
+    # The unconfirmed swap deposit leads; the funding transaction follows.
+    assert out.index("bb" * 32) < out.index("aa" * 32)
+    assert "swap deposit" in out
+    assert "bc1qvault" in out
+    assert "=:ETH.USDT:0xdead" in out
+
+
+def test_history_json_is_machine_readable_and_keeps_the_memo(monkeypatch, capsys):
+    _history_btc(monkeypatch)
+    args = build_parser().parse_args(["history", "--json"])
+    assert cli.cmd_history(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    deposit = next(t for t in payload["transactions"] if t["txid"] == "bb" * 32)
+    assert deposit["net"] == -301_000
+    assert deposit["memo"] == b"=:ETH.USDT:0xdead".hex()
+    assert deposit["counterparties"] == ["bc1qvault"]
+
+
+def test_history_refuses_zec_with_a_reason_rather_than_an_empty_list(
+    monkeypatch, capsys
+):
+    """A chain whose data source cannot answer must say so. An empty listing
+    would read as "you have no transactions" — the opposite of the truth."""
+    _history_btc(monkeypatch, no_history=True)
+    args = build_parser().parse_args(["history", "--asset", "ZEC"])
+    assert cli.cmd_history(args) == 1
+    assert "not available" in capsys.readouterr().err.lower()
+
+
+def test_utxos_lists_spent_and_unspent_by_default(monkeypatch, capsys):
+    _history_btc(monkeypatch)
+    args = build_parser().parse_args(["utxos"])
+    assert cli.cmd_utxos(args) == 0
+    out = capsys.readouterr().out
+    assert f"spent by {'bb' * 32}" in out  # the funding output, now spent
+    assert "unspent" in out
+    assert "1 unspent of 2 outputs" in out
+
+
+def test_utxos_can_show_only_the_unspent_ones(monkeypatch, capsys):
+    _history_btc(monkeypatch)
+    args = build_parser().parse_args(["utxos", "--unspent"])
+    assert cli.cmd_utxos(args) == 0
+    out = capsys.readouterr().out
+    assert "spent by" not in out
+    assert f"{'bb' * 32}:2" in out
+
+
+def test_utxos_can_show_only_the_spent_ones(monkeypatch, capsys):
+    _history_btc(monkeypatch)
+    args = build_parser().parse_args(["utxos", "--spent"])
+    assert cli.cmd_utxos(args) == 0
+    out = capsys.readouterr().out
+    assert f"{'aa' * 32}:0" in out
+    assert f"{'bb' * 32}:2" not in out
+
+
+def test_utxos_falls_back_to_the_unspent_set_when_history_is_unavailable(
+    monkeypatch, capsys
+):
+    """ZEC's lightwalletd serves unspent outputs but not a transaction history.
+    Half an answer beats none — as long as the missing half is named."""
+    _history_btc(monkeypatch, no_history=True)
+    args = build_parser().parse_args(["utxos", "--asset", "ZEC"])
+    assert cli.cmd_utxos(args) == 0
+    captured = capsys.readouterr()
+    assert f"{'bb' * 32}:2" in captured.out
+    assert "not available" in captured.err.lower()
+
+
+def test_utxos_json_carries_the_outpoint_and_the_spender(monkeypatch, capsys):
+    _history_btc(monkeypatch)
+    args = build_parser().parse_args(["utxos", "--json"])
+    assert cli.cmd_utxos(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    spent = next(o for o in payload["outputs"] if o["spent_by"])
+    assert spent["outpoint"] == f"{'aa' * 32}:0"
+    assert spent["spent_by"] == "bb" * 32
+    assert payload["unspent_total"] == 199_000
+
+
+def test_history_warns_when_the_walk_was_cut_short(monkeypatch, capsys):
+    """A truncated walk cannot tell spent from unspent. Printing the listing
+    without saying so would present half a picture as the whole one."""
+    from swapsack.chains.history import AddressTxs
+
+    fake, recv, _change = _history_btc(monkeypatch)
+    monkeypatch.setattr(
+        type(fake),
+        "address_txs",
+        lambda self, address, *, limit=500: AddressTxs(transactions=[], truncated=True),
+    )
+    args = build_parser().parse_args(["history"])
+    assert cli.cmd_history(args) == 0
+    assert "incomplete" in capsys.readouterr().err.lower()
+
+
+def test_zec_adapter_really_has_no_history_source():
+    """Pins the premise the two fallback tests above stand on."""
+    from swapsack.chains.zcash import ZecAdapter
+
+    assert getattr(ZecAdapter, "address_txs", None) is None
+
+
+def test_history_and_utxos_only_offer_the_utxo_chains():
+    """ETH/TRON have no address-indexed source wired up, so offering them would
+    promise a listing that cannot be produced."""
+    for command in ("history", "utxos"):
+        args = build_parser().parse_args([command, "--asset", "DASH"])
+        assert args.asset == "DASH"
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([command, "--asset", "ETH"])
