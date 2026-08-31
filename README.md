@@ -220,7 +220,42 @@ swapsack send  T...recipient --asset USDT-TRON --amount 25     # TRC-20
 swapsack send  bitcoin:bc1q...?label=Alice --amount 0.001      # BIP21 URI / QR code
 swapsack bump  <txid>                                          # unstick a BTC tx (DRY RUN)
 swapsack bump  <txid> --fee-rate 25 --confirm                  # …at an explicit sats/vB
+swapsack history                                               # every BTC tx the wallet touched
+swapsack history --asset DASH --json                           # …as JSON, for a spreadsheet
+swapsack utxos                                                 # every output, spent ones included
+swapsack utxos --unspent                                       # …only the coins you still hold
+swapsack status <txid>                                         # what a transaction/swap did
 ```
+
+**Listing what happened (`history`, `utxos`).** `history` prints every
+transaction that touched the wallet — newest first, mempool at the top — with
+the net effect on your balance, the full txid, who else was paid, and the
+`OP_RETURN` memo that marks a swap deposit. `utxos` prints the same data sliced
+per output instead: every output that ever paid you, each with its derivation
+path and either `unspent` or the txid that spent it. Both take `--json`.
+
+Two limits, both deliberate:
+
+* **UTXO chains only** (`--asset BTC|DASH|ZEC`, default BTC). ETH/ARB/BSC talk
+  plain JSON-RPC and TRON the java-tron HTTP API; none of those has an address
+  history index, so a listing there would mean depending on an indexer
+  (Etherscan, Blockscout, TronGrid) that this wallet does not use.
+* **ZEC has no `history`.** lightwalletd's address index returns raw
+  transactions rather than txids, and a post-NU5 (v5) txid is a ZIP-244 tree
+  hash this wallet does not compute. `utxos --asset ZEC` still lists the
+  unspent outputs — it just cannot show the spent ones, and says so.
+
+Spent outputs cost no extra requests: an output paying your address can only be
+spent by a transaction that also spends *from* that address, so the address
+history already names every spender. That inference needs the history to be
+complete, so a walk that hits `--limit` (default 500 transactions per address)
+is reported as INCOMPLETE rather than passed off as the whole picture.
+
+One limit is *not* detectable, and is worth knowing: both commands list the
+addresses the gap-limit scan finds, exactly as `balance` does — the scan stops
+after 20 consecutive unused addresses. Coins on an address beyond that gap, or
+on a derivation path this wallet does not scan, are missing from these listings
+with no warning, because nothing knows to look for them.
 
 Recipients and `--dest` also accept BIP21-style payment URIs (`bitcoin:…`,
 `litecoin:…`, `ethereum:…`, …) as pasted from a wallet or QR code. The scheme

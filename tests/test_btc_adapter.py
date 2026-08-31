@@ -906,3 +906,121 @@ def test_replacement_plan_outlasts_the_confirmation_prompt():
         mnemonic=MNEMONIC, replacement=plan, now=now, max_fee=50_000
     )
     assert prepared.plan.expiry >= now + 600
+
+
+# --- address transaction history (Esplora paging) ----------------------------
+
+
+def _esplora_tx(txid: str, *, height: int | None, to: str, value: int = 1000) -> dict:
+    status = (
+        {"confirmed": True, "block_height": height, "block_time": 1_756_000_000}
+        if height is not None
+        else {"confirmed": False}
+    )
+    return {
+        "txid": txid,
+        "weight": 400,
+        "fee": 100,
+        "status": status,
+        "vin": [],
+        "vout": [
+            {
+                "scriptpubkey_type": "v0_p2wpkh",
+                "scriptpubkey_address": to,
+                "value": value,
+            }
+        ],
+    }
+
+
+class _Page:
+    def __init__(self, payload):
+        self.payload = payload
+        self.status_code = 200
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.payload
+
+
+def test_address_txs_pages_until_a_page_brings_no_new_confirmed_tx():
+    """Esplora hands out 25 confirmed transactions at a time.
+
+    The walk must not stop at the first page: an address whose spend is 30
+    transactions back would then be reported as still holding the money.
+    """
+    first = [
+        _esplora_tx(f"{i:02x}" * 32, height=900_000 - i, to="bc1qowned")
+        for i in range(3)
+    ]
+    second = [
+        _esplora_tx(f"{i:02x}" * 32, height=899_000 - i, to="bc1qowned")
+        for i in range(3, 5)
+    ]
+    a = BtcAdapter()
+    a._session = FakeSession(_Page(first), _Page(second), _Page([]))
+    result = a.address_txs("bc1qowned")
+
+    assert [t.txid for t in result.transactions] == [f"{i:02x}" * 32 for i in range(5)]
+    assert result.truncated is False
+    # Page 2 and 3 must ask from the last *confirmed* txid seen so far.
+    assert a._session.gets[1].endswith(f"/txs/chain/{'02' * 32}")
+    assert a._session.gets[2].endswith(f"/txs/chain/{'04' * 32}")
+
+
+def test_address_txs_does_not_page_from_an_unconfirmed_txid():
+    """The first page carries mempool transactions too, and ``/txs/chain`` only
+    understands a *confirmed* cursor — paging from a mempool txid restarts the
+    walk and loops forever."""
+    page = [
+        _esplora_tx("ff" * 32, height=None, to="bc1qowned"),
+        _esplora_tx("aa" * 32, height=900_000, to="bc1qowned"),
+    ]
+    a = BtcAdapter()
+    a._session = FakeSession(_Page(page), _Page([]))
+    a.address_txs("bc1qowned")
+    assert a._session.gets[1].endswith(f"/txs/chain/{'aa' * 32}")
+
+
+def test_address_txs_stops_at_the_cap_and_says_it_was_truncated():
+    page = [
+        _esplora_tx(f"{i:04x}" * 16, height=900_000 - i, to="bc1qowned")
+        for i in range(4)
+    ]
+    a = BtcAdapter()
+    a._session = FakeSession(_Page(page))
+    result = a.address_txs("bc1qowned", limit=3)
+    assert len(result.transactions) == 3
+    assert result.truncated is True
+
+
+def test_address_txs_stops_when_a_page_repeats_instead_of_paging_forever():
+    """An explorer that does not honour the cursor answers with the same page
+    again. Deduplicating alone would leave the walk spinning; a page that brings
+    nothing new has to end it."""
+    tx = _esplora_tx("ab" * 32, height=900_000, to="bc1qowned")
+    a = BtcAdapter()
+    a._session = FakeSession(_Page([tx]), _Page([tx]))
+    result = a.address_txs("bc1qowned")
+    assert [t.txid for t in result.transactions] == ["ab" * 32]
+    assert len(a._session.gets) == 2
+
+
+def test_address_txs_of_an_unused_address_is_empty_not_an_error():
+    a = BtcAdapter()
+    a._session = FakeSession(_Page([]))
+    result = a.address_txs("bc1qfresh")
+    assert result.transactions == [] and result.truncated is False
+
+
+def test_parse_tx_summary_keeps_the_block_time():
+    """A listing dated by block height alone is unreadable; the explorer already
+    hands us the timestamp."""
+    from swapsack.chains.btc import parse_tx_summary
+
+    tx = parse_tx_summary(_esplora_tx("cd" * 32, height=900_000, to="bc1qowned"))
+    assert tx.block_time == 1_756_000_000
+    unconfirmed = parse_tx_summary(_esplora_tx("ce" * 32, height=None, to="x"))
+    assert unconfirmed.block_time is None

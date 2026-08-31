@@ -282,3 +282,194 @@ def test_cli_unit_choices_match_the_units_that_exist():
     from swapsack.cli import _UNIT_NAMES
 
     assert set(_UNIT_NAMES) == set(UNITS)
+
+
+# --- the history / UTXO listings --------------------------------------------
+
+
+def _tx(**kw):
+    from swapsack.chains.history import WalletTx
+
+    base = dict(
+        txid="ab" * 32,
+        confirmed=True,
+        block_height=900_000,
+        block_time=1_756_000_000,
+        fee=1_000,
+        received=0,
+        sent=0,
+        has_op_return=False,
+        memo=None,
+        counterparties=(),
+    )
+    return WalletTx(**{**base, **kw})
+
+
+def _out(**kw):
+    from swapsack.chains.history import Output
+
+    base = dict(
+        txid="ab" * 32,
+        vout=0,
+        value=500_000,
+        address="bc1qowned",
+        path="m/84'/0'/0'/0/0",
+        confirmed=True,
+        block_height=900_000,
+        block_time=1_756_000_000,
+        spent_by=None,
+    )
+    return Output(**{**base, **kw})
+
+
+def test_history_dates_a_confirmed_transaction_in_utc():
+    from swapsack.report import render_history
+
+    lines = render_history([_tx(received=500_000)], symbol="BTC")
+    assert "2025-08-24 01:46" in lines[1]
+
+
+def test_history_says_mempool_rather_than_inventing_a_date():
+    from swapsack.report import render_history
+
+    lines = render_history(
+        [_tx(confirmed=False, block_height=None, block_time=None, received=1)],
+        symbol="BTC",
+    )
+    assert "mempool" in lines[1]
+
+
+def test_history_falls_back_to_the_block_height_when_undated():
+    """Some sources confirm a transaction without dating it. A blank column
+    would read as "no information"; the height is information."""
+    from swapsack.report import render_history
+
+    lines = render_history([_tx(block_time=None, received=1)], symbol="BTC")
+    assert "block 900000" in lines[1]
+
+
+def test_history_signs_the_amount_so_direction_is_unmissable():
+    from swapsack.report import render_history
+
+    incoming = render_history([_tx(received=500_000)], symbol="BTC")[1]
+    outgoing = render_history([_tx(sent=500_000, received=199_000)], symbol="BTC")[1]
+    assert "+0.00500000" in incoming
+    assert "-0.00301000" in outgoing
+
+
+def test_history_prints_the_full_txid():
+    """A truncated txid cannot be pasted into `swapsack status` or an explorer,
+    which is the entire point of having the listing."""
+    from swapsack.report import render_history
+
+    lines = render_history([_tx(received=1)], symbol="BTC")
+    assert "ab" * 32 in lines[1]
+
+
+def test_history_names_the_counterparty_and_the_memo_of_a_swap_deposit():
+    from swapsack.report import render_history
+
+    lines = render_history(
+        [
+            _tx(
+                sent=500_000,
+                received=199_000,
+                has_op_return=True,
+                memo=b"=:ETH.ETH:0xdead",
+                counterparties=("bc1qvault",),
+            )
+        ],
+        symbol="BTC",
+    )
+    assert "swap deposit" in lines[1]
+    assert "bc1qvault" in lines[1]
+    assert "=:ETH.ETH:0xdead" in lines[1]
+
+
+def test_history_renders_a_binary_memo_as_hex_not_mojibake():
+    """A Chainflip vault-swap payload is binary. Decoding it as text would
+    either throw or print garbage; hex is what an explorer shows anyway."""
+    from swapsack.report import render_history
+
+    memo = bytes([0x00, 0x01, 0xFE])
+    lines = render_history([_tx(sent=1, has_op_return=True, memo=memo)], symbol="BTC")
+    assert "0001fe" in lines[1]
+
+
+def test_history_charges_the_fee_only_to_transactions_we_paid_for():
+    """An incoming transaction's fee was paid by the sender; showing it against
+    our row would misattribute someone else's cost to us."""
+    from swapsack.report import render_history
+
+    outgoing = render_history([_tx(sent=500_000, fee=1_000)], symbol="BTC")[1]
+    incoming = render_history([_tx(received=500_000, fee=1_000)], symbol="BTC")[1]
+    assert "fee 1000" in outgoing
+    assert "fee" not in incoming
+
+
+def test_history_footer_counts_and_nets():
+    from swapsack.report import render_history
+
+    lines = render_history(
+        [_tx(received=500_000), _tx(txid="cd" * 32, sent=500_000, received=199_000)],
+        symbol="BTC",
+    )
+    assert any("2 transactions" in line for line in lines)
+    assert any("0.00199000" in line for line in lines)
+
+
+def test_history_of_nothing_says_so_instead_of_printing_a_bare_header():
+    from swapsack.report import render_history
+
+    lines = render_history([], symbol="BTC")
+    assert len(lines) == 1
+    assert "no transactions" in lines[0].lower()
+
+
+def test_outputs_mark_spent_ones_with_the_spending_txid():
+    from swapsack.report import render_outputs
+
+    lines = render_outputs(
+        [_out(spent_by="cd" * 32), _out(vout=1, value=7)], symbol="BTC"
+    )
+    assert f"spent by {'cd' * 32}" in lines[1]
+    assert "unspent" in lines[2]
+
+
+def test_outputs_show_the_outpoint_and_the_derivation_path():
+    from swapsack.report import render_outputs
+
+    lines = render_outputs([_out(vout=3)], symbol="BTC")
+    assert f"{'ab' * 32}:3" in lines[1]
+    assert "m/84'/0'/0'/0/0" in lines[1]
+
+
+def test_outputs_mark_an_unconfirmed_output():
+    from swapsack.report import render_outputs
+
+    lines = render_outputs(
+        [_out(confirmed=False, block_height=None, block_time=None)], symbol="BTC"
+    )
+    assert "mempool" in lines[1]
+
+
+def test_outputs_total_only_the_unspent_ones():
+    """The spent column is history; adding it to the total would double-count
+    money that has already left."""
+    from swapsack.report import render_outputs
+
+    lines = render_outputs(
+        [_out(value=500_000, spent_by="cd" * 32), _out(vout=1, value=199_000)],
+        symbol="BTC",
+    )
+    footer = " ".join(lines[-2:])
+    assert "0.00199000" in footer
+    assert "0.00500000" not in footer.replace("0.00199000", "")
+
+
+def test_outputs_of_nothing_says_so():
+    from swapsack.report import render_outputs
+
+    lines = render_outputs([], symbol="BTC")
+    assert len(lines) == 1
+    assert "no outputs" in lines[0].lower()

@@ -6,6 +6,25 @@ automatically from git tags (PEP 440 / SemVer).
 
 ## [Unreleased]
 
+### Added
+
+- **`history` and `utxos`.** `swapsack history` lists every transaction that
+  touched the wallet — newest first, mempool first — with what it did to your
+  balance, the full txid, who else was paid, and the memo that marks a swap
+  deposit rather than a plain send. `swapsack utxos` lists the coins behind
+  those numbers: every output that ever paid you, the spent ones included, each
+  saying either `unspent` or which transaction spent it. `--json` on both, and
+  `--unspent` / `--spent` to narrow the second.
+
+  BTC and DASH get the full listing; `utxos --asset ZEC` shows what you still
+  hold but cannot show the spent outputs, and says so. The other chains are not
+  offered: nothing this wallet talks to can list an ETH or TRON address's
+  transactions.
+
+  Both listings cover the addresses the gap-limit scan finds, exactly as
+  `balance` does — coins further out than that are missing from them, and
+  nothing can warn you about it.
+
 ### Fixed
 
 - **Chainflip vault swaps work again.** The broker account this wallet named

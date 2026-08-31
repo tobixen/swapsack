@@ -19,6 +19,13 @@ OP_RETURN_OPCODE = 0x6A
 
 TX_OVERHEAD_VB = 11
 
+# An nSequence at or above this does not signal BIP125 opt-in RBF; below it
+# does. (0xffffffff also disables nLockTime, but the signalling boundary is the
+# only thing that matters here.) It lives in this leaf module rather than in
+# chains/rbf.py because both the bump planner and the neutral transaction model
+# in chains/base.py read it, and base.py may not import the planner.
+RBF_SEQUENCE_MAX = 0xFFFFFFFE
+
 
 @dataclasses.dataclass(frozen=True)
 class ScriptParams:

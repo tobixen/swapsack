@@ -30,12 +30,12 @@ from swapsack.verify import TxOutput
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from swapsack.chains.btc import TxSummary
+    from swapsack.chains.base import TxSummary
 
-# An nSequence at or above this does not signal BIP125 opt-in RBF; below it
-# does. (0xffffffff also disables nLockTime, but the signalling boundary is the
-# only thing that matters here.)
-RBF_SEQUENCE_MAX = 0xFFFFFFFE
+# The BIP125 signalling boundary (``RBF_SEQUENCE_MAX``) lives in
+# :mod:`swapsack.chains.coins`: the neutral transaction model in
+# :mod:`swapsack.chains.base` reads it too, and base.py may not import this
+# module.
 
 # BIP125 rule 4: on top of paying more in absolute terms, the replacement must
 # pay for its own relay bandwidth at the node's incremental relay fee — 1 sat/vB

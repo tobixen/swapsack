@@ -1,4 +1,4 @@
-"""The `balance` sheet: rows in, aligned (optionally valued) lines out.
+"""The printed sheets: rows in, aligned lines out — `balance`, `history`, `utxos`.
 
 Pure — no network, no adapters, no printing — so the layout and, more
 importantly, the *arithmetic of the total* can be tested offline.
@@ -25,12 +25,16 @@ may not quietly overstate what you have or understate what it does not know.
 from __future__ import annotations
 
 import dataclasses
+import time
 from typing import TYPE_CHECKING
 
 from swapsack.pricefeed import Unit
 
 if TYPE_CHECKING:  # imported for types only — report.py stays a leaf module
+    from collections.abc import Sequence
+
     from swapsack.chains.base import BalanceReport
+    from swapsack.chains.history import Output, WalletTx
     from swapsack.thorchain import LiquidityPosition
 
 # Column gap. Two spaces reads as a column; one reads as a typo.
@@ -201,22 +205,31 @@ def render(
     return _layout(cells, valued=valued) + footer
 
 
+def align_columns(rows: Sequence[Sequence[str]], aligns: str) -> list[str]:
+    """Pad ragged rows into columns. One char of ``aligns`` per column: ``<``/``>``.
+
+    The **last** column is never padded — it is the free-text one (a note, a
+    detail), and padding it would leave every line trailing spaces. Shared by
+    every sheet here so their columns are laid out by one rule rather than three.
+    """
+    if not rows:
+        return []
+    widths = [max(len(row[i]) for row in rows) for i in range(len(aligns) - 1)]
+    lines = []
+    for row in rows:
+        cells = [f"{row[i]:{aligns[i]}{w}}" for i, w in enumerate(widths)]
+        cells.append(row[-1])
+        lines.append(GAP.join(cells).rstrip())
+    return lines
+
+
 def _layout(cells: list[tuple[str, str, str, str]], *, valued: bool) -> list[str]:
     """Pad the columns to a common width: label left, numbers right, note left."""
-    if not cells:
-        return []
-    label_w = max(len(c[0]) for c in cells)
-    amount_w = max(len(c[1]) for c in cells)
-    value_w = max(len(c[2]) for c in cells) if valued else 0
-    out = []
-    for label, amount, value, note in cells:
-        line = f"{label:<{label_w}}{GAP}{amount:>{amount_w}}"
-        if valued:
-            line += f"{GAP}{value:>{value_w}}"
-        if note:
-            line += f"{GAP}{note}"
-        out.append(line.rstrip())
-    return out
+    if valued:
+        return align_columns(cells, "<>><")
+    return align_columns(
+        [(label, amount, note) for label, amount, _, note in cells], "<><"
+    )
 
 
 def _totals(
@@ -263,3 +276,119 @@ def _totals(
         )
     )
     return cells, unpriced
+
+
+# --- the `history` and `utxos` listings --------------------------------------
+#
+# Both are UTXO-chain views of the same fetched data (see
+# :mod:`swapsack.chains.history`), and both print **full** transaction ids. A
+# truncated id is not something you can paste into `swapsack status`, an
+# explorer or a support thread, which is the entire reason for having the
+# listing; `--json` is there for anything that wants to be narrower.
+
+
+def _scaled(value: int, decimals: int, *, signed: bool = False) -> str:
+    text = f"{value / 10**decimals:.{decimals}f}"
+    return f"+{text}" if signed and value >= 0 else text
+
+
+def _when(confirmed: bool, block_time: int | None, block_height: int | None) -> str:
+    """When it happened, in UTC — or the honest substitute.
+
+    A transaction still in the mempool has no time to state, and a source that
+    confirms one without dating it leaves only the height. Both beat a blank
+    column, which reads as "nothing known".
+    """
+    if not confirmed:
+        return "mempool"
+    if block_time:
+        return time.strftime("%Y-%m-%d %H:%M", time.gmtime(block_time))
+    return f"block {block_height}" if block_height is not None else "confirmed"
+
+
+def memo_text(memo: bytes) -> str:
+    """An OP_RETURN payload as text when it *is* text, hex otherwise.
+
+    A THORChain/Maya memo is printable ASCII (``=:ETH.ETH:0x…``) and reading it
+    is how you tell what a deposit asked for. A Chainflip vault-swap payload is
+    binary; decoding that as text would print mojibake, so it falls back to the
+    hex an explorer would show.
+    """
+    try:
+        text = memo.decode("ascii")
+    except UnicodeDecodeError:
+        return memo.hex()
+    return text if text.isprintable() else memo.hex()
+
+
+def render_history(
+    transactions: Sequence[WalletTx], *, symbol: str, decimals: int = 8
+) -> list[str]:
+    """Every transaction touching the wallet, newest first, as lines.
+
+    The amount column is the **net** effect on the wallet, signed, because that
+    is the number a reader is looking for. The fee is shown only on transactions
+    the wallet actually paid for: an incoming transaction's fee was the sender's
+    cost, and putting it on our row would misattribute it.
+    """
+    if not transactions:
+        return [f"no transactions found for {symbol}"]
+    rows: list[tuple[str, ...]] = [("WHEN", f"NET ({symbol})", "TXID", "DETAIL")]
+    for tx in transactions:
+        detail = []
+        if tx.has_op_return:
+            detail.append("swap deposit")
+        if tx.counterparties:
+            detail.append("-> " + ", ".join(tx.counterparties))
+        if tx.memo:
+            detail.append(f"memo {memo_text(tx.memo)}")
+        if tx.outgoing:
+            detail.append(f"fee {tx.fee}")
+        rows.append(
+            (
+                _when(tx.confirmed, tx.block_time, tx.block_height),
+                _scaled(tx.net, decimals, signed=True),
+                tx.txid,
+                "; ".join(detail),
+            )
+        )
+    net = sum(tx.net for tx in transactions)
+    return [
+        *align_columns(rows, "<><<"),
+        "",
+        f"{len(transactions)} transactions, net "
+        f"{_scaled(net, decimals, signed=True)} {symbol}",
+    ]
+
+
+def render_outputs(
+    outputs: Sequence[Output], *, symbol: str, decimals: int = 8
+) -> list[str]:
+    """Every output that ever paid the wallet — spent ones included — as lines.
+
+    Only the *unspent* ones are totalled. Spent outputs are history; adding them
+    would double-count money that has already left.
+    """
+    if not outputs:
+        return [f"no outputs found for {symbol}"]
+    rows: list[tuple[str, ...]] = [
+        ("WHEN", "OUTPOINT", f"AMOUNT ({symbol})", "PATH", "STATUS")
+    ]
+    for out in outputs:
+        rows.append(
+            (
+                _when(out.confirmed, out.block_time, out.block_height),
+                out.outpoint,
+                _scaled(out.value, decimals),
+                out.path,
+                f"spent by {out.spent_by}" if out.spent else "unspent",
+            )
+        )
+    unspent = [o for o in outputs if not o.spent]
+    total = sum(o.value for o in unspent)
+    return [
+        *align_columns(rows, "<<><<"),
+        "",
+        f"{len(unspent)} unspent of {len(outputs)} outputs, "
+        f"{_scaled(total, decimals)} {symbol}",
+    ]
