@@ -14,10 +14,31 @@ answered from the chain rather than by asking anyone — see *Answers* below.
 
 - **The broker account is inert for what we broadcast.** With a zero commission
   the payload is byte-identical whichever account is named (checked against two
-  on 2026-08-28); the account only selects *which* of the protocol's published
-  vault addresses to pay, and the gate confirms that address against
-  `cf_get_vault_addresses` either way. It is a constant in our source, not a
-  service we depend on being up.
+  on 2026-08-28, and against all five in the list below on 2026-08-31); the
+  account only selects *which* of the protocol's published vault addresses to
+  pay, and the gate confirms that address against `cf_get_vault_addresses`
+  either way. No host has to be up for a vault swap to be built — but that is
+  not the same as being free of the chain, as the next paragraph says.
+
+  What that answer missed is that the *choice* of account is not free. A broker
+  can set a minimum commission it will encode for, and a broker demanding one is
+  a broker this wallet cannot use — a commission is a skim the gate refuses. On
+  2026-08-31 the single account hardcoded here ("Broker as a Service") began
+  enforcing 5 bps, and every vault swap died on `DispatchError: Broker
+  commission is too low`. The constant is now a fallback *list*
+  (`DEFAULT_BROKER_ACCOUNTS`), tried in order, skipping a broker that refuses to
+  encode at zero. The chain publishes no way to read a broker's minimum, so
+  asking and reading the rejection is the only mechanism available.
+
+  The pool is thinner than it looks: only a broker with a private Bitcoin
+  channel can encode a vault swap at all, and of the 134 accounts
+  `cf_all_account_infos` listed as brokers on 2026-08-31, 128 answered
+  `NoPrivateChannelExistsForBroker`. Six could encode; five did so at zero
+  commission. A network test asserts at least two still do, so the chain wearing
+  down is noticed before it is load-bearing — the fallback list buys time, not
+  immunity, and if that pool ever empties the choice becomes paying a small
+  commission as an explicit, disclosed, gate-checked amount rather than the flat
+  "nobody skims" the gate enforces today.
 - **`max_oracle_price_slippage` is a `u8` whose 255 is what the protocol
   encodes when it is not asked for.** Its documented unit (basis points) cannot
   reach past 2.55% in a `u8`, so rather than set a number whose meaning is

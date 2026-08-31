@@ -21,10 +21,13 @@ pytest.importorskip("bitcoinlib")
 
 from swapsack.chainflip import (  # noqa: E402
     CHAINFLIP_ASSETS,
+    DEFAULT_BROKER_ACCOUNTS,
     VAULT_SWAP_ASSET_IDS,
     ChainflipBackend,
     ChainflipClient,
     ChainflipRpc,
+    NoBrokerAvailable,
+    _request_encoding,
     bitcoin_vault_addresses,
     parse_chainflip_quote,
     prepare_vault_swap,
@@ -124,6 +127,102 @@ def test_vault_swap_round_trips_through_our_own_decoder_live():
     assert decoded.boost_fee == 0
     assert decoded.affiliates == 0
     assert decoded.dca_chunks == 1
+
+
+# The account this wallet named until 2026-08-31, when it began enforcing a
+# 5 bps minimum commission. Kept as the live specimen of a broker refusal: the
+# fallback is only as good as its ability to *recognise* one, and nothing else
+# in the suite exercises that path.
+RETIRED_BROKER = "cFJZVRaybb2PBwxTiAiRLiQfHY4KPB3RpJK22Q7Fhqk979aCH"
+
+# 3 ETH, comfortably above any dust rule and irrelevant to what these assert.
+FLOOR = 3 * 10**18
+
+
+def test_the_broker_fallback_chain_has_not_run_out_live():
+    """Early warning: how many of our brokers still encode at zero commission.
+
+    A broker can set a minimum commission at any time, and one that does is one
+    this wallet cannot use — a commission is a skim
+    ``verify.verify_chainflip_vault_swap`` refuses. On 2026-08-31 exactly six of
+    the 134 registered brokers could encode a Bitcoin vault swap at all, and the
+    account this wallet had hardcoded was the one of them demanding 5 bps.
+
+    Two are required rather than one so that a single broker tightening does not
+    fail CI, while a chain worn down to its last account does — at which point
+    the choice is a wider list or paying a (disclosed, gated) commission, and
+    that is a decision worth being woken up for.
+    """
+    usable, payloads, addresses, refused = [], set(), set(), []
+    with ChainflipRpc() as rpc:
+        vaults = bitcoin_vault_addresses(rpc)
+        for account in DEFAULT_BROKER_ACCOUNTS:
+            try:
+                # Through the wallet's own encoder, one account at a time: a
+                # test that hand-rolled the RPC parameters could keep passing
+                # while the code sent something else, which is the one thing a
+                # live test is here to catch.
+                result = _request_encoding(
+                    rpc,
+                    from_asset=BTC,
+                    to_asset=ETH,
+                    destination=DEST,
+                    floor=FLOOR,
+                    accounts=(account,),
+                )
+            except NoBrokerAvailable as exc:
+                # Only a refusal this wallet recognises lands here; anything
+                # else propagates rather than being counted as a tightening
+                # broker.
+                refused.append(f"{account}: {exc}")
+                continue
+            usable.append(account)
+            payloads.add(str(result["nulldata_payload"]))
+            addresses.add(str(result["deposit_address"]))
+            # Whichever broker answers, the address it names has to be one the
+            # protocol publishes — the fallback must not widen what we pay.
+            assert str(result["deposit_address"]) in vaults
+
+    assert len(usable) >= 2, (
+        f"only {len(usable)} of {len(DEFAULT_BROKER_ACCOUNTS)} brokers still "
+        f"encode at zero commission: {refused}"
+    )
+    # The claim the fallback rests on, and the exact extent of it: the payload
+    # is identical whoever answers, and the deposit address is not — each broker
+    # has its own private channel into a vault, which is why the address is
+    # checked against the published list above rather than trusted.
+    assert len(payloads) == 1, "the payload now depends on the broker account"
+    assert len(addresses) == len(usable), "brokers now share a deposit address"
+
+
+def test_a_broker_refusal_is_still_recognised_live():
+    """The fallback's blind spot: a refusal it does not recognise as one.
+
+    ``BROKER_REFUSALS`` matches on the text of a ``DispatchError``. If the
+    runtime ever renders one differently, every refusal starts propagating as a
+    hard error instead of moving to the next broker, the fallback is silently
+    dead, and the suite above would not notice — it only ever looks at brokers
+    that *succeed*.
+    """
+    with ChainflipRpc() as rpc:
+        try:
+            _request_encoding(
+                rpc,
+                from_asset=BTC,
+                to_asset=ETH,
+                destination=DEST,
+                floor=FLOOR,
+                accounts=(RETIRED_BROKER,),
+            )
+        except NoBrokerAvailable as exc:
+            # What we want: the refusal was recognised and turned into the
+            # give-up error, carrying the chain's own words.
+            assert RETIRED_BROKER in str(exc)
+            return
+        pytest.skip(
+            f"{RETIRED_BROKER} no longer refuses to encode at a zero "
+            f"commission — this canary needs a new specimen"
+        )
 
 
 def test_the_deposit_address_is_a_published_protocol_vault_live():
