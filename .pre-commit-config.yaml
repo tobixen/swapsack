@@ -39,6 +39,15 @@ repos:
     rev: lychee-v0.24.2
     hooks:
       - id: lychee
-        args: ["--no-progress", "--cache", "--max-cache-age", "1d", "."]
+        # LYCHEE_VERSION must be repeated here, and must match `rev` above.
+        # Without it the hook script works its own version out with `git
+        # describe` inside pre-commit's cached clone — but git exports GIT_DIR
+        # into every hook process, so under `git push` that describe runs
+        # against *this* repo instead, finds no `lychee-*` tag, and exits 100
+        # with "rev must be a versioned release tag". The rev is fine; the probe
+        # is looking at the wrong repository. Passing the version as the first
+        # argument is the script's own escape hatch and skips the probe.
+        args: ["LYCHEE_VERSION=0.24.2",
+               "--no-progress", "--cache", "--max-cache-age", "1d", "."]
         pass_filenames: false
         stages: [pre-push]
