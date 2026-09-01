@@ -498,6 +498,77 @@ is a ZIP-244 tree hash the wallet does not compute.
 Related: the `status <txid>` generalization above needs the same per-chain
 transaction reads, so the two are worth doing together.
 
+## A deep `history` walk can be rate-limited, and a 429 is not retried
+
+`history`/`utxos` walk an address's transactions a page at a time, so a wallet
+with any real history makes **dozens to hundreds** of requests per run against a
+public explorer — where `balance` made one per address. Public Esplora
+instances throttle that: re-running the BTC cross-check during development drew
+`429 Too Many Requests` from mempool.space partway through a walk.
+
+A 429 is currently a hard error. `HttpClient._get` retries only
+`TRANSIENT_ERRORS` (connection failures and timeouts — cases where no answer
+came back), and `FailoverHttpClient._get_with_fallback` switches endpoint on the
+same. A 429 is a perfectly good HTTP *response*, so neither triggers: it goes
+straight to `resp.raise_for_status()` and the listing dies partway through, and
+because it dies rather than returning short, it does not even come back as the
+INCOMPLETE result the walk has a flag for.
+
+What to do about it, roughly in order of value:
+
+- **Honour `Retry-After` and back off.** A 429 usually names how long to wait.
+  Retrying it is safe in a way retrying a write never is — these are reads.
+- **Fail over on 429 as well as on a transport error.** `DEFAULT_ESPLORA_NODES`
+  already pins a second operator (mempool.space beside blockstream.info) and the
+  two throttle independently, so the fallback that exists is exactly the right
+  tool; it simply is not reachable from an HTTP status today.
+- **Degrade to INCOMPLETE rather than raising.** If both endpoints throttle, a
+  partial listing that says it is partial beats a traceback — the machinery is
+  already there (`AddressTxs.truncated`).
+- **Consider a small delay between pages.** Cheaper than being throttled, and
+  invisible next to the latency the walk already pays.
+
+Note this makes the throttling *worse* for someone who sets `--esplora` to a
+single instance, since naming an endpoint deliberately turns the fallback off.
+
+## Upstream: the lychee pre-commit hook misreads `rev` under `git push`
+
+`.pre-commit-config.yaml` pins `rev: lychee-v0.24.2` and *also* passes
+`LYCHEE_VERSION=0.24.2` as the hook's first argument. The duplication is a
+workaround, and the two must be bumped together — including after a
+`pre-commit autoupdate`, which will move `rev` and leave the argument behind.
+
+The bug is upstream, in lycheeverse/lychee's `scripts/lychee_pre_commit.sh`. It
+works its own version out with:
+
+```sh
+tag="$(git describe --tags --exact-match --match 'lychee-*v*' 2>/dev/null || true)"
+```
+
+expecting to run inside pre-commit's cached clone of the lychee repository. But
+git exports `GIT_DIR` into every hook process, so under `git push` that command
+runs against **the repository being pushed** instead. swapsack has no `lychee-*`
+tag, the match fails, and the hook exits 100 with
+
+    lychee pre-commit requires 'rev' to be a versioned release tag,
+    such as 'lychee-v0.XX.0'
+
+which is misleading: the rev is valid and exists upstream; the probe is looking
+at the wrong repository. The symptom is that **every** `git push` from the repo
+is refused, while `pre-commit run lychee --hook-stage pre-push --all-files`
+passes — a difference that makes it look like a mystery until you notice only
+the hook path is affected.
+
+The script's own escape hatch (a `LYCHEE_VERSION=...` first argument, which
+skips the probe) is what we use. The proper fix upstream is for the script to
+resolve its own directory explicitly rather than trusting the ambient git
+environment — e.g. `git --git-dir="$LYCHEE_DIR/.git"`, or clearing `GIT_DIR`,
+`GIT_WORK_TREE` and `GIT_INDEX_FILE` before the describe.
+
+**Not yet reported.** Worth filing against lycheeverse/lychee; anyone using that
+hook at the `pre-push` stage hits it. Drop the workaround here once it is fixed
+and released.
+
 ## Other known gaps
 
 - **The address checksum guard can now over-reject, which is the worse
