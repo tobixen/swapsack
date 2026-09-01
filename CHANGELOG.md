@@ -25,6 +25,14 @@ automatically from git tags (PEP 440 / SemVer).
   `balance` does — coins further out than that are missing from them, and
   nothing can warn you about it.
 
+- **`status <txid>` now tracks Chainflip swaps.** A Chainflip vault swap leaves
+  no channel or order id behind — only the deposit transaction you broadcast —
+  and it is invisible to THORChain and Maya, so `status` used to end on "not
+  observed", which reads as *your money went nowhere*. It now asks Chainflip
+  first and reports what the protocol says: the state, what went in, what came
+  out, and the payout transaction. Amounts in assets this wallet has no key for
+  are shown in base units rather than scaled by a guess.
+
 ### Fixed
 
 - **Chainflip vault swaps work again.** The broker account this wallet named

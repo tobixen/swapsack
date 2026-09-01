@@ -2708,7 +2708,35 @@ def no_onchain_btc(monkeypatch):
     monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": NoTx())
 
 
-def test_status_explains_an_unobserved_txid(monkeypatch, capsys, no_onchain_btc):
+@pytest.fixture
+def no_chainflip(monkeypatch):
+    """Make `status`'s Chainflip lookup a miss instead of a live API query.
+
+    Same reasoning as `no_onchain_btc`: `cmd_status` now also asks Chainflip
+    whether the txid was one of its vault-swap deposits, so a test that only
+    cares about the thornode stages would otherwise go out to the network (and
+    be caught by the offline guard in `conftest.py`). `None` is the honest stub
+    — it is what the real lookup returns for the synthetic hashes these tests
+    use.
+    """
+    import swapsack.cli as cli
+
+    class NoSwap:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def swap_status(self, txid):
+            return None
+
+    monkeypatch.setattr(cli, "_chainflip_client", lambda args: NoSwap())
+
+
+def test_status_explains_an_unobserved_txid(
+    monkeypatch, capsys, no_onchain_btc, no_chainflip
+):
     """A hash no vault has seen must say what that means, not print a stub body.
 
     A plain `send` is never observed by THORChain/Maya — only swap inbounds
@@ -2733,7 +2761,7 @@ def test_status_explains_an_unobserved_txid(monkeypatch, capsys, no_onchain_btc)
 
 
 def test_status_reports_the_backend_that_observed_it(
-    monkeypatch, capsys, no_onchain_btc
+    monkeypatch, capsys, no_onchain_btc, no_chainflip
 ):
     import swapsack.cli as cli
 
@@ -2759,7 +2787,7 @@ def test_status_reports_the_backend_that_observed_it(
 
 
 def test_status_prints_the_on_chain_summary(
-    monkeypatch, capsys, fake_feed, esplora_tx_partial_send
+    monkeypatch, capsys, fake_feed, esplora_tx_partial_send, no_chainflip
 ):
     """`status <txid>` should say what the transaction actually did.
 
@@ -4786,3 +4814,121 @@ def test_history_and_utxos_only_offer_the_utxo_chains():
         assert args.asset == "DASH"
         with pytest.raises(SystemExit):
             build_parser().parse_args([command, "--asset", "ETH"])
+
+
+# --- status: what Chainflip made of a deposit -------------------------------
+
+
+def _cf_status(**overrides):
+    from swapsack.chainflip import SwapStatus
+
+    base = dict(
+        state="COMPLETED",
+        swap_id="1776971",
+        src_chain="Bitcoin",
+        src_asset="BTC",
+        dest_chain="Ethereum",
+        dest_asset="USDT",
+        dest_address="0xrecipient",
+        deposit_amount=410_000,
+        deposit_txid="3b" * 32,
+        output_amount=421_500_000,
+        egress_txid="0xpayout",
+        witnessed_at=1_756_000_000_000,
+    )
+    return SwapStatus(**{**base, **overrides})
+
+
+def _stub_chainflip(monkeypatch, status):
+    """Point cmd_status's Chainflip probe at a scripted answer."""
+    import swapsack.cli as cli
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def swap_status(self, txid):
+            if isinstance(status, Exception):
+                raise status
+            return status
+
+    monkeypatch.setattr(cli, "_chainflip_client", lambda args: FakeClient())
+    monkeypatch.setattr(cli, "_print_onchain_tx", lambda args: None)
+    monkeypatch.setattr(
+        "swapsack.backends.default_backends",
+        lambda: [_StubBackend("thorchain", NOT_OBSERVED)],
+    )
+
+
+def test_status_reports_a_chainflip_swap_and_does_not_call_it_unobserved(
+    monkeypatch, capsys
+):
+    """A Chainflip vault swap is invisible to thornode, so the old `status`
+    ended on "not observed by thorchain/maya" — which reads as "your deposit
+    went nowhere" for a swap that in fact completed."""
+    _stub_chainflip(monkeypatch, _cf_status())
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    out = captured.out
+    assert "chainflip" in out.lower()
+    assert "COMPLETED" in out
+    assert "0.00410000 BTC" in out  # 8 decimals
+    assert "421.500000 USDT" in out  # 6 decimals
+    assert "0xrecipient" in out
+    assert "0xpayout" in out
+    assert "not observed" not in (out + captured.err).lower()
+
+
+def test_status_says_a_chainflip_swap_is_still_in_flight(monkeypatch, capsys):
+    """No payout leg yet must read as "not yet", not as a payout of nothing."""
+    _stub_chainflip(
+        monkeypatch, _cf_status(state="SWAPPING", output_amount=None, egress_txid="")
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    out = capsys.readouterr().out
+    assert "SWAPPING" in out
+    assert "0.00000000 USDT" not in out
+    assert "not paid out yet" in out.lower() or "pending" in out.lower()
+
+
+def test_status_prints_base_units_for_an_asset_it_cannot_scale(monkeypatch, capsys):
+    """Chainflip trades assets this wallet has no key for. Scaling one by a
+    guessed number of decimals would misreport the amount by orders of
+    magnitude; saying "base units" is honest."""
+    _stub_chainflip(
+        monkeypatch,
+        _cf_status(dest_chain="Solana", dest_asset="SOL", output_amount=3_075_950_670),
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    out = capsys.readouterr().out
+    assert "3075950670" in out
+    assert "base units" in out
+
+
+def test_status_falls_through_to_thorchain_when_chainflip_never_saw_it(
+    monkeypatch, capsys
+):
+    _stub_chainflip(monkeypatch, None)
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert "chainflip:" not in captured.out.lower()
+    assert "not observed" in (captured.out + captured.err).lower()
+
+
+def test_a_broken_chainflip_api_does_not_break_status(monkeypatch, capsys):
+    """The probe is best-effort, exactly like the on-chain view: a dead endpoint
+    must not cost the user the answer the other backends can still give."""
+    import niquests
+
+    _stub_chainflip(monkeypatch, niquests.exceptions.ConnectionError("down"))
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert "not observed" in (captured.out + captured.err).lower()
