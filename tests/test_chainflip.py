@@ -944,3 +944,135 @@ def test_the_quote_request_carries_the_pair_and_the_amount():
             }
         }
     ]
+
+
+# --- swap status by deposit txid (what `status <txid>` asks Chainflip) -------
+
+# Trimmed from a real /v2/swaps/<txid> body (a completed mainnet BTC->SOL vault
+# swap, 2026-08). Only the keys the parser reads are kept.
+SWAP_STATUS = {
+    "state": "COMPLETED",
+    "swapId": "1776971",
+    "srcAsset": "BTC",
+    "srcChain": "Bitcoin",
+    "destAsset": "SOL",
+    "destChain": "Solana",
+    "destAddress": "2JV8TokNxmdz8NvrZkND2bsHjjzkHumYdpTw4jgB6uAd",
+    "deposit": {
+        "amount": "410000",
+        "txRef": "3b" * 32,
+        "witnessedAt": 1788231096000,
+    },
+    "swap": {"swappedOutputAmount": "3075964670"},
+    "swapEgress": {
+        "amount": "3075950670",
+        "witnessedAt": 1788231258000,
+        "txRef": (
+            "4PLBcsWwV774bk18A2YgYhHccJ3Kve9hk3XHKt6MLGzwbFCE9DP1"
+            "PRamUnsUythXAR1trCv3ABThCThrb5Gfbzuj"
+        ),
+    },
+}
+
+
+def test_parse_swap_status_reads_both_legs():
+    from swapsack.chainflip import parse_swap_status
+
+    s = parse_swap_status(SWAP_STATUS)
+    assert s.state == "COMPLETED"
+    assert s.swap_id == "1776971"
+    assert (s.src_chain, s.src_asset) == ("Bitcoin", "BTC")
+    assert (s.dest_chain, s.dest_asset) == ("Solana", "SOL")
+    assert s.dest_address == "2JV8TokNxmdz8NvrZkND2bsHjjzkHumYdpTw4jgB6uAd"
+    assert s.deposit_amount == 410_000
+    assert s.deposit_txid == "3b" * 32
+    # The egress amount is what actually left, net of the outbound fee — not
+    # the swap's output amount, which is what it was before that fee.
+    assert s.output_amount == 3_075_950_670
+    assert s.egress_txid.startswith("4PLBcs")
+
+
+def test_parse_swap_status_of_a_swap_that_has_not_paid_out_yet():
+    """Every leg past the deposit is absent while a swap is in flight. That must
+    read as "not yet", not as a zero payout or a KeyError."""
+    from swapsack.chainflip import parse_swap_status
+
+    s = parse_swap_status(
+        {
+            "state": "SWAPPING",
+            "swapId": "42",
+            "srcAsset": "BTC",
+            "srcChain": "Bitcoin",
+            "destAsset": "USDT",
+            "destChain": "Ethereum",
+            "destAddress": "0xdead",
+            "deposit": {"amount": "410000", "txRef": "3b" * 32},
+        }
+    )
+    assert s.state == "SWAPPING"
+    assert s.deposit_amount == 410_000
+    assert s.output_amount is None
+    assert s.egress_txid == ""
+    assert s.settled is False
+
+
+def test_a_completed_swap_is_settled_and_an_in_flight_one_is_not():
+    from swapsack.chainflip import parse_swap_status
+
+    assert parse_swap_status(SWAP_STATUS).settled is True
+    assert parse_swap_status({**SWAP_STATUS, "state": "SENDING"}).settled is False
+
+
+def test_parse_swap_status_survives_a_state_it_has_never_seen():
+    """Chainflip may add states. Reporting the protocol's own word for it beats
+    mapping an unknown one onto a guess."""
+    from swapsack.chainflip import parse_swap_status
+
+    s = parse_swap_status({**SWAP_STATUS, "state": "SOMETHING_NEW"})
+    assert s.state == "SOMETHING_NEW"
+    assert s.settled is False
+
+
+def test_swap_status_returns_none_when_chainflip_never_saw_the_txid():
+    """A BTC txid that is not a Chainflip deposit 404s. That is an answer --
+    'not ours' -- not an error to raise at the user."""
+    from swapsack.chainflip import ChainflipClient
+
+    class Resp:
+        status_code = 404
+
+        def raise_for_status(self):
+            raise AssertionError("must not raise on a 404")
+
+        def json(self):
+            return {"message": "resource not found"}
+
+    client = ChainflipClient()
+    client._get = lambda url, **kw: Resp()
+    assert client.swap_status("ab" * 32) is None
+
+
+def test_swap_status_asks_for_the_txid_it_was_given():
+    from swapsack.chainflip import ChainflipClient
+
+    asked = []
+
+    class Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return SWAP_STATUS
+
+    client = ChainflipClient()
+
+    def fake_get(url, **kw):
+        asked.append(url)
+        return Resp()
+
+    client._get = fake_get
+    status = client.swap_status("3b" * 32)
+    assert asked == [f"https://chainflip-swap.chainflip.io/v2/swaps/{'3b' * 32}"]
+    assert status.swap_id == "1776971"

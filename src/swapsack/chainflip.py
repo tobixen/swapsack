@@ -260,6 +260,84 @@ def deposit_units(amount: int, decimals: int) -> int:
     return amount * 10**decimals // THORCHAIN_UNIT
 
 
+@dataclasses.dataclass(frozen=True)
+class SwapStatus:
+    """What Chainflip made of one deposit, in the protocol's own terms.
+
+    Deliberately thin: ``state`` is carried through verbatim rather than mapped
+    onto a local vocabulary, because Chainflip owns that vocabulary and may
+    extend it — printing a word this wallet does not recognise is honest, while
+    folding it into a guessed category is not.
+    """
+
+    state: str
+    swap_id: str
+    src_chain: str
+    src_asset: str
+    dest_chain: str
+    dest_asset: str
+    dest_address: str
+    deposit_amount: int  # base units of the source asset
+    deposit_txid: str
+    # None until the payout leg exists — "not yet", which is not the same as 0.
+    output_amount: int | None = None
+    egress_txid: str = ""  # the payout transaction, once it has been sent
+    witnessed_at: int | None = None  # ms since the epoch, as Chainflip dates it
+
+    @property
+    def settled(self) -> bool:
+        return self.state.upper() == "COMPLETED"
+
+
+def _int_or_none(value: object) -> int | None:
+    """Chainflip sends base-unit amounts as decimal *strings*."""
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_swap_status(payload: dict) -> SwapStatus:
+    """Parse a ``/v2/swaps/<txid>`` body. Pure, like the quote parsers above.
+
+    Every leg after the deposit is absent while a swap is in flight, so each is
+    read defensively: an in-flight swap must read as "not paid out yet", never
+    as a payout of zero.
+    """
+    deposit = payload.get("deposit") or {}
+    egress = payload.get("swapEgress") or {}
+    return SwapStatus(
+        state=str(payload.get("state", "") or ""),
+        swap_id=str(payload.get("swapId", "") or ""),
+        src_chain=str(payload.get("srcChain", "") or ""),
+        src_asset=str(payload.get("srcAsset", "") or ""),
+        dest_chain=str(payload.get("destChain", "") or ""),
+        dest_asset=str(payload.get("destAsset", "") or ""),
+        dest_address=str(payload.get("destAddress", "") or ""),
+        deposit_amount=_int_or_none(deposit.get("amount")) or 0,
+        deposit_txid=str(deposit.get("txRef", "") or ""),
+        # The *egress* amount, not the swap's output amount: the difference is
+        # the outbound fee, and what left the protocol is what the user got.
+        output_amount=_int_or_none(egress.get("amount")),
+        egress_txid=str(egress.get("txRef", "") or ""),
+        witnessed_at=_int_or_none(deposit.get("witnessedAt")),
+    )
+
+
+def asset_decimals(chain: str, asset: str) -> int | None:
+    """Decimals for a Chainflip ``(chain, asset)`` pair, or ``None`` if unknown.
+
+    Reverses :data:`CHAINFLIP_ASSETS`. Chainflip trades assets this wallet has
+    no key for (SOL, DOT, …), and a swap *to* one of those is perfectly normal —
+    so an unknown pair yields ``None`` and the caller prints base units rather
+    than scaling by a made-up power of ten.
+    """
+    for cf_chain, cf_asset, decimals in CHAINFLIP_ASSETS.values():
+        if (cf_chain, cf_asset) == (chain, asset):
+            return decimals
+    return None
+
+
 class ChainflipClient(HttpClient):
     """Thin client for the Chainflip swapping service's quote API (keyless)."""
 
@@ -292,6 +370,24 @@ class ChainflipClient(HttpClient):
                     str(payload.get("message", payload) if payload else resp.text)
                 )
         return resp.json()
+
+    def swap_status(self, txid: str) -> SwapStatus | None:
+        """The protocol's view of the swap a transaction paid for, or ``None``.
+
+        Keyed by the **deposit transaction id**, which is the only handle a
+        vault swap leaves behind: there is no deposit channel and no order id,
+        just the transaction the wallet broadcast. A txid Chainflip never
+        witnessed answers 404, which is information ("not one of ours"), not a
+        failure — so it comes back as ``None`` rather than raising.
+        """
+        resp = self._get(f"{self.base_url}/swaps/{txid}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            raise ChainflipError(f"malformed swap status for {txid}")
+        return parse_swap_status(payload)
 
 
 @dataclasses.dataclass(frozen=True)

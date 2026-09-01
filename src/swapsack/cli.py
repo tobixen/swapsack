@@ -3435,6 +3435,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     # the swap-observation view — that is the useful part for a plain send.
     _print_onchain_tx(args)
 
+    # Chainflip before the thornode backends, because a Chainflip vault swap is
+    # invisible to them: thornode would answer "not observed", which reads as
+    # "your deposit went nowhere" for a swap that may have completed fine.
+    if _print_chainflip_swap(args):
+        return 0
+
     if args.backend == "auto":
         backends = default_backends()
     else:
@@ -3467,6 +3473,74 @@ def cmd_status(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return 0
+
+
+def _chainflip_client(args: argparse.Namespace):  # noqa: ANN202
+    from swapsack.chainflip import DEFAULT_CHAINFLIP_API, ChainflipClient
+
+    url = (
+        getattr(args, "chainflip_api", None)
+        or os.environ.get("SWAPSACK_CHAINFLIP_API")
+        or DEFAULT_CHAINFLIP_API
+    )
+    return ChainflipClient(url)
+
+
+def _swap_amount(amount: int | None, chain: str, asset: str) -> str:
+    """A Chainflip amount as whole units, or as base units when we cannot scale.
+
+    Chainflip trades assets this wallet holds no key for (SOL, DOT, …), and a
+    swap *to* one of those is ordinary. Guessing its decimals would misreport
+    the payout by orders of magnitude, so an unknown asset is shown raw and
+    labelled — the one thing that cannot mislead.
+    """
+    from swapsack.chainflip import asset_decimals
+
+    if amount is None:
+        return f"not paid out yet ({asset})"
+    decimals = asset_decimals(chain, asset)
+    if decimals is None:
+        return f"{amount} base units {asset}"
+    return f"{amount / 10**decimals:.{decimals}f} {asset}"
+
+
+def _print_chainflip_swap(args: argparse.Namespace) -> bool:
+    """Print what Chainflip made of this deposit; True if it knew the txid.
+
+    Best-effort in the same way as :func:`_print_onchain_tx`: a dead or slow
+    endpoint prints nothing and never raises, because the other backends can
+    still answer. A 404 is not a failure — it means the deposit is not a
+    Chainflip one, which is the common case and the reason this returns a bool
+    rather than printing "no".
+    """
+    from swapsack.chainflip import ChainflipError
+
+    try:
+        with _chainflip_client(args) as client:
+            swap = client.swap_status(args.txid)
+    except (*HTTP_ERRORS, ChainflipError, ValueError):
+        return False
+    if swap is None:
+        return False
+
+    swap_id = f" (swap {swap.swap_id})" if swap.swap_id else ""
+    print(f"chainflip: {swap.state}{swap_id}")
+    when = ""
+    if swap.witnessed_at:  # Chainflip dates in milliseconds
+        stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime(swap.witnessed_at / 1000))
+        when = f"  witnessed {stamp} UTC"
+    deposited = _swap_amount(swap.deposit_amount, swap.src_chain, swap.src_asset)
+    print(f"  in:  {deposited}{when}")
+    out = _swap_amount(swap.output_amount, swap.dest_chain, swap.dest_asset)
+    print(f"  out: {out} -> {swap.dest_address}")
+    if swap.egress_txid:
+        print(f"       payout tx {swap.egress_txid}")
+    if not swap.settled:
+        print(
+            "  note: not finished yet — Chainflip is still working through it",
+            file=sys.stderr,
+        )
+    return True
 
 
 def _print_onchain_tx(args: argparse.Namespace) -> None:
