@@ -461,6 +461,43 @@ column for this — it's a distinct capability from Send/Sweep, currently ✅ fo
 and blank everywhere else. (Remember the duplicated matrix further down the
 README — both copies would need the column.)
 
+## Extend `history` / `utxos` to every currency (not just the UTXO chains)
+
+`history` and `utxos` list the UTXO chains only — BTC and DASH in full, ZEC's
+unspent set without the spent half. The account-model chains have no listing at
+all, and that is a data-source gap rather than a design choice: `chains/eth.py`,
+`arb.py` and `bsc.py` speak plain JSON-RPC to a public node, and `tron.py` uses
+the keyless java-tron HTTP API. **Neither has an address history index**, so
+there is no call to enumerate an address's transactions with. Everything else is
+already in place: `chains/history.py` is chain-agnostic (it takes `(path,
+address)` records plus an `address_txs` fetch and returns `WalletTx`/`Output`
+rows), and `report.py` renders whatever it is handed.
+
+So the work is a data source, and picking one is the decision:
+
+- **Etherscan V2** covers Ethereum, Arbitrum and BSC through one multichain
+  endpoint, but needs an API key — a new secret to manage, and it binds the
+  wallet's addresses to one commercial operator.
+- **Blockscout** instances are keyless, but are per-chain URLs, rate-limited,
+  and go down; the same class of SPOF as the single Dash Insight explorer that
+  `docs/dash.md` already warns about, so it would want the same failover
+  treatment `chains/btc.py` gives Esplora.
+- **TronGrid**'s `/v1/accounts/{address}/transactions` is keyless but
+  rate-limited, and is TRON-only.
+- A **self-hosted indexer** (Erigon/Blockscout of one's own) avoids the trust
+  and rate-limit problems and has none of the convenience.
+
+Whichever is chosen, keep the shape the UTXO adapters already established: an
+`address_txs(address) -> AddressTxs` returning parsed rows plus a `truncated`
+flag, so a paging limit is reported as INCOMPLETE rather than passed off as a
+complete history. Note the account model has no UTXOs, so `utxos` stays
+UTXO-only by nature — only `history` generalizes. ZEC `history` is a separate,
+harder problem: lightwalletd returns raw transactions and a post-NU5 (v5) txid
+is a ZIP-244 tree hash the wallet does not compute.
+
+Related: the `status <txid>` generalization above needs the same per-chain
+transaction reads, so the two are worth doing together.
+
 ## Other known gaps
 
 - **The address checksum guard can now over-reject, which is the worse
