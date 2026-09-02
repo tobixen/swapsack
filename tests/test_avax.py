@@ -14,6 +14,8 @@ needs no chain qualifier) and ``native_send_gas`` (Avalanche is an L1 and bills
 no L1-calldata surcharge, so Ethereum's 21000 floor is correct).
 """
 
+import dataclasses
+
 import pytest
 
 from swapsack.chains.avax import AVAX_CHAIN_ID, AVAX_TRACKED_TOKENS, AvaxAdapter
@@ -190,6 +192,61 @@ def test_avax_native_swap_passes_its_own_chain_gate():
     )
     assert prepared.problems == []
     assert prepared.built.tx["chainId"] == AVAX_CHAIN_ID
+
+
+AVAX_ROUTER = "0x00dc6100103BC402d490aEE3F9a5560cBd91f1d4"
+
+
+def test_avax_token_swap_rescales_by_this_chains_decimals_and_passes_its_gate():
+    """The only AVAX path where a per-chain constant rescales the *amount*.
+
+    A token source is an approve + ``router.depositWithExpiry`` pair, and the
+    deposit's value is ``request.amount * 10**decimals // 10**8``. Every other
+    AVAX path moves either the 18-decimal native coin or a fixed number of
+    token units; this one multiplies by the tracked-token table. Inherit BSC's
+    18 by mistake and a 1 USDC swap deposits 1e12 USDC — which the contract
+    would simply fail, but a *smaller* wrong exponent would silently overspend.
+
+    Pinned here because the native-swap test above cannot reach this branch:
+    ``build_and_verify`` dispatches on ``"-" in request.from_asset``.
+    """
+    from swapsack.chains.eth import DEPOSIT_SELECTOR, _decode_call
+    from swapsack.swap import SwapRequest
+
+    adapter = AvaxAdapter()
+    dest = "0x1111111111111111111111111111111111111111"
+    quote = _avax_swap_quote(dest)
+    quote = dataclasses.replace(quote, router=AVAX_ROUTER)
+    prepared = adapter.build_and_verify(
+        quote=quote,
+        request=SwapRequest(
+            from_asset=f"AVAX.USDC-{USDC_CONTRACT.upper()}",
+            to_asset="BTC.BTC",
+            amount=100_000_000,  # 1e8 units -> 1.0 USDC
+            destination=dest,
+        ),
+        now=0,
+        mnemonic=MNEMONIC,
+        nonce=7,
+        gas=60000,
+        max_fee_per_gas=20_000_000_000,
+        max_priority_fee_per_gas=1_000_000_000,
+        max_fee_wei=10**17,
+    )
+    assert prepared.problems == []
+    assert prepared.built.approve_tx["chainId"] == AVAX_CHAIN_ID
+    assert prepared.built.deposit_tx["chainId"] == AVAX_CHAIN_ID
+    # 1e8 wallet units of a 6-decimal token = 1_000_000 native units, not 1e18.
+    assert prepared.built.native_amount == 1_000_000
+    _, _, deposited, _, _ = _decode_call(
+        prepared.built.deposit_tx["data"],
+        DEPOSIT_SELECTOR,
+        ["address", "address", "uint256", "string", "uint256"],
+    )
+    assert deposited == 1_000_000
+    # The approve must be for the same router the deposit is sent to, or the
+    # transferFrom inside depositWithExpiry reverts after the approve is live.
+    assert prepared.built.router == prepared.built.deposit_tx["to"] == AVAX_ROUTER
 
 
 def test_avax_native_lp_deposit_passes_its_own_chain_gate():

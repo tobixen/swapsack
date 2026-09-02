@@ -48,13 +48,16 @@ COINGECKO_IDS: dict[str, str] = {
     "USDT-ETH": "tether",
     "USDT-TRON": "tether",
     "USDC-ETH": "usd-coin",
-    # Same dollar, cheaper chain — one price for all three.
+    # The same dollar on a cheaper chain: one price per token regardless of
+    # which chain carries it, so a stablecoin row is never left unpriceable.
     "USDC-AVAX": "usd-coin",
     "USDT-AVAX": "tether",
     "USDC-ARB": "usd-coin",
-    # BSC is hold+balance only (nothing trades it), so these have no ASSET entry
-    # — but `balance` prints the rows, and an unpriceable row it cannot value is
-    # named in the sheet's footer every single run if they are missing here.
+    # BSC is hold+balance only, so these have no ASSET entry — but `balance`
+    # prints the rows, and an unpriceable row it cannot value is named in the
+    # sheet's footer every single run if they are missing here. (The reason
+    # used to be "nothing trades it"; THORChain's BSC halt lifted 2026-09-02,
+    # so what is missing now is the CLI wiring — see docs/TODO.md.)
     "USDT-BSC": "tether",
     "USDC-BSC": "usd-coin",
 }
@@ -145,7 +148,15 @@ class PriceFeed(HttpClient):
     def __init__(
         self, base_url: str = DEFAULT_COINGECKO, timeout: float = 10.0
     ) -> None:
-        super().__init__(timeout)
+        # No retries, deliberately. Every caller here already treats a failure
+        # as "skip the line", and CoinGecko's keyless endpoint answers a busy
+        # client with 429 + Retry-After — which the shared client honours up to
+        # MAX_RETRY_AFTER. Inheriting DEFAULT_RETRIES would therefore let a
+        # throttled *advisory* lookup sleep 2x30s in front of a swap
+        # confirmation, after the passphrase prompt, which is exactly what the
+        # 5s timeout at that call site exists to prevent. A cap chosen for a
+        # deep explorer walk must not become the price feed's floor.
+        super().__init__(timeout, retries=0)
         self.base_url = base_url.rstrip("/")
 
     def spot(

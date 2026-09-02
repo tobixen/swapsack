@@ -3322,8 +3322,10 @@ def test_symmetric_fee_line_names_the_chains_own_native_coin(monkeypatch, capsys
 def test_evm_adapters_table_covers_every_spendable_evm_chain():
     import swapsack.cli as cli
 
-    # BSC is deliberately absent: its adapter is address+balance only, so it has
-    # no send/swap/LP path to dispatch to.
+    # BSC is absent because it has no ASSET entry and no wiring in cli.py — NOT
+    # because the code is missing: its inherited send paths exist and sign for
+    # chain 56. See the comment on _EVM_ADAPTERS, and docs/TODO.md, which now
+    # ranks wiring BSC as the cheapest item on the list.
     assert set(cli._EVM_ADAPTERS) == {"ETH", "ARB", "AVAX"}
 
 

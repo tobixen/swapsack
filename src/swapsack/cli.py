@@ -235,9 +235,12 @@ def _avax_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN2
 # The spendable EVM chains. They dispatch identically (derive one address ->
 # nonce+fees -> build -> gate -> broadcast) and differ only in their adapter, so
 # this registry replaces what were `chain == "ETH"` branches in cmd_send,
-# cmd_swap and _liquidity. BSC is deliberately absent: its adapter is
-# address+balance only (nothing trades it), so it has no send/swap/LP path to
-# dispatch to.
+# cmd_swap and _liquidity. BSC is deliberately absent — but not because the
+# code is missing: BscAdapter passes chain id 56 to super().__init__, so the
+# inherited send paths already sign correctly. What it lacks is an ASSET entry
+# and the wiring in this file, and its swap entry point is stubbed out by hand.
+# (Until 2026-09-02 the reason was "nothing trades it"; that halt has lifted —
+# see docs/TODO.md, where wiring BSC is now the cheapest item on the list.)
 _EVM_ADAPTERS = {
     "ETH": _eth_adapter,
     "ARB": _arb_adapter,
@@ -2928,7 +2931,9 @@ def _eth_lp_build_kwargs(
     kwargs["token"] = token
     _warn(
         "token liquidity add — 2 transactions (approve + deposit):",
-        "gas is paid in ETH, separate from the tokens deposited",
+        # The asset chain's own coin, not a hardcoded "ETH" — the same trap
+        # _liquidity_symmetric's fee line already names. AVAX made it live.
+        f"gas is paid in {adapter.native_symbol}, separate from the tokens deposited",
         "if the deposit fails after approve, a router allowance remains",
     )
     return kwargs, adapter.token_decimals(token)
@@ -3313,10 +3318,12 @@ def _warn_truncated(history, limit: int) -> None:  # noqa: ANN001
     _warn(
         f"the listing is INCOMPLETE: {len(history.truncated)} address(es) could "
         "not be walked to the end.",
-        f"either the --limit of {limit} transactions was reached, or the "
-        "address's history kept moving while it was being read",
+        f"the --limit of {limit} transactions was reached, or the address's "
+        "history kept moving while it was being read, or every explorer "
+        "rate-limited the walk (a 429 note above says so if it was that)",
         "an output shown as unspent may in fact have been spent out of view",
-        f"re-run; raise --limit if an address has more than {limit} transactions",
+        f"re-run; raise --limit only if an address has more than {limit} "
+        "transactions — a rate-limited walk just needs the re-run",
     )
 
 

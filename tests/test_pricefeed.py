@@ -2,8 +2,11 @@
 
 import pytest
 
+from conftest import FakeResponse, FakeSession
+from swapsack.net import RateLimited
 from swapsack.pricefeed import (
     COINGECKO_IDS,
+    PriceFeed,
     loss_amount,
     loss_vs_market_bps,
     market_out,
@@ -72,3 +75,32 @@ def test_tokens_map_to_the_underlying_asset_regardless_of_chain():
     # defunct coin) — a wrong id silently drops the market line rather than
     # erroring, so it is worth pinning.
     assert COINGECKO_IDS["AVAX"] == "avalanche-2"
+
+
+def test_a_throttled_price_lookup_never_sleeps(monkeypatch):
+    """A courtesy line must not delay a money path, however throttled it is.
+
+    The shared HTTP client honours a 429's ``Retry-After`` up to 30s and, with
+    the default two retries, would sleep twice — up to a minute in front of a
+    swap confirmation that has already asked for the passphrase. The feed's
+    every caller treats a failure as "skip the line", so it opts out of
+    retrying entirely: the 429 comes straight back as ``RateLimited`` and the
+    caller drops the line.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr("swapsack.net.time.sleep", slept.append)
+    feed = PriceFeed()
+    feed._session = FakeSession(  # type: ignore[assignment]
+        FakeResponse(429, Retry_After="30"),
+        FakeResponse(429, Retry_After="30"),
+        FakeResponse(429, Retry_After="30"),
+    )
+    with pytest.raises(RateLimited):
+        feed.spot(["bitcoin"], vs=("eur",))
+    assert slept == []
+
+
+def test_the_price_feed_opts_out_of_retrying():
+    # The declaration behind the test above: retries are the mechanism, and a
+    # subclass that quietly inherits DEFAULT_RETRIES reintroduces the stall.
+    assert PriceFeed()._retries == 0
