@@ -503,6 +503,13 @@ VAULT_SWAP_ASSET_IDS: dict[str, int] = {
     "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7": 8,
 }
 
+# The reverse lookup, built once rather than re-built by every caller that
+# needs to go from a decoded payload's numeric asset id back to our asset
+# string (``status``, reading a deposit it did not build).
+VAULT_SWAP_ASSETS_BY_ID: dict[int, str] = {
+    asset_id: asset for asset, asset_id in VAULT_SWAP_ASSET_IDS.items()
+}
+
 # Blocks Chainflip keeps retrying a swap whose price never clears the floor
 # before refunding to the change output. The chain caps this
 # (max_swap_retry_duration_blocks, 600 at the time of writing) and rejects more.

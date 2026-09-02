@@ -50,7 +50,8 @@ from swapsack.thorchain import THORCHAIN_UNIT, asset_unit
 from swapsack.verify import OP_RETURN_MAX_BYTES
 
 if TYPE_CHECKING:  # types only — the chain adapters stay lazily imported below
-    from swapsack.chains.base import TxSummary
+    from swapsack.chains.base import TxEntry, TxSummary
+    from swapsack.verify import DecodedVaultSwap
 
 # The finest base unit across all supported assets (CACAO's 1e10) — the
 # parse-time floor for --amount; the per-asset floor lives in _base_units.
@@ -3423,6 +3424,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             except (CowError, *HTTP_ERRORS) as exc:
                 print(f"ORDER STATUS FAILED: {exc}", file=sys.stderr)
                 return 1
+        print("backend: cow — signed order, no vault and no memo")
         print(json.dumps(status, indent=2))
         return 0
 
@@ -3453,6 +3455,23 @@ def cmd_status(args: argparse.Namespace) -> int:
     # not be asked at all, which is a different sentence to write.
     if _print_unwitnessed_chainflip_swap(tx, asked=answered is not None):
         return 0
+    # `_print_unwitnessed_chainflip_swap` only reports a destination asset id
+    # it can name — but "cannot report the payout" is not "not a swap inbound
+    # at all", which is what the thornode fallback below would otherwise say
+    # about a transaction whose OP_RETURN genuinely is Chainflip's own format.
+    # Route it around that false claim: `_decode_chainflip_output` is the same
+    # check `_print_onchain_tx`'s label already used on this same tx.
+    if (found := _decode_chainflip_output(tx)) is not None:
+        _output, decoded = found
+        print(
+            f"// this is a Chainflip vault-swap payload (version "
+            f"{decoded.version}), but its destination asset id "
+            f"{decoded.asset_id} is not one this wallet has a table for, so "
+            "the payout cannot be reported here. Track it at "
+            "scan.chainflip.io.",
+            file=sys.stderr,
+        )
+        return 0
 
     if args.backend == "auto":
         backends = default_backends()
@@ -3469,8 +3488,12 @@ def cmd_status(args: argparse.Namespace) -> int:
             continue
         observed = status.get("stages", {}).get("inbound_observed", {}).get("started")
         if observed:
-            if len(backends) > 1:
-                print(f"// observed on {backend.name}", file=sys.stderr)
+            # On stdout, and whether or not more than one backend was asked:
+            # which protocol settled a swap is part of the answer, not a
+            # diagnostic. It used to be stderr-only and suppressed for a single
+            # `--backend`, so the one output that names no protocol at all was
+            # the one where the user had already narrowed it to a guess.
+            print(f"backend: {backend.name}")
             print(json.dumps(status, indent=2))
             return 0
     # Not observed on any backend. The bare "started": false body is the correct
@@ -3543,7 +3566,11 @@ def _print_chainflip_swap(args: argparse.Namespace) -> bool | None:
         return False
 
     swap_id = f" (swap {swap.swap_id})" if swap.swap_id else ""
-    print(f"chainflip: {swap.state}{swap_id}")
+    # Not "vault swap": /v2/swaps/<txid> resolves any swap the protocol
+    # witnessed under that deposit txid, deposit-channel ones included — this
+    # wallet only ever *builds* the vault-swap kind, but `status` reads a
+    # txid someone else may have made through Chainflip's own web app.
+    print(f"backend: chainflip — {swap.state}{swap_id}")
     when = ""
     if swap.witnessed_at:  # Chainflip dates in milliseconds
         stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime(swap.witnessed_at / 1000))
@@ -3592,50 +3619,53 @@ def _print_unwitnessed_chainflip_swap(
     OP_RETURN carries the whole intention, so decode it here: the transaction
     says what it asked for whether or not anyone's service is up.
 
-    Deliberately strict about what it will claim is a vault swap. A THORChain
-    ``=:`` memo can be 48 bytes too, so the version byte (never ASCII) and a
-    destination asset id this wallet can name are both required — an id it
-    cannot name is a payload it does not understand, and falling through beats
-    printing a payout scaled by a guessed number of decimals.
+    Only claims a *report* for a destination asset id this wallet can name —
+    an id it cannot name is a payload it cannot scale a payout for, and
+    ``cmd_status`` gives that case its own (still Chainflip-labelled) message
+    rather than one built on a guess. It still returns ``False`` there, and
+    :func:`_decode_chainflip_output` is what both functions share so they
+    cannot disagree about which case they are in.
 
     ``asked`` is False when the swapping service could not be reached at all, as
     opposed to answering "not one of mine". Only the second licenses saying the
     deposit has not been witnessed — the first says nothing about it.
     """
-    from swapsack.chainflip import CHAINFLIP_ASSETS, VAULT_SWAP_ASSET_IDS
-    from swapsack.verify import VAULT_SWAP_VERSION, decode_vault_swap_payload
+    from swapsack.chainflip import CHAINFLIP_ASSETS, VAULT_SWAP_ASSETS_BY_ID
 
-    if tx is None:
+    found = _decode_chainflip_output(tx)
+    if found is None:
         return False
-    by_id = {asset_id: asset for asset, asset_id in VAULT_SWAP_ASSET_IDS.items()}
-    for output in tx.outputs:
-        if output.op_return_data is None:
-            continue
-        decoded = decode_vault_swap_payload(output.op_return_data)
-        if decoded is None or decoded.version != VAULT_SWAP_VERSION:
-            continue
-        asset = by_id.get(decoded.asset_id)
-        if asset is None:
-            continue
-        break
-    else:
+    output, decoded = found
+    asset = VAULT_SWAP_ASSETS_BY_ID.get(decoded.asset_id)
+    if asset is None:
         return False
 
     chain, cf_asset, _decimals = CHAINFLIP_ASSETS[asset]
-    print("chainflip: a vault swap, read from the deposit itself")
+    print("backend: chainflip — vault swap, read from the deposit itself")
+    # The deposit output: by construction (`GatedUtxoAdapter.build_and_verify_
+    # vault_swap`'s own docstring — "vault output, nulldata OP_RETURN, change")
+    # it is the first non-OP_RETURN output. Vaults rotate every few days, so
+    # membership in *today's* published list only ever adds a confirmation on
+    # top of this — it must never gate whether the paid amount gets printed at
+    # all, or a stale vault list would make a genuine deposit disappear.
+    paid_outputs = [o for o in tx.outputs if o.op_return_data is None and o.value]
+    deposit = paid_outputs[0] if paid_outputs else output
+    deposited = _swap_amount(deposit.value, "Bitcoin", "BTC")
     vaults = _chainflip_vaults()
-    paid = [o for o in tx.outputs if o.address in vaults]
-    if paid:
-        deposited = _swap_amount(sum(o.value for o in paid), "Bitcoin", "BTC")
-        print(f"  in:  {deposited} -> {paid[0].address} (published protocol vault)")
-    elif vaults:
-        # The payload says what was asked for; only the vault list says who was
-        # paid. A well-formed payload sent somewhere the protocol does not
-        # publish is a swap that will never happen, and worth saying loudly.
+    known_vault = deposit.address in vaults
+    tag = " (published protocol vault)" if known_vault else ""
+    print(f"  in:  {deposited} -> {deposit.address}{tag}")
+    if vaults and not known_vault:
+        # The payload says what was asked for; the vault list only *adds*
+        # confidence about who was paid — it never subtracts it. A vault swap
+        # stays valid across roughly two epoch rotations
+        # (docs/chainflip-effort.md), so "not in the list published right
+        # now" is not "never will be": say exactly that, not more.
         print(
-            "  WARNING: this pays no address the protocol publishes as a "
-            "Bitcoin vault — Chainflip will never see it",
-            file=sys.stderr,
+            "  WARNING: this does not pay an address the current vault list "
+            "publishes — vaults rotate every few days, so this alone is not "
+            "proof the swap failed. If it is still unresolved after a few "
+            "days, check scan.chainflip.io."
         )
     floor = _swap_amount(decoded.min_output_amount, chain, cf_asset)
     print(f"  out: at least {floor} -> 0x{decoded.destination.hex()}")
@@ -3658,6 +3688,103 @@ def _print_unwitnessed_chainflip_swap(
         file=sys.stderr,
     )
     return True
+
+
+# THORChain/Maya memo command words, short and long forms both
+# (https://docs.thorchain.org's memo reference). "Decodes as ASCII" is not
+# "is a memo" — arbitrary OP_RETURN data is common on Bitcoin — so a command
+# word is what actually earns the label, not merely being readable text.
+_THORCHAIN_MEMO_COMMANDS = frozenset(
+    {
+        "swap",
+        "s",
+        "=",
+        "add",
+        "a",
+        "+",
+        "withdraw",
+        "wd",
+        "-",
+        "donate",
+        "d",
+        "%",
+        "bond",
+        "unbond",
+        "leave",
+        "migrate",
+        "reserve",
+        "refund",
+        "consolidate",
+        "noop",
+        "trust",
+        "out",
+        "name",
+    }
+)
+
+
+def _decode_chainflip_output(
+    tx: TxSummary | None,
+) -> tuple[TxEntry, DecodedVaultSwap] | None:
+    """The first output whose OP_RETURN is a real Chainflip vault-swap payload.
+
+    Shared by every reader that needs to recognise one from bytes alone — the
+    on-chain protocol label, the pre-witness report, and the "not observed"
+    fallback's wording. Routing all three through one decode means they cannot
+    disagree about whether a given transaction is Chainflip's, which two of
+    them once did for a payload naming an asset id this wallet cannot name.
+    """
+    from swapsack.verify import is_vault_swap_payload
+
+    if tx is None:
+        return None
+    for output in tx.outputs:
+        if output.op_return_data is None:
+            continue
+        if (decoded := is_vault_swap_payload(output.op_return_data)) is not None:
+            return output, decoded
+    return None
+
+
+def _op_return_protocol(data: bytes | None) -> str:
+    """Name the protocol an OP_RETURN belongs to, from its bytes alone.
+
+    The line used to read "swap/LP memo" for every one of them, which is
+    THORChain's own vocabulary printed over a transaction that may well be a
+    Chainflip deposit — and the deposit is the only thing `status` can show
+    before either protocol has witnessed it, so that was the moment the label
+    mattered most. The two are trivially distinguishable: a thornode memo is
+    ASCII beginning with a command word, a vault-swap payload is 48 binary
+    bytes beginning with its exact version.
+    """
+    from swapsack.chainflip import VAULT_SWAP_ASSETS_BY_ID
+    from swapsack.verify import is_vault_swap_payload
+
+    if data is None:
+        return "unreadable"
+    if (decoded := is_vault_swap_payload(data)) is not None:
+        asset = VAULT_SWAP_ASSETS_BY_ID.get(decoded.asset_id)
+        if asset is None:
+            # Genuinely Chainflip's own format — the version byte says so —
+            # but a destination asset id no table here can name. Still worth
+            # calling Chainflip's rather than "unrecognised": the shape is
+            # unambiguous, only the payout is unreadable.
+            return (
+                f"Chainflip vault swap, destination asset id {decoded.asset_id} "
+                "unrecognised here"
+            )
+        return f"Chainflip vault swap -> {asset}"
+    try:
+        memo = data.decode("ascii")
+    except UnicodeDecodeError:
+        return "binary payload — not a memo this wallet recognises"
+    command = memo.split(":", 1)[0].lower()
+    if command not in _THORCHAIN_MEMO_COMMANDS:
+        # repr'd: the bytes are whoever broadcast the transaction's, and
+        # `decode("ascii")` accepts control characters — a bare ESC belongs in
+        # a repr, not loose in a terminal that is about to print more lines.
+        return f"unrecognised ASCII data, not a memo this wallet can identify: {memo!r}"
+    return f"THORChain/Maya memo {memo!r}"
 
 
 def _print_onchain_tx(args: argparse.Namespace) -> TxSummary | None:
@@ -3688,7 +3815,7 @@ def _print_onchain_tx(args: argparse.Namespace) -> TxSummary | None:
     print(f"  in:  {tx.total_in} sats over {len(tx.inputs)} input(s)")
     for o in tx.outputs:
         if o.op_return:
-            print("  out: OP_RETURN (swap/LP memo)")
+            print(f"  out: OP_RETURN ({_op_return_protocol(o.op_return_data)})")
             continue
         print(f"  out: {o.value} sats -> {o.address}")
     fee_eur = _eur_suffix(tx.fee / THORCHAIN_UNIT, "BTC", price_check=args.price_check)
