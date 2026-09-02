@@ -276,8 +276,9 @@ pass `--dest` to override.
 Config via flags or env: keystore `$SWAPSACK_KEYSTORE`
 (`~/.config/swapsack/keystore.json`), passphrase
 `$SWAPSACK_PASSPHRASE`, Esplora `$SWAPSACK_ESPLORA` (default: try
-`blockstream.info`, fall back to `mempool.space`; setting this uses
-that endpoint alone), Ethereum
+`blockstream.info`, fall back to `mempool.space` — when the first
+stalls *or* rate-limits the request; setting this uses that endpoint
+alone, so a throttle there can only be waited out), Ethereum
 RPC `$SWAPSACK_ETH_RPC`, TRON API `$SWAPSACK_TRON_API`, BSC RPC
 `$SWAPSACK_BSC_RPC`, Dash Insight API `$SWAPSACK_DASH_API`, Zcash
 lightwalletd `$SWAPSACK_ZEC_LWD` (gRPC `host:port`), THORChain REST

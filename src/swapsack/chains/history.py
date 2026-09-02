@@ -41,6 +41,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from swapsack.chains.base import TxSummary
 from swapsack.chains.scan import DEFAULT_WORKERS
+from swapsack.net import RateLimited
 
 
 @dataclasses.dataclass(frozen=True)
@@ -165,12 +166,23 @@ def collect_pages(
     **nothing new** ends the walk. Without it an explorer that keeps replying
     with the same page — a cursor it does not understand, a mirror serving a
     stale index — would be paged forever.
+
+    A third ends it early and says so: a walk over an address with real history
+    is hundreds of requests, and every explorer it can reach throttling at once
+    (:class:`~swapsack.net.RateLimited`, raised only after the failover and the
+    ``Retry-After`` backoff have both been spent) is a *short* history, not a
+    missing one. The pages already fetched are returned ``truncated``, which is
+    what the listing renders as INCOMPLETE. Nothing else degrades: a host that
+    never answered is no history at all, and must keep raising.
     """
     seen: set[str] = set()
     txs: list[TxSummary] = []
     cursor: object | None = None
     while True:
-        page, cursor = fetch_page(cursor)
+        try:
+            page, cursor = fetch_page(cursor)
+        except RateLimited:
+            return AddressTxs(transactions=txs, truncated=True)
         new = [tx for tx in page if tx.txid not in seen]
         seen.update(tx.txid for tx in new)
         txs.extend(new)

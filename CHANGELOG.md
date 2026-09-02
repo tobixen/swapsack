@@ -35,6 +35,18 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Fixed
 
+- **A rate-limited explorer no longer kills the run.** A public Esplora
+  instance answers a busy wallet with `429 Too Many Requests` — and it took
+  only a plain `swap` to draw one. That was a hard error: the run died with
+  the throttling explorer's own message, which quotes the URL it refused, i.e.
+  one of your addresses on the terminal. A 429 (or a 503) now moves the request
+  to the next explorer, which throttles independently of the first; if every
+  one of them says no, the wait honours their `Retry-After` (capped, so a
+  "come back in an hour" ends the run rather than hanging it) and the failure
+  names the hosts and the status without the address. `history` and `utxos`
+  additionally return the pages they did get, marked INCOMPLETE, instead of
+  losing them.
+
 - **Chainflip vault swaps work again.** The broker account this wallet named
   when asking the Chainflip chain to encode a vault swap started enforcing a
   minimum commission of 5 bps, and since a commission is a skim the verify gate

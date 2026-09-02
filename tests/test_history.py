@@ -5,8 +5,17 @@ The assembly is deliberately free of I/O: an adapter hands it already-parsed
 can all be tested offline against hand-built transactions.
 """
 
+import pytest
+
 from swapsack.chains.base import TxEntry, TxSummary
-from swapsack.chains.history import AddressTxs, Output, WalletTx, wallet_history
+from swapsack.chains.history import (
+    AddressTxs,
+    Output,
+    WalletTx,
+    collect_pages,
+    wallet_history,
+)
+from swapsack.net import HostUnreachable, RateLimited
 
 # Two wallet addresses (one receive, one change) and one stranger.
 RECV = "bc1qrecv"
@@ -193,3 +202,41 @@ def test_types_are_what_the_cli_renders():
     history = run({RECV: [FUNDING]})
     assert isinstance(history.transactions[0], WalletTx)
     assert isinstance(history.outputs[0], Output)
+
+
+# --- a throttled walk degrades rather than dying -------------------------------
+
+
+def _pages(*batches: object):
+    """A ``fetch_page`` over scripted pages; an exception entry is raised."""
+    script = list(batches)
+
+    def fetch_page(_cursor):
+        outcome = script.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome, (outcome[-1].txid if outcome else None)
+
+    return fetch_page
+
+
+def test_a_throttled_page_ends_the_walk_as_truncated():
+    """Every explorer saying "not now" halfway through a walk is exactly what
+    ``truncated`` exists for: what we have, marked incomplete, beats a
+    traceback that loses the pages already fetched."""
+    walked = collect_pages(_pages([FUNDING], RateLimited("throttled")))
+    assert [tx.txid for tx in walked.transactions] == [FUNDING.txid]
+    assert walked.truncated
+
+
+def test_a_throttle_on_the_very_first_page_is_still_only_incomplete():
+    walked = collect_pages(_pages(RateLimited("throttled")))
+    assert walked.transactions == []
+    assert walked.truncated
+
+
+def test_an_unreachable_host_still_raises():
+    # Only a *throttle* degrades. A host that never answered is not a short
+    # history, it is no history — and `history` must not imply otherwise.
+    with pytest.raises(HostUnreachable):
+        collect_pages(_pages(HostUnreachable("no answer")))
