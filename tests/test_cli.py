@@ -13,6 +13,13 @@ import pytest
 # spurious in-test failure. Mirrors the other bitcoinlib-backed tests.
 pytest.importorskip("bitcoinlib")
 
+from conftest import (  # noqa: E402
+    CF_DEST20,
+    CF_MIN_OUT,
+    CF_VAULT,
+    CF_VAULTS,
+    chainflip_vault_payload,
+)
 from swapsack import cli  # noqa: E402
 from swapsack.cli import ASSET, build_parser  # noqa: E402
 
@@ -4872,9 +4879,8 @@ def _cf_status(**overrides):
     return SwapStatus(**{**base, **overrides})
 
 
-def _stub_chainflip(monkeypatch, status):
-    """Point cmd_status's Chainflip probe at a scripted answer."""
-    import swapsack.cli as cli
+def _cf_client(status):
+    """A stand-in ChainflipClient answering `status` (or raising it)."""
 
     class FakeClient:
         def __enter__(self):
@@ -4888,7 +4894,14 @@ def _stub_chainflip(monkeypatch, status):
                 raise status
             return status
 
-    monkeypatch.setattr(cli, "_chainflip_client", lambda args: FakeClient())
+    return FakeClient()
+
+
+def _stub_chainflip(monkeypatch, status):
+    """Point cmd_status's Chainflip probe at a scripted answer."""
+    import swapsack.cli as cli
+
+    monkeypatch.setattr(cli, "_chainflip_client", lambda args: _cf_client(status))
     monkeypatch.setattr(cli, "_print_onchain_tx", lambda args: None)
     monkeypatch.setattr(
         "swapsack.backends.default_backends",
@@ -4965,3 +4978,336 @@ def test_a_broken_chainflip_api_does_not_break_status(monkeypatch, capsys):
     assert cli.cmd_status(args) == 0
     captured = capsys.readouterr()
     assert "not observed" in (captured.out + captured.err).lower()
+
+
+# --- status: a vault swap Chainflip has not witnessed yet --------------------
+#
+# Chainflip witnesses a deposit only once it confirms, so `status` run in the
+# window that matters most -- straight after broadcast -- gets a 404 from the
+# swapping service and used to fall through to "not observed by thorchain/maya
+# ... it is not a swap inbound at all". For a vault swap that is not merely
+# unhelpful, it is false. The deposit carries its whole intention in its own
+# OP_RETURN, so it can be read from the transaction with nobody's service up.
+
+
+def _cf_vault_esplora_tx(
+    payload=None, *, vault=CF_VAULT, amount=178_100, confirmed=True
+):
+    """An Esplora ``/tx`` body for a Chainflip vault-swap deposit."""
+    from swapsack.chains.coins import encode_op_return
+
+    return {
+        "txid": "3b" * 32,
+        "size": 250,
+        "weight": 1000,
+        "fee": 500,
+        "status": {
+            "confirmed": confirmed,
+            "block_height": 959_260 if confirmed else None,
+        },
+        "vin": [
+            {
+                "prevout": {
+                    "scriptpubkey_type": "v0_p2wpkh",
+                    "scriptpubkey_address": "bc1qspender",
+                    "value": 200_000,
+                }
+            }
+        ],
+        "vout": [
+            {
+                "scriptpubkey_type": "v1_p2tr",
+                "scriptpubkey_address": vault,
+                "value": amount,
+            },
+            {
+                "scriptpubkey_type": "op_return",
+                "scriptpubkey": encode_op_return(
+                    chainflip_vault_payload() if payload is None else payload
+                ).hex(),
+                "value": 0,
+            },
+            {
+                "scriptpubkey_type": "v0_p2wpkh",
+                "scriptpubkey_address": "bc1qchange",
+                "value": 21_000,
+            },
+        ],
+    }
+
+
+def _stub_unwitnessed(monkeypatch, body, *, vaults=CF_VAULTS):
+    """`status` with the deposit on-chain and Chainflip still 404ing on it."""
+    from swapsack.chains.btc import parse_tx_summary
+
+    class FakeBtc:
+        chain = "BTC"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def fetch_tx(self, txid):
+            return None if body is None else parse_tx_summary(body)
+
+    monkeypatch.setattr(cli, "_btc_adapter", lambda args, passphrase="": FakeBtc())
+    monkeypatch.setattr(cli, "_chainflip_vaults", lambda: vaults)
+    monkeypatch.setattr(
+        "swapsack.backends.default_backends",
+        lambda: [_StubBackend("thorchain", NOT_OBSERVED)],
+    )
+
+    class NoSwap:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def swap_status(self, txid):
+            return None
+
+    monkeypatch.setattr(cli, "_chainflip_client", lambda args: NoSwap())
+
+
+def test_status_reads_an_unwitnessed_vault_swap_out_of_the_deposit_itself(
+    monkeypatch, capsys, fake_feed
+):
+    _stub_unwitnessed(monkeypatch, _cf_vault_esplora_tx(confirmed=False))
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    out, combined = captured.out, captured.out + captured.err
+
+    assert "chainflip" in out.lower()
+    # What was paid, and to which of the protocol's published vaults.
+    assert "0.00178100 BTC" in out
+    assert CF_VAULT in out
+    # What the payload promises: our destination and the floor it enforces.
+    assert "0x000000000000000000000000000000000000dead" in out.lower()
+    assert "3.000000000000000000 ETH" in out
+    # And above all, not the answer that sent the user looking for a lost swap.
+    assert "not observed" not in combined.lower()
+    assert "not a swap inbound" not in combined.lower()
+
+
+def test_status_says_an_unconfirmed_deposit_is_why_chainflip_has_not_seen_it(
+    monkeypatch, capsys, fake_feed
+):
+    """The reason matters: unconfirmed means "wait", not "something went wrong"."""
+    _stub_unwitnessed(monkeypatch, _cf_vault_esplora_tx(confirmed=False))
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert "confirm" in (captured.out + captured.err).lower()
+
+
+def test_status_does_not_read_a_thorchain_memo_as_a_chainflip_payload(
+    monkeypatch, capsys, fake_feed
+):
+    """A `=:` memo can be 48 bytes too. Length alone must not make it a vault
+    swap -- an ASCII memo never starts with the payload's version byte."""
+    # The address is trimmed so the memo lands on exactly 48 bytes, which is
+    # the whole point: the collision this guards against is a length one.
+    memo = b"=:ETH.ETH:0x" + b"0" * 32 + b"dead"
+    assert len(memo) == 48
+    _stub_unwitnessed(monkeypatch, _cf_vault_esplora_tx(payload=memo))
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert "chainflip" not in captured.out.lower()
+    assert "not observed" in (captured.out + captured.err).lower()
+
+
+def test_status_will_not_call_an_unknown_destination_asset_id_a_vault_swap(
+    monkeypatch, capsys, fake_feed
+):
+    """The payout is only reportable for an asset id this wallet can name. An
+    id it cannot is a payload it does not understand, and saying so by staying
+    quiet beats printing a destination scaled by a guess."""
+    _stub_unwitnessed(
+        monkeypatch, _cf_vault_esplora_tx(chainflip_vault_payload(asset_id=99))
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert "chainflip" not in captured.out.lower()
+    assert "not observed" in (captured.out + captured.err).lower()
+
+
+def test_status_flags_a_vault_swap_that_pays_no_published_vault(
+    monkeypatch, capsys, fake_feed
+):
+    """The payload says what a deposit asks for; only the vault list says who
+    it paid. A well-formed payload sent to an address the protocol does not
+    publish is the shape of a swap that will never happen."""
+    _stub_unwitnessed(
+        monkeypatch, _cf_vault_esplora_tx(vault="bc1qnotavault"), vaults=CF_VAULTS
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    combined = "".join(capsys.readouterr())
+    assert "vault" in combined.lower()
+    assert "not" in combined.lower() and "publish" in combined.lower()
+
+
+def test_status_still_reads_the_payload_when_the_vault_list_is_unreachable(
+    monkeypatch, capsys, fake_feed
+):
+    """The vault check is the only part that needs a node. Losing it must cost
+    the confirmation, not the answer."""
+    _stub_unwitnessed(monkeypatch, _cf_vault_esplora_tx(), vaults=frozenset())
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    out = captured.out
+    assert "chainflip" in out.lower()
+    assert "3.000000000000000000 ETH" in out
+    # Nothing was checked, so nothing may be claimed either way.
+    assert "publish" not in (out + captured.err).lower()
+
+
+def test_status_does_not_say_unwitnessed_when_chainflip_was_never_reached(
+    monkeypatch, capsys, fake_feed
+):
+    """A dead endpoint is not a 404. "Not witnessed yet" is a claim about the
+    protocol's state, and a swap it may already have paid out must not be
+    described that way just because the swapping service timed out."""
+    import niquests
+
+    _stub_unwitnessed(monkeypatch, _cf_vault_esplora_tx())
+    monkeypatch.setattr(
+        cli,
+        "_chainflip_client",
+        lambda args: _cf_client(niquests.exceptions.ConnectionError("down")),
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    # The payload still reads, so the user is not left empty-handed.
+    assert "3.000000000000000000 ETH" in captured.out
+    assert "could not be reached" in combined.lower()
+    assert "has not witnessed" not in combined.lower()
+
+
+def test_chainflip_vaults_answers_empty_when_the_rpc_is_down(monkeypatch):
+    import niquests
+
+    import swapsack.chainflip as chainflip_mod
+
+    def boom(*a, **kw):
+        raise niquests.exceptions.ConnectionError("down")
+
+    monkeypatch.setattr(chainflip_mod, "ChainflipRpc", boom)
+    assert cli._chainflip_vaults() == frozenset()
+
+
+def test_status_prefers_chainflips_own_answer_to_the_decoded_payload(
+    monkeypatch, capsys, fake_feed
+):
+    """Once the protocol has witnessed the deposit its view is strictly better
+    -- it knows what was actually paid out, which the payload only bounds."""
+    _stub_unwitnessed(monkeypatch, _cf_vault_esplora_tx())
+    monkeypatch.setattr(cli, "_chainflip_client", lambda args: _cf_client(_cf_status()))
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    out = capsys.readouterr().out
+    assert "COMPLETED" in out
+    assert "421.500000 USDT" in out
+    assert "read from the deposit" not in out.lower()
+
+
+# --- the swap summary's own tracking advice ---------------------------------
+
+
+def test_the_chainflip_swap_summary_points_at_swapsack_status(monkeypatch, capsys):
+    """Until `status` learned to read Chainflip, this line could only send the
+    user to a website. It is the wallet's own command now, so say that."""
+    import swapsack.chainflip as chainflip_mod
+    from swapsack.chainflip import ChainflipFees, ChainflipQuote, VaultSwap
+    from swapsack.swap import SwapRequest
+
+    quote = ChainflipQuote(
+        expected_amount_out=300_000_000,
+        fees=ChainflipFees(
+            asset="ETH.ETH",
+            outbound=0,
+            affiliate=0,
+            liquidity=0,
+            total=0,
+            slippage_bps=0,
+            total_bps=0,
+        ),
+        egress_amount=3 * 10**18,
+        deposit_amount=178_100,
+        intermediate_amount=None,
+        estimated_duration_seconds=1800,
+        low_liquidity_warning=False,
+        recommended_slippage_bps=100,
+        raw={},
+    )
+    vault_swap = VaultSwap(
+        deposit_address=CF_VAULT,
+        payload=chainflip_vault_payload(),
+        known_vaults=CF_VAULTS,
+        destination_asset_id=1,
+        destination_bytes=CF_DEST20,
+        min_output_amount=CF_MIN_OUT,
+    )
+
+    class _Rpc:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _Client(_Rpc):
+        def quote(self, src, dst, amount):
+            return {}
+
+    monkeypatch.setattr(chainflip_mod, "parse_chainflip_quote", lambda *a, **kw: quote)
+    monkeypatch.setattr(chainflip_mod, "ChainflipRpc", _Rpc)
+    monkeypatch.setattr(
+        chainflip_mod, "prepare_vault_swap", lambda *a, **kw: vault_swap
+    )
+    monkeypatch.setattr(cli, "_confirm_and_execute", lambda *a, **kw: 0)
+
+    class _Adapter:
+        chain = "BTC"
+
+        def build_and_verify_vault_swap(self, **kw):
+            return SimpleNamespace(built=SimpleNamespace(fee=500), problems=[])
+
+    args = build_parser().parse_args(
+        ["swap", "--from", "BTC", "--to", "ETH", "--amount", "0.001781"]
+    )
+    rc = cli._swap_via_chainflip(
+        args,
+        adapter=_Adapter(),
+        backend=SimpleNamespace(name="chainflip", client=_Client()),
+        request=SwapRequest(
+            from_asset="BTC.BTC",
+            to_asset="ETH.ETH",
+            amount=178_100,
+            destination="0x000000000000000000000000000000000000dEaD",
+        ),
+        dest="0x000000000000000000000000000000000000dEaD",
+        mnemonic="",
+        utxos=[],
+        fee_rate=2,
+        change_address="bc1qchange",
+        sweep=False,
+    )
+    assert rc == 0
+    lines = capsys.readouterr().out.splitlines()
+    track = [line for line in lines if line.startswith("track:")]
+    assert len(track) == 1
+    assert "swapsack status" in track[0]
+    # The stale advice was a website, because nothing else could read the swap.
+    # Naming scan.chainflip.io as a second option is fine; leading with it,
+    # having told the user only what this *isn't*, is what was not good enough.
+    assert "this is not a THORChain swap" not in track[0]
