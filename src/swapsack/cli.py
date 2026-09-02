@@ -87,9 +87,13 @@ ASSET = {
     "XRP": "XRP.XRP",  # classic r… addresses only — no destination tag, see below
     "ADA": "ADA.ADA",  # Maya-only; unreachable from a UTXO source (memo length)
     "ETH-ARB": "ARB.ETH",  # Maya-only: native ETH on Arbitrum, not the ARB token
+    # Avalanche C-Chain only (the X-/P-Chain address form is refused — a payout
+    # could never credit it). THORChain-only: Maya has no AVAX pools.
+    "AVAX": "AVAX.AVAX",
     # The same dollar, somewhere cheaper to use than ETH mainnet. Each chain
     # has its own USDC contract, so these are not interchangeable strings.
     "USDC-AVAX": "AVAX.USDC-0XB97EF9EF8734C71904D8002F8B6BC66DD9C48A6E",
+    "USDT-AVAX": "AVAX.USDT-0X9702230A8EA53601F5CD2DC00FDBC13D4DF4A8C7",
     "USDC-ARB": "ARB.USDC-0XAF88D065E77C8CC2239327C5EDB3A432268E5831",  # Maya-only
     "CACAO": "MAYA.CACAO",  # Maya native asset; 1e10 decimals; see docs/cacao.md
     "RUNE": "THOR.RUNE",  # THORChain native asset (Cosmos MsgSend/MsgDeposit)
@@ -217,6 +221,17 @@ def _arb_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN20
     return ArbAdapter(url, bip39_passphrase=passphrase)
 
 
+def _avax_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
+    from swapsack.chains.avax import DEFAULT_AVAX_RPC, AvaxAdapter
+
+    url = (
+        getattr(args, "avax_rpc", None)
+        or os.environ.get("SWAPSACK_AVAX_RPC")
+        or DEFAULT_AVAX_RPC
+    )
+    return AvaxAdapter(url, bip39_passphrase=passphrase)
+
+
 # The spendable EVM chains. They dispatch identically (derive one address ->
 # nonce+fees -> build -> gate -> broadcast) and differ only in their adapter, so
 # this registry replaces what were `chain == "ETH"` branches in cmd_send,
@@ -226,6 +241,7 @@ def _arb_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN20
 _EVM_ADAPTERS = {
     "ETH": _eth_adapter,
     "ARB": _arb_adapter,
+    "AVAX": _avax_adapter,
 }
 
 
@@ -313,6 +329,7 @@ def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  #
         _btc_adapter(args, passphrase),
         _eth_adapter(args, passphrase),
         _arb_adapter(args, passphrase),
+        _avax_adapter(args, passphrase),
         _tron_adapter(args, passphrase),
         _bsc_adapter(args, passphrase),
         _dash_adapter(args, passphrase),
@@ -451,6 +468,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def cmd_address(args: argparse.Namespace) -> int:
     from swapsack.chains.arb import ArbAdapter
+    from swapsack.chains.avax import AvaxAdapter
     from swapsack.chains.bsc import BscAdapter
     from swapsack.chains.btc import BtcAdapter
     from swapsack.chains.dash import DashAdapter
@@ -475,6 +493,11 @@ def cmd_address(args: argparse.Namespace) -> int:
         "ARB: ",
         ArbAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
         "(same EVM address as ETH)",
+    )
+    print(
+        "AVAX:",
+        AvaxAdapter(bip39_passphrase=passphrase).derive_address(mnemonic),
+        "(same EVM address as ETH; C-Chain)",
     )
     print(
         "BSC: ",
@@ -801,6 +824,12 @@ def _derive_arb(mnemonic: str, passphrase: str) -> str:
     return ArbAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
 
+def _derive_avax(mnemonic: str, passphrase: str) -> str:
+    from swapsack.chains.avax import AvaxAdapter
+
+    return AvaxAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+
+
 def _derive_maya(mnemonic: str, passphrase: str) -> str:
     from swapsack.chains.maya import MayaAdapter
 
@@ -824,6 +853,9 @@ _DESTINATION_DERIVERS: dict[str, Callable[[str, str], str]] = {
     # now that we can also spend there; before that it was --dest-only, since
     # auto-deriving a destination we cannot spend from just parks funds.
     "ARB": _derive_arb,
+    # Same reasoning as ARB: the C-Chain address IS the ETH address, and
+    # auto-deriving a destination is only honest once we can spend there too.
+    "AVAX": _derive_avax,
     "TRON": _derive_tron,
     "DASH": _derive_dash,
     "ZEC": _derive_zec,
@@ -3232,8 +3264,8 @@ NO_HISTORY_SOURCE = {
         "— it just cannot show the spent ones."
     ),
 }
-# The listings cover the UTXO chains only. ETH/ARB/BSC talk plain JSON-RPC and
-# TRON the java-tron HTTP API; neither has an address history index, so a
+# The listings cover the UTXO chains only. ETH/ARB/AVAX/BSC talk plain JSON-RPC
+# and TRON the java-tron HTTP API; neither has an address history index, so a
 # listing there would need an indexer (Etherscan/Blockscout/TronGrid) that this
 # wallet deliberately does not depend on yet.
 LISTING_CHAINS = ("BTC", "DASH", "ZEC")
@@ -3773,6 +3805,7 @@ def _add_broadcast_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
     sub.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     sub.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
+    sub.add_argument("--avax-rpc", help="Avalanche JSON-RPC URL ($SWAPSACK_AVAX_RPC)")
     sub.add_argument("--eth-gas", type=int, default=60000, help="ETH gas limit")
     sub.add_argument(
         "--fee-blocks",
@@ -3838,7 +3871,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_show_seed)
 
     s = sub.add_parser(
-        "address", help="show derived BTC, ETH, BSC, TRON, MAYA and THOR addresses"
+        "address",
+        help="show derived BTC, ETH, ARB, AVAX, BSC, TRON, DASH, ZEC, MAYA "
+        "and THOR addresses",
     )
     s.add_argument("--key")
     s.set_defaults(func=cmd_address)
@@ -3847,6 +3882,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--key")
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
+    s.add_argument("--avax-rpc", help="Avalanche JSON-RPC URL ($SWAPSACK_AVAX_RPC)")
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
     s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($SWAPSACK_BSC_RPC)")
     s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
@@ -3927,6 +3963,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
+    s.add_argument("--avax-rpc", help="Avalanche JSON-RPC URL ($SWAPSACK_AVAX_RPC)")
     s.add_argument(
         "--fee-blocks",
         type=int,
@@ -3981,7 +4018,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser(
         "send",
-        help="send to an external address (no swap); BTC/ETH/TRON/CACAO/RUNE",
+        help="send to an external address (no swap); see --asset for the list",
     )
     s.add_argument("address", help="recipient address")
     s.add_argument(
@@ -4015,6 +4052,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
+    s.add_argument("--avax-rpc", help="Avalanche JSON-RPC URL ($SWAPSACK_AVAX_RPC)")
     _add_unconfirmed_arg(s)
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
     s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")

@@ -42,11 +42,15 @@ COINGECKO_IDS: dict[str, str] = {
     "ADA": "cardano",
     # Native ETH on Arbitrum is ETH — same asset, same price, different chain.
     "ETH-ARB": "ethereum",
+    # "avalanche-2", not "avalanche" (a different, long-defunct coin). A wrong
+    # id silently drops the market line rather than erroring.
+    "AVAX": "avalanche-2",
     "USDT-ETH": "tether",
     "USDT-TRON": "tether",
     "USDC-ETH": "usd-coin",
     # Same dollar, cheaper chain — one price for all three.
     "USDC-AVAX": "usd-coin",
+    "USDT-AVAX": "tether",
     "USDC-ARB": "usd-coin",
     # BSC is hold+balance only (nothing trades it), so these have no ASSET entry
     # — but `balance` prints the rows, and an unpriceable row it cannot value is

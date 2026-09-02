@@ -63,7 +63,12 @@ def test_tokens_map_to_the_underlying_asset_regardless_of_chain():
     # Same token on cheaper chains — same price, so the market line works there
     # too rather than silently dropping out.
     assert COINGECKO_IDS["USDC-AVAX"] == COINGECKO_IDS["USDC-ARB"] == "usd-coin"
+    assert COINGECKO_IDS["USDT-AVAX"] == "tether"
     assert COINGECKO_IDS["DASH"] == "dash"
     assert COINGECKO_IDS["ZEC"] == "zcash"
     assert COINGECKO_IDS["CACAO"] == "cacao"
     assert COINGECKO_IDS["RUNE"] == "thorchain"
+    # Avalanche's native coin is "avalanche-2", NOT "avalanche" (a different,
+    # defunct coin) — a wrong id silently drops the market line rather than
+    # erroring, so it is worth pinning.
+    assert COINGECKO_IDS["AVAX"] == "avalanche-2"
