@@ -13,15 +13,32 @@ code it needs, with what each one is actually worth stated next to it.
 1. **BSC as a swap source — the cheapest feature on the whole list.**
    `chains/bsc.py` already exists and already signs for chain 56; the swap
    entry point is stubbed out by hand because nothing traded BSC, **and that
-   halt has since lifted** (2026-09-02). So the work is: unstub
-   `BscAdapter.build_and_verify`, and repeat the CLI wiring that
-   `chains/avax.py` just went through (`_EVM_ADAPTERS`, `ASSET`,
-   `_DESTINATION_DERIVERS`, `_wallet_adapters`, `cmd_address`, the `--bsc-rpc`
-   arg, `pricefeed`). No new adapter, no new chain family, no new signer.
-   **Worth checking the depth before you start**: the BSC stablecoin pools are
-   thinner than the `ARB.USDC` pool that *Next up* item 2 calls too thin to be
-   useful at size, so `BSC.BNB` may be the only leg worth wiring. Full entry,
-   with the numbers: *Swap backends* → the BSC bullet.
+   halt has since lifted** (2026-09-02). No new adapter, no new chain family,
+   no new signer. It is also *less* work than Avalanche was, because BSC is
+   already half-wired — checked against the code on 2026-09-02:
+
+   | seam | BSC today |
+   |---|---|
+   | `_wallet_adapters` | **done** (`cli.py`, `_bsc_adapter` is in the list) |
+   | `cmd_address` | **done** (prints a BSC row) |
+   | `pricefeed` | **done** (`BNB`, `USDT-BSC`, `USDC-BSC`) |
+   | `ASSET` | missing — `BSC.BNB` and the two 18-decimal BEP-20s |
+   | `_EVM_ADAPTERS` | missing |
+   | `_DESTINATION_DERIVERS` | missing |
+   | `--bsc-rpc` | exists on `balance` only; needs adding to `_add_broadcast_args`, `send` and `swap` |
+   | `BscAdapter.build_and_verify` | stubbed by hand; unstub it |
+
+   So four seams plus the unstub, not the seven the AVAX wiring needed. The
+   one genuine trap is that **BSC's USDT/USDC are 18-decimal**, unlike their
+   6-decimal ETH/AVAX namesakes — `BSC_TRACKED_TOKENS` already has it right,
+   so do not "harmonise" it.
+
+   **Check the depth before you start, though.** On 2026-09-02 `BSC.USDC` and
+   `BSC.USDT` held ~5.4k each — thinner than the `ARB.USDC` pool that *Next
+   up* item 2 already calls too thin to be useful at size — against ~1945 BNB
+   for `BSC.BNB`. So the native leg may be the only one worth wiring, and that
+   is a measurement to redo rather than trust. Full entry: *Swap backends* →
+   the BSC bullet.
 2. **BASE, the same shape one step further out.** Its halt has lifted too, but
    there is no adapter yet — so it is a `chains/avax.py`-shaped subclass plus a
    `_RULES` line and an `_EVM_CHAINS` entry, on top of the same CLI wiring as
@@ -486,14 +503,38 @@ labels, not lookups.
   all. `add-liquidity --asset AVAX` refuses up front and names the mimir key,
   so there is nothing to build until the pause lifts.
 
+  One test gap left behind, worth closing next time this file is open:
+  **`tests/test_arb.py` never exercises a token *swap*** (`build_and_verify`
+  with a `-`-qualified `from_asset`), which is the only EVM path where the
+  tracked-token decimals rescale the amount. `tests/test_avax.py` gained
+  exactly that test — copy it across; ARB's spend paths are mainnet-unproven
+  too, so the gate is all the evidence there is.
+
   Two things worth knowing before the next EVM adapter, both learned here:
-  - **The per-chain surface really is only three fields, and all three are
-    silent when wrong**: chain id, token decimals, and `lp_backends`. Getting
-    the chain id wrong emits a transaction that is *valid on Ethereum mainnet*
-    and pays real ETH to the same recipient. Getting `lp_backends` wrong from a
-    copy is the subtler one — ARB is Maya-only and AVAX is THORChain-only, the
-    exact inverse — and it fails closed while naming the wrong network, which
-    reads as a protocol problem rather than a typo.
+  - **The per-chain surface is three adapter fields plus one shared constant,
+    and all four are silent when wrong**: chain id, token decimals,
+    `lp_backends` — and `ETH_MAX_FEE_WEI`, which is not per-chain at all and
+    is the entry below. Getting the chain id wrong emits a transaction that is
+    *valid on Ethereum mainnet* and pays real ETH to the same recipient.
+    Getting `lp_backends` wrong from a copy is the subtler one — ARB is
+    Maya-only and AVAX is THORChain-only, the exact inverse — and it fails
+    closed while naming the wrong network, which reads as a protocol problem
+    rather than a typo.
+  - **`ETH_MAX_FEE_WEI` is one fixed wei ceiling across chains whose native
+    coin has wildly different value** (`cli.py:72`, applied at four call
+    sites; the check is in `verify.py`). A token swap burns
+    `APPROVE_GAS` 70000 + `TOKEN_DEPOSIT_GAS` 200000 = 270k gas against
+    `10**16` wei, so the gate refuses once `max_fee_per_gas` exceeds ~37 gwei.
+    On Ethereum that ceiling is ~€21 and generous; on Avalanche the same
+    number is ~€0.06, roughly **330× tighter in value**. It fails *closed*, so
+    no funds are at risk — but the message reads as a wallet bug rather than a
+    policy, on a path the README advertises. Not urgent: Avalanche's base fee
+    measured **0.082 gwei** on 2026-09-02 (`fetch_fees` returns `base*2 + tip`,
+    so ~2 gwei), needing a ~220× spike to bite. The fix is to make it an
+    `EthAdapter` class attribute overridden per chain and read from the
+    adapter at those four call sites, rather than imported as one module
+    constant — deliberately deferred because it touches the ETH and ARB money
+    paths, not only the new chain.
   - **ARB's raised `native_send_gas` is an L2 thing and must not be copied.**
     Arbitrum needs 30000 because an L2 bills the L1 calldata cost as extra gas
     consumed; Avalanche is an L1 and Ethereum's 21000 is the whole cost. The
@@ -725,10 +766,13 @@ and released.
     and every spend path passes its own gate — a real unsigned swap, token
     approve+deposit, native send and token send all reach "verified OK" for
     chain 43114. What is missing is only a broadcast, and the wallet holds 0
-    AVAX, so it needs gas there first. `swap --to AVAX` funds that in one step
-    (THORChain's AVAX outbound fee was ~0.034 AVAX, ~€0.21, on 2026-09-02 —
-    about the same as ETH's and well above ARB's, so ARB is still the cheaper
-    rehearsal of item 1).
+    AVAX, so it needs gas there first. `swap --to AVAX` funds that in one
+    step: THORChain's AVAX outbound fee was ~0.034 AVAX (~€0.21) on
+    2026-09-02, about the same as its ETH fee. That is **not** comparable to
+    the ~12×-cheaper ARB figure quoted under *Next up* item 1 — THORChain has
+    no ARB pools at all, so that one is Maya's fee schedule, not this one.
+    Across protocols ARB is still the cheaper rehearsal; within THORChain,
+    AVAX and ETH cost the same.
   - **RUNE** — no THORChain native tx; its LP is paused and no RUNE swap has
     been made. CACAO's proof does **not** transfer: same code, different chain,
     chain-id and fee.

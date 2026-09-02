@@ -84,7 +84,7 @@ USDC-ETH                 40.94348000     €35.21
 spendable                               €217.60
 liquidity                             €10879.47  not spendable; gross of exit fees
 total                                 €11097.07
-zero: USDT-ETH, ETH-ARB, USDC-ARB, AVAX, USDC-AVAX, BNB, DASH, RUNE
+zero: USDT-ETH, ETH-ARB, USDC-ARB, AVAX, USDC-AVAX, USDT-AVAX, BNB, DASH, RUNE
 ```
 
 * **Liquidity is totalled apart from spendable funds.** An LP position is not
@@ -174,15 +174,16 @@ capability grid above for the per-feature detail.
 | BTC | Bitcoin | UTXO | full | |
 | ETH | Ethereum | EVM | full | |
 | TRX | TRON | TRON | partial | `send` done; sweep pending |
-| BSC / BNB | BNB Smart Chain | EVM | partial | Hold + balance work (native BNB and BEP-20 USDC/USDT, 18-decimal). Swaps blocked: BSC trading halted on THORChain (`chain_trading_paused`), and Maya has no BSC pools — nothing to swap against until THORChain re-enables it |
+| BSC / BNB | BNB Smart Chain | EVM | partial | Hold + balance work (native BNB and BEP-20 USDC/USDT, 18-decimal). Not wired yet — no longer blocked: THORChain's BSC halt **lifted** (checked 2026-09-02: `halted: false`, `chain_trading_paused: false`, five `Available` pools). `BscAdapter.build_and_verify` is still stubbed by hand and BSC has no `ASSET` entry, which is now the cheapest item on the roadmap — see [docs/TODO.md](docs/TODO.md). Maya still has no BSC pools, so it would be THORChain-only. Mind the depth: the BSC stablecoin pools held ~5.4k each on 2026-09-02 |
 | USDT-ETH | Tether | ERC-20 token | full | `send` + single-sided liquidity (Maya, via router) done |
 | USDT-TRON | Tether | TRC-20 token | partial | `send` done |
-| USDT-BSC | Tether | BEP-20 token | none | Blocked: halted on THORChain, not on Maya (Maya has no BSC pools) |
+| USDT-BSC | Tether | BEP-20 token | none | Not wired yet; the THORChain halt lifted 2026-09-02 (see the BSC row). Note BSC's USDT/USDC are **18-decimal**, unlike their 6-decimal ETH/AVAX namesakes |
+| USDT-AVAX | Tether | ERC-20 token | partial | Hold, balance, destination, `send`/sweep and swap-**from**, via `chains/avax.py` and the shared ERC-20 path. THORChain-only; spend paths **mainnet-unproven** |
 | USDT-SOL | Tether | SPL token | none | Not currently available on THORChain/Maya |
 | AVAX | Avalanche C-Chain | EVM | partial | **THORChain-only** (Maya has no AVAX pools; Chainflip has no Avalanche). Every feature is wired: hold, balance, destination (auto-derived — it *is* your ETH address), send/sweep and swap-**from**, for native AVAX and for the pooled `USDC-AVAX`/`USDT-AVAX`. C-Chain (`0x…`, EIP-55 checked) only — an X-/P-Chain `X-avax1…` address is refused, since a payout could never credit it. Partial because the spend paths ship **mainnet-unproven**, and because LP is impossible today: THORChain has LP deposits globally paused and there is no second network to pair with |
-| BASE | Base (ETH L2) | EVM | none | Blocked: THORChain's `BASE.USDC` and `BASE.ETH` pools are `Available` but **trading-halted** (checked 2026-08-16), the same shape as the BSC block. Revisit when the halt lifts |
+| BASE | Base (ETH L2) | EVM | none | No adapter yet; the halt that used to block it **lifted** (`BASE.USDC` and `BASE.ETH` both `Available` with `trading_halted: false`, checked 2026-09-02). Needs a `chains/avax.py`-shaped subclass plus a `_RULES`/`_EVM_CHAINS` entry. Barely worth it at present depth: `BASE.ETH` held ~2.6 ETH |
 | ARB | Arbitrum (ETH L2) | EVM | partial | **Maya-only**. Every feature is wired: hold, balance, destination (auto-derived — it *is* your ETH address), send/sweep, swap-**from** and liquidity, single- and two-sided. `ETH-ARB` is native ETH on Arbitrum; the ARB *token* pool is `Staged`, not tradeable. `USDC-ARB` is Circle's **native** USDC (`0xaf88d065…`), not the bridged `USDC.e`. Partial because the spend paths ship **mainnet-unproven**. Mind the depth: Maya's `ARB.USDC` pool held ~8.9k USDC on 2026-08-16, so anything above ~€100 slips hard — the `Market:` line shows it |
-| USDC | USD Coin (ETH/BSC/AVAX/BASE/ARB) | ERC-20 token | partial | ETH, ARB and AVAX are done — hold, balance, destination, `send`/sweep and swap-**from** — all through the shared ERC-20 path, differing only in contract and chain id. BASE and BSC have no adapter yet |
+| USDC | USD Coin (ETH/BSC/AVAX/BASE/ARB) | ERC-20 token | partial | ETH, ARB and AVAX are done — hold, balance, destination, `send`/sweep and swap-**from** — all through the shared ERC-20 path, differing only in contract and chain id. BSC has an adapter but no swap wiring (hold + balance only); BASE has no adapter yet |
 | LTC | Litecoin | UTXO | partial | destination only (via `--dest`) |
 | DOGE | Dogecoin | UTXO | partial | destination only (via `--dest`) |
 | BCH | Bitcoin Cash | UTXO | partial | destination only (via `--dest`) |
