@@ -467,6 +467,26 @@ API drift and stale hard-coded asset strings, and run in CI (the **Integration
 (network)** workflow, on push/PR and a daily schedule) in addition to the
 release gate.
 
+`tests/test_integration_history.py` is read-only too, and is there for a claim
+no offline fixture can settle: `history`/`utxos` work out which outputs are
+spent *without* asking the explorer, on the reasoning that a spender of your
+output must itself appear in your address's history. That is an assertion about
+how Esplora and Insight paginate and index, so the test walks real mainnet
+addresses with several pages of history and checks the result against the
+explorer's **own** UTXO endpoint. It samples live addresses rather than pinning
+one — a pinned address gets spent down or outgrows `--limit` and then passes
+vacuously.
+
+The two halves prove different things. Esplora never says who spent an output,
+so the BTC comparison tests the inference itself; Insight does report it and
+the wallet believes a reported spend over its own inference, so the DASH half
+proves the *paging* reached everything — which matters, because Insight's
+numeric offset over a newest-first list is the arrangement where an arriving
+transaction can shift a whole page out of view. Both skip rather than fail when
+an explorer throttles or goes down, and a mismatch is re-checked against a
+second read before it is believed, so an address that changes mid-test skips
+instead of going red.
+
 One opt-in network test broadcasts a real **TRC-20 transfer on TRON's Nile
 testnet** (build → sign → broadcast → confirm → read the memo back on-chain) to
 exercise the USDT-TRON deposit mechanics end to end. It is skipped unless a
