@@ -765,7 +765,14 @@ class DecodedVaultSwap:
 
 
 def decode_vault_swap_payload(payload: bytes) -> DecodedVaultSwap | None:
-    """Decode a 48-byte vault-swap payload, or None if it is not one."""
+    """Decode a 48-byte vault-swap payload, or None if it is not one.
+
+    Length-only: it decodes *any* 48 bytes, this wallet's own memos included —
+    an ASCII ``=:`` memo padded to 48 bytes decodes without complaint, with its
+    first byte (``ord("=")`` = 61) landing in the version field. That is only a
+    shape check. Callers that need to know the bytes are actually Chainflip's
+    own format want :func:`is_vault_swap_payload` instead.
+    """
     if len(payload) != VAULT_SWAP_PAYLOAD_BYTES:
         return None
     little = "little"
@@ -782,6 +789,23 @@ def decode_vault_swap_payload(payload: bytes) -> DecodedVaultSwap | None:
         broker_fee=payload[_VS_BROKER_FEE],
         affiliates=payload[_VS_AFFILIATES],
     )
+
+
+def is_vault_swap_payload(data: bytes) -> DecodedVaultSwap | None:
+    """Decode ``data`` only if it is actually shaped like Chainflip's own.
+
+    The one check that tells a vault-swap payload apart from a same-length
+    ASCII memo: the exact version byte, not merely a non-zero one. Three
+    places in this codebase need to recognise a vault swap from bytes alone
+    — the pre-broadcast gate, ``status``'s on-chain label, and its pre-witness
+    report — and all three must agree, or the same transaction reads as
+    Chainflip's in one line and not-a-swap-at-all in the next. Route every one
+    of them through here rather than reimplementing the check.
+    """
+    decoded = decode_vault_swap_payload(data)
+    if decoded is None or decoded.version != VAULT_SWAP_VERSION:
+        return None
+    return decoded
 
 
 @dataclasses.dataclass(frozen=True)

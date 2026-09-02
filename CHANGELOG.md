@@ -57,10 +57,19 @@ automatically from git tags (PEP 440 / SemVer).
   protocol vault was paid and how much, the destination the payload names, and
   the floor it enforces on-chain. Nobody's service has to be up for that, so a
   Chainflip API that is merely slow costs you a payout figure, not the answer.
-  A deposit whose payload is well-formed but which pays no address the protocol
-  publishes as a vault gets said so loudly: that swap will never happen. And
-  the summary printed before you broadcast now points at `swapsack status`
-  rather than sending you off to a block explorer.
+  A deposit whose payload is well-formed but pays no address the current
+  vault list publishes is flagged — vaults rotate every few days, so this is
+  a reason to check, not proof the swap failed. And the summary printed
+  before you broadcast now points at `swapsack status` rather than sending
+  you off to a block explorer.
+
+- **`status` says which backend settled the swap.** Every view that names a
+  settling protocol now opens with a `backend:` line — `thorchain`, `maya`,
+  `cow` or `chainflip` — where before you had to infer it from the shape of
+  the answer, and `--backend thorchain` printed bare JSON that named nothing
+  at all. The on-chain view no longer calls every `OP_RETURN` a "swap/LP
+  memo" either: it says whether the bytes are a Chainflip vault swap or a
+  recognised THORChain/Maya memo, and prints the memo.
 
 ### Fixed
 

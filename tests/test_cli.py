@@ -4964,7 +4964,7 @@ def test_status_falls_through_to_thorchain_when_chainflip_never_saw_it(
     args = build_parser().parse_args(["status", "3b" * 32])
     assert cli.cmd_status(args) == 0
     captured = capsys.readouterr()
-    assert "chainflip:" not in captured.out.lower()
+    assert "backend: chainflip" not in captured.out.lower()
     assert "not observed" in (captured.out + captured.err).lower()
 
 
@@ -5096,12 +5096,19 @@ def test_status_reads_an_unwitnessed_vault_swap_out_of_the_deposit_itself(
 def test_status_says_an_unconfirmed_deposit_is_why_chainflip_has_not_seen_it(
     monkeypatch, capsys, fake_feed
 ):
-    """The reason matters: unconfirmed means "wait", not "something went wrong"."""
+    """The reason matters: unconfirmed means "wait", not "something went wrong".
+
+    `_print_onchain_tx` already prints its own "unconfirmed (in mempool)" line
+    for any BTC hash, confirmed or not — a bare "confirm" substring check
+    would pass on that line alone with the sentence under test deleted, so
+    this pins the specific sentence the pre-witness report adds.
+    """
     _stub_unwitnessed(monkeypatch, _cf_vault_esplora_tx(confirmed=False))
     args = build_parser().parse_args(["status", "3b" * 32])
     assert cli.cmd_status(args) == 0
-    captured = capsys.readouterr()
-    assert "confirm" in (captured.out + captured.err).lower()
+    combined = "".join(capsys.readouterr())
+    assert "Chainflip has not witnessed this deposit yet" in combined
+    assert "it is still unconfirmed" in combined
 
 
 def test_status_does_not_read_a_thorchain_memo_as_a_chainflip_payload(
@@ -5125,32 +5132,67 @@ def test_status_will_not_call_an_unknown_destination_asset_id_a_vault_swap(
     monkeypatch, capsys, fake_feed
 ):
     """The payout is only reportable for an asset id this wallet can name. An
-    id it cannot is a payload it does not understand, and saying so by staying
-    quiet beats printing a destination scaled by a guess."""
+    id it cannot is a payload it cannot scale a payout for — but it is still
+    Chainflip's own format, and the fallback message has to say that rather
+    than the generic "not a swap inbound at all", which would be false."""
     _stub_unwitnessed(
         monkeypatch, _cf_vault_esplora_tx(chainflip_vault_payload(asset_id=99))
     )
     args = build_parser().parse_args(["status", "3b" * 32])
     assert cli.cmd_status(args) == 0
     captured = capsys.readouterr()
-    assert "chainflip" not in captured.out.lower()
-    assert "not observed" in (captured.out + captured.err).lower()
+    combined = captured.out + captured.err
+    # The OP_RETURN line still calls it a Chainflip payload — version 1 and 48
+    # bytes is what one is. What must not appear is the swap *report* (built
+    # on `_swap_amount`, which would need the unknown asset's decimals).
+    assert "backend: chainflip — vault swap, read" not in captured.out.lower()
+    # And the generic "not a swap inbound at all" claim must not appear either
+    # — this transaction plainly is one, just not one this wallet can report.
+    assert "not a swap inbound at all" not in combined.lower()
+    assert "chainflip vault-swap payload" in combined.lower()
+    assert "asset id 99" in combined.lower()
+    assert "scan.chainflip.io" in combined.lower()
 
 
 def test_status_flags_a_vault_swap_that_pays_no_published_vault(
     monkeypatch, capsys, fake_feed
 ):
     """The payload says what a deposit asks for; only the vault list says who
-    it paid. A well-formed payload sent to an address the protocol does not
-    publish is the shape of a swap that will never happen."""
+    it paid — and vaults rotate every few days (docs/chainflip-effort.md), so
+    "not in today's list" is a reason to check, never proof the swap failed.
+    The wording must say that, not claim it "will never happen"."""
     _stub_unwitnessed(
         monkeypatch, _cf_vault_esplora_tx(vault="bc1qnotavault"), vaults=CF_VAULTS
     )
     args = build_parser().parse_args(["status", "3b" * 32])
     assert cli.cmd_status(args) == 0
-    combined = "".join(capsys.readouterr())
-    assert "vault" in combined.lower()
-    assert "not" in combined.lower() and "publish" in combined.lower()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "does not pay an address the current vault list publishes" in out
+    assert "rotate" in out.lower()
+    # Certainty the vault list cannot support is exactly what this used to
+    # overclaim — the fix is dropping it, not rewording it.
+    assert "never happen" not in out.lower()
+    assert "will never see it" not in out.lower()
+    # A vault mismatch must not cost the deposit figure: it is still the
+    # useful half of the answer, mismatch or not.
+    assert "0.00178100 BTC" in out
+    assert "bc1qnotavault" in out
+
+
+def test_status_prints_the_deposit_amount_on_stdout_even_with_a_vault_mismatch(
+    monkeypatch, capsys, fake_feed
+):
+    """A redirected `status … > file` must not lose the vault warning: it
+    changes how every line above it in the file should be read."""
+    _stub_unwitnessed(
+        monkeypatch, _cf_vault_esplora_tx(vault="bc1qnotavault"), vaults=CF_VAULTS
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out
+    assert "WARNING" not in captured.err
 
 
 def test_status_still_reads_the_payload_when_the_vault_list_is_unreachable(
@@ -5218,6 +5260,75 @@ def test_status_prefers_chainflips_own_answer_to_the_decoded_payload(
     assert "COMPLETED" in out
     assert "421.500000 USDT" in out
     assert "read from the deposit" not in out.lower()
+
+
+# --- status: which backend settled it ----------------------------------------
+#
+# A `status` output that never names the protocol leaves the reader to infer it
+# from the shape of the answer. Three places got it wrong: the OP_RETURN line
+# called every memo a "swap/LP memo" (THORChain's wording, on a transaction
+# that may be a Chainflip one), and the thornode view named the backend only
+# when more than one was tried, and then only on stderr.
+
+
+def test_status_names_chainflip_on_the_op_return_line(monkeypatch, capsys, fake_feed):
+    """A vault-swap payload is not a "swap/LP memo" — it is Chainflip's, and
+    the bytes say so without asking anyone."""
+    _stub_unwitnessed(monkeypatch, _cf_vault_esplora_tx())
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    out = capsys.readouterr().out
+    op_return = [line for line in out.splitlines() if "OP_RETURN" in line]
+    assert len(op_return) == 1
+    assert "chainflip" in op_return[0].lower()
+
+
+def test_status_names_thorchain_on_a_memo_op_return_line(
+    monkeypatch, capsys, fake_feed
+):
+    """The other side of the same coin: a `=:` memo is a thornode deposit, and
+    saying which protocol is the point."""
+    memo = b"=:ETH.ETH:0x1111111111111111111111111111111111111111:6700000"
+    _stub_unwitnessed(monkeypatch, _cf_vault_esplora_tx(payload=memo))
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    out = capsys.readouterr().out
+    op_return = [line for line in out.splitlines() if "OP_RETURN" in line]
+    assert len(op_return) == 1
+    assert "thorchain" in op_return[0].lower() or "maya" in op_return[0].lower()
+
+
+def test_status_names_the_backend_even_when_only_one_was_asked(
+    monkeypatch, capsys, no_onchain_btc, no_chainflip
+):
+    """`--backend thorchain` used to answer with bare JSON and never say whose
+    view it was. One backend queried is still a backend worth naming."""
+    observed = {"stages": {"inbound_observed": {"started": True}}}
+    monkeypatch.setattr(
+        "swapsack.backends.get_backend", lambda name: _StubBackend(name, observed)
+    )
+    args = build_parser().parse_args(["status", "ab" * 32, "--backend", "thorchain"])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert "thorchain" in captured.out
+
+
+def test_status_puts_the_observing_backend_on_stdout(
+    monkeypatch, capsys, no_onchain_btc, no_chainflip
+):
+    """It was on stderr, so a redirected run kept the swap and lost whose it
+    was. The backend is part of the answer, not a diagnostic."""
+    observed = {"stages": {"inbound_observed": {"started": True}}}
+    monkeypatch.setattr(
+        "swapsack.backends.default_backends",
+        lambda: [
+            _StubBackend("thorchain", NOT_OBSERVED),
+            _StubBackend("maya", observed),
+        ],
+    )
+    args = build_parser().parse_args(["status", "ab" * 32])
+    assert cli.cmd_status(args) == 0
+    assert "maya" in capsys.readouterr().out
 
 
 # --- the swap summary's own tracking advice ---------------------------------
