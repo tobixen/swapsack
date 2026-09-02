@@ -1025,6 +1025,8 @@ def test_asset_map():
     assert ASSET["USDT-TRON"].startswith("TRON.USDT-")
     assert ASSET["USDT-ETH"].startswith("ETH.USDT-")
     assert ASSET["USDC-ETH"].startswith("ETH.USDC-")
+    assert ASSET["AVAX"] == "AVAX.AVAX"
+    assert ASSET["USDT-AVAX"].startswith("AVAX.USDT-")
     # Destination-only assets (item 3).
     assert ASSET["LTC"] == "LTC.LTC"
     assert ASSET["DOGE"] == "DOGE.DOGE"
@@ -1422,6 +1424,7 @@ EVM_DEST = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
     [
         ("USDC-AVAX", "AVAX.USDC-0XB97EF9EF8734C71904D8002F8B6BC66DD9C48A6E"),
         ("USDC-ARB", "ARB.USDC-0XAF88D065E77C8CC2239327C5EDB3A432268E5831"),
+        ("USDT-AVAX", "AVAX.USDT-0X9702230A8EA53601F5CD2DC00FDBC13D4DF4A8C7"),
     ],
 )
 def test_usdc_on_a_cheaper_chain_names_that_chains_own_contract(key, asset):
@@ -1438,7 +1441,7 @@ def test_usdc_on_a_cheaper_chain_names_that_chains_own_contract(key, asset):
     assert _derivable_chain(key) == asset.split(".", 1)[0]
 
 
-@pytest.mark.parametrize("key", ["USDC-AVAX", "USDC-ARB", "ETH-ARB"])
+@pytest.mark.parametrize("key", ["USDC-AVAX", "USDC-ARB", "ETH-ARB", "USDT-AVAX"])
 def test_a_non_mainnet_evm_dest_warns_which_chain_it_pays_on(key, capsys):
     """Every EVM chain shares one address space, so the address cannot tell you
     which chain a payout lands on — and an exchange deposit address that only
@@ -3316,10 +3319,12 @@ def test_symmetric_fee_line_names_the_chains_own_native_coin(monkeypatch, capsys
     assert "ETH" not in out.split("max fee:")[1]
 
 
-def test_evm_adapters_table_covers_eth_and_arb():
+def test_evm_adapters_table_covers_every_spendable_evm_chain():
     import swapsack.cli as cli
 
-    assert set(cli._EVM_ADAPTERS) == {"ETH", "ARB"}
+    # BSC is deliberately absent: its adapter is address+balance only, so it has
+    # no send/swap/LP path to dispatch to.
+    assert set(cli._EVM_ADAPTERS) == {"ETH", "ARB", "AVAX"}
 
 
 def test_arb_adapter_factory_honours_env_and_flag(monkeypatch):
@@ -3330,6 +3335,16 @@ def test_arb_adapter_factory_honours_env_and_flag(monkeypatch):
     with cli._arb_adapter(args) as adapter:
         assert adapter.rpc_url == "https://from-env.example"
         assert adapter.chain_id == 42161
+
+
+def test_avax_adapter_factory_honours_env_and_flag(monkeypatch):
+    import swapsack.cli as cli
+
+    monkeypatch.setenv("SWAPSACK_AVAX_RPC", "https://from-env.example")
+    args = build_parser().parse_args(["balance"])
+    with cli._avax_adapter(args) as adapter:
+        assert adapter.rpc_url == "https://from-env.example"
+        assert adapter.chain_id == 43114
 
 
 def _wire_evm_dispatch(monkeypatch, seen):
@@ -3429,10 +3444,14 @@ def test_liquidity_still_refuses_tron_tokens(capsys):
     assert "only supported for EVM tokens" in capsys.readouterr().out
 
 
-def test_symmetric_accepts_arb():
+def test_symmetric_accepts_arb_but_not_avax():
+    """A symmetric add pairs the asset leg with your own CACAO on Maya, and Maya
+    has no AVAX pools at all — so Avalanche is an account-model chain that still
+    cannot host one. Being EVM is necessary, not sufficient."""
     import swapsack.cli as cli
 
     assert set(cli._SYMMETRIC_ASSET_CHAINS) == {"ETH", "ARB"}
+    assert "AVAX" in cli._EVM_ADAPTERS
 
 
 def test_arb_is_a_derivable_destination():
@@ -3443,6 +3462,18 @@ def test_arb_is_a_derivable_destination():
     assert "ARB" in cli.DERIVABLE_CHAINS
     derived = cli._derive_destination_address("ARB", MNEMONIC)
     assert derived == cli._derive_destination_address("ETH", MNEMONIC)
+
+
+def test_avax_is_a_derivable_destination():
+    """Same reasoning as ARB: the C-Chain address IS our ETH address, and
+    auto-deriving it is only honest once we can spend there too."""
+    import swapsack.cli as cli
+
+    assert "AVAX" in cli.DERIVABLE_CHAINS
+    derived = cli._derive_destination_address("AVAX", MNEMONIC)
+    assert derived == cli._derive_destination_address("ETH", MNEMONIC)
+    # Derivable and spendable, so no receive-only warning is owed.
+    assert "AVAX" not in cli.RECEIVE_ONLY_CHAINS
 
 
 def test_address_command_lists_arb(monkeypatch, capsys):

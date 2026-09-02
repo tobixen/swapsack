@@ -8,6 +8,24 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Avalanche.** Native `AVAX` and the two dollar tokens `USDC-AVAX` and
+  `USDT-AVAX` can now be held, shown in `balance`, sent, swept and **spent as
+  a swap source** — where `USDC-AVAX` could previously only be paid *to*. The
+  address is your Ethereum one, so `--to AVAX` no longer needs a `--dest`
+  typed out by hand. C-Chain only: an `X-avax1…` address is refused, since a
+  payout could never credit it.
+
+  Two limits to know before you use it. Avalanche routes through **THORChain
+  alone** — Maya has no AVAX pools and Chainflip no Avalanche — so a THORChain
+  halt leaves it unreachable, with no second venue to fall back on. And
+  liquidity is not available at all for the same reason, so `add-liquidity`
+  refuses up front instead of sending a deposit that would come back minus
+  gas.
+
+  **Nothing has been broadcast on Avalanche yet.** Every spend path is built,
+  checked by the same safety gate as Ethereum's and covered by tests, but as
+  with Arbitrum, the first real transaction will be yours. Start small.
+
 - **`history` and `utxos`.** `swapsack history` lists every transaction that
   touched the wallet — newest first, mempool first — with what it did to your
   balance, the full txid, who else was paid, and the memo that marks a swap

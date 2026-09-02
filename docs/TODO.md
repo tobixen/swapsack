@@ -50,9 +50,11 @@ has never broadcast on Arbitrum, which is item 1.
    trusting this line; it is the one number here most likely to have moved.
 
 3. **More swap *destinations* via external `--dest` addresses.** ATOM, XRP, ADA
-   and ETH-ARB are done; **SOL is the only remaining candidate, and it is
-   blocked** — `SOL.SOL` exists on THORChain but is halted (a live
-   `BTC->SOL.SOL` quote returns "trading is halted, can't process swap"), the
+   and ETH-ARB are done, and native AVAX arrived with its adapter (auto-derived,
+   like ARB, since it *is* the ETH address); **SOL is the only remaining
+   candidate, and it is blocked** — `SOL.SOL` exists on THORChain but is
+   halted (a live `BTC->SOL.SOL` quote returns "trading is halted, can't
+   process swap"), the
    same shape as the BSC block below. Revisit when `pools` shows
    `trading_halted: false`, or reach it via Chainflip (see *Swap backends*).
    When it unblocks: SOL addresses are base58 with **no checksum at all** (a
@@ -317,7 +319,9 @@ labels, not lookups.
   `cmd_swap` and `_liquidity` dispatch through it instead of branching on
   `chain == "ETH"`. What is left is the account-model stragglers that still
   have their own branches — TRON, MAYA, THOR — plus `cmd_address`, which still
-  hand-lists every adapter (and so is the thing that silently forgets a new
+  hand-lists every adapter — adding Avalanche meant editing it, its help
+  string and `_wallet_adapters` by hand, three places one table would make
+  one — (and so is the thing that silently forgets a new
   chain).
 - **A7** — split `base.ChainAdapter` into `WalletChain` vs `SourceChain` (Tron is
   destination-only). The `swap.SwapSource` protocol already exists from A4.
@@ -387,17 +391,36 @@ labels, not lookups.
   stale. `docs/cacao.md`'s own phasing section was correct.) So *Next up* item
   1's CACAO leg needs no new chain work. (CACAO needs `thorchain.asset_unit` to
   stay 1e10, not 1e8 — see `docs/cacao.md`.)
-- **USDC on cheaper chains — the *destination* half is done** (`USDC-AVAX` via
-  THORChain, `USDC-ARB` via Maya). What remains is **holding, spending or
-  sourcing** them, which needs a per-chain EVM adapter (RPC, chain id, native
-  coin, tracked tokens). This used to say "so do A2/A3 first rather than copy
-  it per chain" — that is no longer the trade-off: `EthAdapter` already
-  parameterizes `chain_id` and `chains/bsc.py` is a ~60-line subclass proving
-  the seam, so the per-chain adapter *is* the shared code path. **ARB is now
-  done** (`chains/arb.py`, ~50 lines of configuration, which is the evidence
-  for that claim). Native AVAX remains unexposed: it needs an `ASSET` line plus
-  the same adapter treatment, and `USDC-AVAX` LP needs THORChain's LP pause to
-  lift, which it has not.
+- **USDC on cheaper chains — done for ARB and AVAX; BASE and BSC remain.**
+  This used to say "so do A2/A3 first rather than copy it per chain"; that is
+  no longer the trade-off. `EthAdapter` parameterizes `chain_id`,
+  `chains/bsc.py` is a ~60-line subclass proving the seam, and the per-chain
+  adapter *is* the shared code path. Evidence: `chains/arb.py` (~50 lines of
+  configuration) and now `chains/avax.py` (~100, most of it the docstring),
+  each of which brought its chain's whole wallet side — hold, balance,
+  destination, send/sweep and swap-from — for the native coin *and* its
+  tracked tokens.
+
+  What is left on this path is **BASE and BSC**, and both are now purely a
+  missing adapter rather than a protocol block (see the halt entry below).
+  Also still missing: `AVAX` **LP**, which needs THORChain's global LP pause to
+  lift and has no second network to fall back on — Maya has no AVAX pools at
+  all. `add-liquidity --asset AVAX` refuses up front and names the mimir key,
+  so there is nothing to build until the pause lifts.
+
+  Two things worth knowing before the next EVM adapter, both learned here:
+  - **The per-chain surface really is only three fields, and all three are
+    silent when wrong**: chain id, token decimals, and `lp_backends`. Getting
+    the chain id wrong emits a transaction that is *valid on Ethereum mainnet*
+    and pays real ETH to the same recipient. Getting `lp_backends` wrong from a
+    copy is the subtler one — ARB is Maya-only and AVAX is THORChain-only, the
+    exact inverse — and it fails closed while naming the wrong network, which
+    reads as a protocol problem rather than a typo.
+  - **ARB's raised `native_send_gas` is an L2 thing and must not be copied.**
+    Arbitrum needs 30000 because an L2 bills the L1 calldata cost as extra gas
+    consumed; Avalanche is an L1 and Ethereum's 21000 is the whole cost. The
+    next adapter should ask which of the two it is rather than inherit either
+    answer by accident.
 
   Three findings from doing it, worth having before the adapter work:
   - **The premise "far cheaper than ETH mainnet" did not survive measurement.**
@@ -414,10 +437,15 @@ labels, not lookups.
     rather than assumed stable. Re-measured 2026-08-16: ~8.9k USDC / ~78.7k
     CACAO, unchanged. It bounds the *LP* ambition too, not just swaps — see
     *Next up* item 2.
-  - **BASE is blocked, not merely unimplemented**: `BASE.USDC` *and* `BASE.ETH`
-    are `Available` but `trading_halted: true` on THORChain (checked
-    2026-08-16), same shape as the BSC and SOL blocks. One `_RULES` line and an
-    `_EVM_CHAINS` entry is still all it needs whenever the halt lifts.
+  - **BASE's halt has lifted — it is now merely unimplemented.** As of
+    2026-08-16 `BASE.USDC` and `BASE.ETH` were `Available` but
+    `trading_halted: true`; re-checked **2026-09-02**, both are `Available`
+    with `trading_halted: false` and `inbound_addresses` reports BASE
+    `halted: false`, `chain_trading_paused: false`. So the block is gone and
+    what remains is one `_RULES` line, an `_EVM_CHAINS` entry and a
+    `chains/avax.py`-shaped adapter. **Mind the depth before bothering**:
+    `BASE.ETH` held ~2.6 ETH on 2026-09-02, which is far too thin to swap
+    against at any size worth the work; `BASE.USDC` held ~31k. Re-measure.
 - **BSC swaps are blocked — do not implement yet.** Hold + Balance work
   (`chains/bsc.py`), but THORChain has BSC `chain_trading_paused`/`halted` (a
   live `BTC->BSC.BNB` quote returns "trading is halted, can't process swap") and
@@ -466,7 +494,8 @@ README — both copies would need the column.)
 `history` and `utxos` list the UTXO chains only — BTC and DASH in full, ZEC's
 unspent set without the spent half. The account-model chains have no listing at
 all, and that is a data-source gap rather than a design choice: `chains/eth.py`,
-`arb.py` and `bsc.py` speak plain JSON-RPC to a public node, and `tron.py` uses
+`arb.py`, `avax.py` and `bsc.py` speak plain JSON-RPC to a public node, and
+`tron.py` uses
 the keyless java-tron HTTP API. **Neither has an address history index**, so
 there is no call to enumerate an address's transactions with. Everything else is
 already in place: `chains/history.py` is chain-agnostic (it takes `(path,
@@ -588,7 +617,8 @@ and released.
   can go; the limitation itself is THORChain's and is not ours to close. Recorded
   here so it is not rediscovered as a bug. If THORChain ever adds tag support the
   memo format will change, and that is the trigger to revisit.
-- **Broadcast is still unproven on mainnet for DASH, ZEC, ARB and RUNE.** Two
+- **Broadcast is still unproven on mainnet for DASH, ZEC, ARB, AVAX and
+  RUNE.** Two
   run-throughs have spent real funds: `docs/live-session-2026-07-24.md` proved
   the BTC send + BTC/ETH/ERC-20 swap paths (THORChain, Maya and CoW), and
   `docs/live-session-2026-08-16.md` proved a **TRX** swap-from, the Cosmos
@@ -599,6 +629,16 @@ and released.
     swap-from/LP); proving the broadcasts is all that remains. See
     `docs/dash.md`, `docs/zcash.md`.
   - **ARB** — nothing has been broadcast on Arbitrum at all (*Next up* item 1).
+  - **AVAX** — likewise nothing on Avalanche, for native AVAX or its tokens.
+    The read paths *are* covered against the live chain (balance decoding, the
+    chain id asked of the node, both tracked contracts' `decimals()` read back),
+    and every spend path passes its own gate — a real unsigned swap, token
+    approve+deposit, native send and token send all reach "verified OK" for
+    chain 43114. What is missing is only a broadcast, and the wallet holds 0
+    AVAX, so it needs gas there first. `swap --to AVAX` funds that in one step
+    (THORChain's AVAX outbound fee was ~0.034 AVAX, ~€0.21, on 2026-09-02 —
+    about the same as ETH's and well above ARB's, so ARB is still the cheaper
+    rehearsal of item 1).
   - **RUNE** — no THORChain native tx; its LP is paused and no RUNE swap has
     been made. CACAO's proof does **not** transfer: same code, different chain,
     chain-id and fee.
