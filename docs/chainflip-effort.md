@@ -267,15 +267,21 @@ was found:
    is set, and `ChainflipVaultPlan` carries the binding the vault-swap gate
    does itself.
 
-What is left, and deliberately so: **the broadcast is unproven on mainnet.**
-Everything up to it is covered by an opt-in network test that quotes, encodes
-against mainnet, builds a real unsigned transaction from a throwaway key and
-requires the gate to pass — the same shape as CoW's "unfunded order clears every
-check up to `InsufficientBalance`". Only spending real BTC can close the last
-step. Do the **`bytes` memo widening as
-its own commit** next, on its own test run. Then **B2**, and rewrite
-`docs/chainflip.md` around vault swaps first — leaving a note whose central
-mechanism does not work as its plan of record is how the wrong thing gets built.
+~~What is left, and deliberately so: **the broadcast is unproven on
+mainnet.**~~ **Closed the same evening.** Everything up to the broadcast was
+covered by an opt-in network test that quotes, encodes against mainnet, builds
+a real unsigned transaction from a throwaway key and requires the gate to pass
+— the same shape as CoW's "unfunded order clears every check up to
+`InsufficientBalance`". Real BTC then closed the last step: deposit
+`d7bbc290bcbdefbc3dd058ab8b0680842a596552051bc9f2ec3b159181214458` (block
+964460) was witnessed as swap 1764999, and the payload the local decoder reads
+matches field for field what the protocol reports back. It was refunded rather
+than filled — the deposit went out at 1.13 sats/vB, sat in the mempool while
+BTC fell ~2%, and the floor it had encoded — working back to a quote around
+79,300 USDT/BTC, a level last seen about ninety minutes before the block —
+could no longer be met, so fill-or-kill returned 498,294 of 500,000 sats to the change
+output. Nothing the gate is responsible for failed; see `docs/TODO.md` for the
+follow-ups that come out of it.
 
 ## Sources
 

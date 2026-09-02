@@ -330,9 +330,24 @@ labels, not lookups.
 
 ## Swap backends
 
-- **Chainflip — B1 (quotes) and B2 (execution from BTC) both done
-  2026-08-28.** What remains: a **mainnet broadcast** (everything short of it is
-  covered by an opt-in network test that builds and gates a real unsigned tx);
+- **Chainflip — B1 (quotes), B2 (execution from BTC) and the mainnet
+  broadcast all done 2026-08-28.** The broadcast was
+  `d7bbc290bcbdefbc3dd058ab8b0680842a596552051bc9f2ec3b159181214458`, block
+  964460: it paid that epoch's vault, carried the 48-byte OP_RETURN, and
+  Chainflip witnessed it as swap 1764999 — so the payload, the vault check,
+  the encoded destination and the refund binding all held against the real
+  protocol, and the local decoder's reading of the payload matches field for
+  field what the chain reports back. It did **not** fill, and the reason is
+  the interesting part: the deposit went out at 1.13 sats/vB, sat in the
+  mempool while BTC fell ~2%, and by the time two confirmations landed the
+  encoded floor (78,105 USDT/BTC) was above spot — that floor works back to a
+  quote taken around 79,300 USDT/BTC, a level BTC last held about ninety
+  minutes before the block, which is the mempool wait showing up as a number.
+  Inferred from the price, not from a log. 20 retries, every one `MinPriceViolation`, aborted, 498,294 of 500,000
+  sats refunded to the change output. Fill-or-kill did exactly what it is for.
+  Cost of the round trip: 1,945 sats — and note both an EGRESS *and* a REFUND
+  fee are charged although nothing was ever egressed in the output asset, so a
+  refused swap does not cost one fee. What remains:
   **a source other than BTC** — Chainflip is not Bitcoin-only, and neither is
   its vault-swap API: it covers EVM chains and Solana alongside Bitcoin, so
   ETH/ARB (a contract call into the Vault contract) and SOL (a program
@@ -340,9 +355,7 @@ labels, not lookups.
   or the gate that checks its outputs, so each is its own piece of work; a
   source the vault-swap API does not cover would need a deposit channel and a
   broker instead. Today every non-BTC source prices in `auto` and settles
-  nowhere, and says so out loud when it was the cheaper route. A
-  **`status` tracker** — `chainflip-swap.chainflip.io/v2/swaps/{id}` is keyless,
-  but whether the id is derivable from our own BTC txid is untested; a
+  nowhere, and says so out loud when it was the cheaper route; a
   **base58check decoder** so a Tron destination can be gated (Solana also needs
   the 60-byte payload variant); and `cf_swap_rate_v2/v3` as a node-native quote
   source, which would drop the hosted service as a dependency.
@@ -380,6 +393,31 @@ labels, not lookups.
   `cf_*_open_deposit_channels` return **liquidity-provision** channels with no
   destination or expiry in them — `docs/chainflip.md`'s readback plan does not
   work as written.
+- **Chainflip's price floor is set at build time and enforced ~20 minutes
+  later** — the lesson of the 2026-08-28 broadcast above, and the one thing
+  that stands between a working vault swap and a filled one. Between the quote
+  and the witnessing sit the mempool wait, two Bitcoin confirmations, and the
+  100-block (~10 min) retry window. `min_output_amount`'s docstring already
+  allows for the confirmations; what that run showed is that the **mempool
+  wait dominates**, and it is the only term the wallet controls. Three
+  candidate fixes, none implemented: (a) refuse to build a vault swap at a fee
+  rate that will not confirm in ~2 blocks, or give this path a tighter
+  `--fee-blocks` default than a plain `send` — 239 sats of fee saved cost
+  1,706 sats of protocol fees and a round trip; (b) when a swap tx is still
+  unconfirmed after N blocks, **re-quote and rebuild** rather than CPFP — a
+  stale floor cannot be fixed by confirming faster, which is exactly what the
+  CPFP rescue did here; (c) expose `retryDurationBlocks` (encoded as 100) so a
+  longer window can ride out a dip. Note (a) and (b) pull against `--amount
+  max` being impossible here anyway, so a rebuild always has change to work
+  with.
+- **`status` misreports a refunded Chainflip swap.** Chainflip's `state:
+  COMPLETED` means the swap's lifecycle is *over*, not that it succeeded; the
+  refund lives in `refundEgress`, which `_print_chainflip_swap` ignores. On the
+  aborted swap above it prints `COMPLETED (swap 1764999)` and `out: not paid
+  out yet (USDT)` — i.e. it reads as still pending when the money was already
+  back in the wallet. It should read `abortedReason` / `refundEgress` and say
+  refunded, with the amount and the refund txid. Worst-case reading of the
+  current output is a user re-sending a swap that already came back.
 - **Maya-only assets**: ADA and ETH-ARB are now exposed as destinations. Note
   what *isn't* there — the ARB **token** pool (`ARB.ARB`) is `Staged`, not
   tradeable, so "ARB" as a destination means native ETH on Arbitrum.
@@ -446,17 +484,28 @@ labels, not lookups.
     `chains/avax.py`-shaped adapter. **Mind the depth before bothering**:
     `BASE.ETH` held ~2.6 ETH on 2026-09-02, which is far too thin to swap
     against at any size worth the work; `BASE.USDC` held ~31k. Re-measure.
-- **BSC swaps are blocked — do not implement yet.** Hold + Balance work
-  (`chains/bsc.py`), but THORChain has BSC `chain_trading_paused`/`halted` (a
-  live `BTC->BSC.BNB` quote returns "trading is halted, can't process swap") and
-  Maya has no BSC pools, so To/From/Sweep/Liq are unusable and untestable.
-  `BscAdapter.build_and_verify` raises by design — because there is nothing to
-  swap against, **not** because of chain id. (This entry used to claim "the
-  inherited builders bake in ETH's chain id 1"; they do not. `BscAdapter` passes
-  56 to `super().__init__`, which is exactly why its inherited *send* paths sign
-  correctly.) Revisit when `inbound_addresses` shows BSC
-  `chain_trading_paused: false`; at that point the swap source needs only the
-  entry point unstubbed, not a refactor.
+- **BSC's halt has lifted — the block is gone, the stub is not.** This entry
+  said "blocked, do not implement yet" on the strength of THORChain having BSC
+  `chain_trading_paused`/`halted`. Re-checked **2026-09-02** and that is no
+  longer true: `inbound_addresses` reports BSC `halted: false`,
+  `chain_trading_paused: false`, and `BSC.BNB`, `BSC.USDC`, `BSC.USDT`,
+  `BSC.ETH` and `BSC.BUSD` are all `Available` with `trading_halted: false`.
+  Maya still has no BSC pools, so it is THORChain-only, like AVAX.
+
+  So the trigger this entry named has fired, and its own prescription now
+  applies: `BscAdapter.build_and_verify` raises by design — because there was
+  nothing to swap against, **not** because of chain id (`BscAdapter` passes 56
+  to `super().__init__`, which is why its inherited *send* paths already sign
+  correctly) — so the swap source needs that entry point unstubbed and the CLI
+  wiring `chains/avax.py` just went through, not a refactor. That makes it the
+  cheapest remaining chain by some distance: the adapter already exists.
+
+  **Measure the depth first.** On 2026-09-02 `BSC.USDC` and `BSC.USDT` held
+  ~5.4k each and `BSC.BNB` ~1945 BNB. The stablecoin pools are thinner than
+  Maya's `ARB.USDC`, which the *Next up* notes already call too thin to be
+  useful at size — so the native `BSC.BNB` pool may be the only one worth
+  wiring, and 18-decimal BEP-20 tokens (see `chains/bsc.py`) are the trap
+  waiting either way.
 - **BasicSwap backend** (trustless P2P / privacy / XMR): orchestrate its daemon
   via API; needs full nodes (heavy) and a different custody seam. Future.
 - **Monero (XMR) hold/balance/send**: blocked on a custody/architecture

@@ -104,8 +104,10 @@ refunded — Chainflip has refund parameters worth setting.
    decodes that payload locally, which is what makes the route gateable at all.
    Sizing, outcomes, and the corrections to the original broker plan in
    **`docs/chainflip-effort.md`** (`docs/chainflip.md` is the superseded
-   scoping note). Still open: an EVM source (a contract call, not this path),
-   SOL/DOT wallet keys, and a mainnet broadcast.
+   scoping note). Mainnet-proven 2026-08-28 — a swap the protocol
+   witnessed and then refunded on its own price floor (see `docs/TODO.md`).
+   Still open: an EVM source (a contract call, not this path) and SOL/DOT
+   wallet keys.
 3. **Not planned**: keyed aggregators (1inch/0x — key friction for a CLI),
    calldata-style keyless ones (ParaSwap/LiFi — gating problem; revisit only
    if CoW's coverage disappoints), instant exchangers (custodial).
