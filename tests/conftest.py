@@ -150,6 +150,20 @@ class FakeSession:
         return self._next(url, self.posts, timeout)
 
 
+class FakeResponse:
+    """A scripted HTTP *answer*: a status the retry loop reads, and headers.
+
+    Only what ``swapsack.net`` looks at. A plain string outcome from
+    ``FakeSession`` stands for "some response the loop passes straight
+    through"; this is for the statuses it must act on (429/503) and for the
+    ``Retry-After`` that comes with them.
+    """
+
+    def __init__(self, status_code: int, **headers: str) -> None:
+        self.status_code = status_code
+        self.headers = {k.replace("_", "-"): v for k, v in headers.items()}
+
+
 # Shaped like a real Esplora /tx response, with synthetic addresses: a partial
 # send (one recipient + one change output), the case a sweep never produces.
 # Lives here rather than in a test module because two suites use it — and

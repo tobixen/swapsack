@@ -498,38 +498,23 @@ is a ZIP-244 tree hash the wallet does not compute.
 Related: the `status <txid>` generalization above needs the same per-chain
 transaction reads, so the two are worth doing together.
 
-## A deep `history` walk can be rate-limited, and a 429 is not retried
+## Throttling: pacing a deep walk, and the single-endpoint case
 
-`history`/`utxos` walk an address's transactions a page at a time, so a wallet
-with any real history makes **dozens to hundreds** of requests per run against a
-public explorer — where `balance` made one per address. Public Esplora
-instances throttle that: re-running the BTC cross-check during development drew
-`429 Too Many Requests` from mempool.space partway through a walk.
+A 429 is handled since the `net.py` throttle work: the request fails over to
+the other explorer (they throttle independently), an all-endpoints refusal
+honours `Retry-After` up to `MAX_RETRY_AFTER`, and `collect_pages` degrades to
+a `truncated` — INCOMPLETE — listing rather than dying mid-walk. What is left
+is the cheaper half of the problem:
 
-A 429 is currently a hard error. `HttpClient._get` retries only
-`TRANSIENT_ERRORS` (connection failures and timeouts — cases where no answer
-came back), and `FailoverHttpClient._get_with_fallback` switches endpoint on the
-same. A 429 is a perfectly good HTTP *response*, so neither triggers: it goes
-straight to `resp.raise_for_status()` and the listing dies partway through, and
-because it dies rather than returning short, it does not even come back as the
-INCOMPLETE result the walk has a flag for.
-
-What to do about it, roughly in order of value:
-
-- **Honour `Retry-After` and back off.** A 429 usually names how long to wait.
-  Retrying it is safe in a way retrying a write never is — these are reads.
-- **Fail over on 429 as well as on a transport error.** `DEFAULT_ESPLORA_NODES`
-  already pins a second operator (mempool.space beside blockstream.info) and the
-  two throttle independently, so the fallback that exists is exactly the right
-  tool; it simply is not reachable from an HTTP status today.
-- **Degrade to INCOMPLETE rather than raising.** If both endpoints throttle, a
-  partial listing that says it is partial beats a traceback — the machinery is
-  already there (`AddressTxs.truncated`).
-- **Consider a small delay between pages.** Cheaper than being throttled, and
-  invisible next to the latency the walk already pays.
-
-Note this makes the throttling *worse* for someone who sets `--esplora` to a
-single instance, since naming an endpoint deliberately turns the fallback off.
+- **Consider a small delay between pages.** Being throttled costs a round trip
+  plus a `Retry-After`; a pause between pages costs less than the latency the
+  walk already pays. Only worth it if throttling turns out to be routine rather
+  than occasional — otherwise it slows every run to protect the rare one.
+- **`--esplora` naming one instance turns the failover off**, so a throttle
+  there can only be waited out, and the retry budget (3 attempts) is small.
+  Whether that deserves a longer budget when there is nowhere to fail over to
+  is an open question; naming an endpoint is also a privacy choice, so the
+  answer is *not* to quietly re-add a second operator.
 
 ## Upstream: the lychee pre-commit hook misreads `rev` under `git push`
 
