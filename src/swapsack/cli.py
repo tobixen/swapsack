@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from swapsack.addresses import (
     is_evm_chain,
@@ -47,6 +48,9 @@ from swapsack.swap import (
 )
 from swapsack.thorchain import THORCHAIN_UNIT, asset_unit
 from swapsack.verify import OP_RETURN_MAX_BYTES
+
+if TYPE_CHECKING:  # types only — the chain adapters stay lazily imported below
+    from swapsack.chains.base import TxSummary
 
 # The finest base unit across all supported assets (CACAO's 1e10) — the
 # parse-time floor for --amount; the per-asset floor lives in _base_units.
@@ -2101,8 +2105,9 @@ def _swap_via_chainflip(
     )
     print(f"inbound: {prepared.built.fee} on {adapter.chain} @ {fee_rate}/vB{eur}")
     print(
-        "track:   this is not a THORChain swap; follow the deposit on "
-        "scan.chainflip.io once it confirms"
+        "track:   swapsack status <txid> (Chainflip's own view once it has "
+        "witnessed the deposit, which is after it confirms; before that, what "
+        "the deposit itself asked for) — or scan.chainflip.io"
     )
     return _confirm_and_execute(prepared, adapter, args)
 
@@ -3433,12 +3438,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     # A bare 64-hex hash could be a BTC (or DASH/ZEC) txid; show what the tx
     # itself did (inputs, outputs, change, fee) before, and independently of,
     # the swap-observation view — that is the useful part for a plain send.
-    _print_onchain_tx(args)
+    tx = _print_onchain_tx(args)
 
     # Chainflip before the thornode backends, because a Chainflip vault swap is
     # invisible to them: thornode would answer "not observed", which reads as
     # "your deposit went nowhere" for a swap that may have completed fine.
-    if _print_chainflip_swap(args):
+    answered = _print_chainflip_swap(args)
+    if answered:
+        return 0
+    # Chainflip's own view is the better one, but it only exists once the
+    # protocol has witnessed the deposit — i.e. not in the window right after
+    # broadcast, which is exactly when a user runs this. Fall back to reading
+    # the deposit's own OP_RETURN. `answered is None` means the endpoint could
+    # not be asked at all, which is a different sentence to write.
+    if _print_unwitnessed_chainflip_swap(tx, asked=answered is not None):
         return 0
 
     if args.backend == "auto":
@@ -3504,14 +3517,20 @@ def _swap_amount(amount: int | None, chain: str, asset: str) -> str:
     return f"{amount / 10**decimals:.{decimals}f} {asset}"
 
 
-def _print_chainflip_swap(args: argparse.Namespace) -> bool:
+def _print_chainflip_swap(args: argparse.Namespace) -> bool | None:
     """Print what Chainflip made of this deposit; True if it knew the txid.
 
     Best-effort in the same way as :func:`_print_onchain_tx`: a dead or slow
     endpoint prints nothing and never raises, because the other backends can
     still answer. A 404 is not a failure — it means the deposit is not a
-    Chainflip one, which is the common case and the reason this returns a bool
-    rather than printing "no".
+    Chainflip one, which is the common case and the reason this answers rather
+    than printing "no".
+
+    Three outcomes, not two, because the fallback below has to say *why* there
+    is no protocol view: ``True`` printed one, ``False`` is Chainflip saying the
+    txid is not one of its deposits, and ``None`` is "could not ask". Folding
+    the last two together would let a dead endpoint print "Chainflip has not
+    witnessed this yet" about a swap it may well have completed.
     """
     from swapsack.chainflip import ChainflipError
 
@@ -3519,7 +3538,7 @@ def _print_chainflip_swap(args: argparse.Namespace) -> bool:
         with _chainflip_client(args) as client:
             swap = client.swap_status(args.txid)
     except (*HTTP_ERRORS, ChainflipError, ValueError):
-        return False
+        return None
     if swap is None:
         return False
 
@@ -3543,21 +3562,122 @@ def _print_chainflip_swap(args: argparse.Namespace) -> bool:
     return True
 
 
-def _print_onchain_tx(args: argparse.Namespace) -> None:
+def _chainflip_vaults() -> frozenset[str]:
+    """The Bitcoin vaults the protocol publishes, or an empty set if unreachable.
+
+    Best-effort on purpose: this is the one part of reading a vault swap that
+    needs a node up, and it only *confirms* who was paid — the payload says what
+    was asked for on its own. Losing the node must cost the confirmation, not
+    the answer, so the caller reads an empty set as "not checked" and stays
+    quiet about the vault rather than claiming anything either way.
+    """
+    from swapsack.chainflip import ChainflipError, ChainflipRpc, bitcoin_vault_addresses
+
+    try:
+        with ChainflipRpc() as rpc:
+            return bitcoin_vault_addresses(rpc)
+    except (*HTTP_ERRORS, ChainflipError, ValueError):
+        return frozenset()
+
+
+def _print_unwitnessed_chainflip_swap(
+    tx: TxSummary | None, *, asked: bool = True
+) -> bool:
+    """Read a vault swap out of the deposit's own bytes; True if it is one.
+
+    Chainflip witnesses a deposit only once it confirms, so ``/v2/swaps/<txid>``
+    404s in the window a user is most likely to ask — between broadcast and the
+    first confirmation — and the thornode fall-through then answers "not
+    observed … not a swap inbound at all", which for a vault swap is false. The
+    OP_RETURN carries the whole intention, so decode it here: the transaction
+    says what it asked for whether or not anyone's service is up.
+
+    Deliberately strict about what it will claim is a vault swap. A THORChain
+    ``=:`` memo can be 48 bytes too, so the version byte (never ASCII) and a
+    destination asset id this wallet can name are both required — an id it
+    cannot name is a payload it does not understand, and falling through beats
+    printing a payout scaled by a guessed number of decimals.
+
+    ``asked`` is False when the swapping service could not be reached at all, as
+    opposed to answering "not one of mine". Only the second licenses saying the
+    deposit has not been witnessed — the first says nothing about it.
+    """
+    from swapsack.chainflip import CHAINFLIP_ASSETS, VAULT_SWAP_ASSET_IDS
+    from swapsack.verify import VAULT_SWAP_VERSION, decode_vault_swap_payload
+
+    if tx is None:
+        return False
+    by_id = {asset_id: asset for asset, asset_id in VAULT_SWAP_ASSET_IDS.items()}
+    for output in tx.outputs:
+        if output.op_return_data is None:
+            continue
+        decoded = decode_vault_swap_payload(output.op_return_data)
+        if decoded is None or decoded.version != VAULT_SWAP_VERSION:
+            continue
+        asset = by_id.get(decoded.asset_id)
+        if asset is None:
+            continue
+        break
+    else:
+        return False
+
+    chain, cf_asset, _decimals = CHAINFLIP_ASSETS[asset]
+    print("chainflip: a vault swap, read from the deposit itself")
+    vaults = _chainflip_vaults()
+    paid = [o for o in tx.outputs if o.address in vaults]
+    if paid:
+        deposited = _swap_amount(sum(o.value for o in paid), "Bitcoin", "BTC")
+        print(f"  in:  {deposited} -> {paid[0].address} (published protocol vault)")
+    elif vaults:
+        # The payload says what was asked for; only the vault list says who was
+        # paid. A well-formed payload sent somewhere the protocol does not
+        # publish is a swap that will never happen, and worth saying loudly.
+        print(
+            "  WARNING: this pays no address the protocol publishes as a "
+            "Bitcoin vault — Chainflip will never see it",
+            file=sys.stderr,
+        )
+    floor = _swap_amount(decoded.min_output_amount, chain, cf_asset)
+    print(f"  out: at least {floor} -> 0x{decoded.destination.hex()}")
+    if asked:
+        where = (
+            "it is still unconfirmed"
+            if not tx.confirmed
+            else f"it confirmed in block {tx.block_height}, so that should be soon"
+        )
+        why = f"Chainflip has not witnessed this deposit yet — {where}."
+    else:
+        why = (
+            "Chainflip could not be reached, so whether it has witnessed this "
+            "deposit — or already paid it out — is unknown here."
+        )
+    print(
+        f"  note: {why} Only the protocol's own view says what was actually "
+        "paid out, so re-run this once it has one; the floor above is a bound, "
+        "not a payout.",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _print_onchain_tx(args: argparse.Namespace) -> TxSummary | None:
     """Print what a BTC transaction actually did, if the hash is one. Best-effort.
 
     Queries Esplora directly (no keystore — a txid is public), so it works for a
     hash the wallet did not create. A miss (not a BTC tx / not yet propagated /
     Esplora down) prints nothing and never raises: the swap-stage view below is
     the fallback.
+
+    Returns the transaction it printed, so the caller can go on to read a
+    Chainflip vault swap out of its OP_RETURN without fetching it twice.
     """
     try:
         with _btc_adapter(args) as adapter:
             tx = adapter.fetch_tx(args.txid)
     except (*HTTP_ERRORS, ValueError):
-        return
+        return None
     if tx is None:
-        return
+        return None
 
     where = (
         f"confirmed in block {tx.block_height}"
@@ -3575,6 +3695,7 @@ def _print_onchain_tx(args: argparse.Namespace) -> None:
     print(f"  fee: {tx.fee} sats @ {tx.fee_rate:.2f} sats/vB ({tx.vsize} vB){fee_eur}")
     if not tx.has_op_return:
         print("  note: no OP_RETURN — a plain send, not a swap (no vault to track)")
+    return tx
 
 
 # --- parser -----------------------------------------------------------------

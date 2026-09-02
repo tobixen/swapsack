@@ -33,6 +33,17 @@ automatically from git tags (PEP 440 / SemVer).
   out, and the payout transaction. Amounts in assets this wallet has no key for
   are shown in base units rather than scaled by a guess.
 
+  Chainflip only witnesses a deposit **after it confirms**, though — which is
+  not the moment you ask, having just broadcast one. In that window `status`
+  now reads the swap out of the deposit's own `OP_RETURN`: which published
+  protocol vault was paid and how much, the destination the payload names, and
+  the floor it enforces on-chain. Nobody's service has to be up for that, so a
+  Chainflip API that is merely slow costs you a payout figure, not the answer.
+  A deposit whose payload is well-formed but which pays no address the protocol
+  publishes as a vault gets said so loudly: that swap will never happen. And
+  the summary printed before you broadcast now points at `swapsack status`
+  rather than sending you off to a block explorer.
+
 ### Fixed
 
 - **Chainflip vault swaps work again.** The broker account this wallet named

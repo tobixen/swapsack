@@ -834,39 +834,15 @@ def test_a_binary_memo_with_no_destination_is_fine():
 # the 48 bytes we are about to publish say what we asked for — decoded *here*,
 # from the bytes themselves, never taken on a node's word.
 
-CF_DEST20 = bytes.fromhex("000000000000000000000000000000000000dead")
-CF_VAULT = "bc1p5rrs3gd9tlzucafucuj5jgvaj7rdtgn6je28y44wvvrv4d0vpsdslmnctx"
-CF_VAULTS = frozenset(
-    {CF_VAULT, "bc1p50rzjffd3ac87492wsrefdmyqtyfthfjse9ypeg2pf5l95zclsaq8g9pc5"}
+# In conftest.py because `status` decodes the same bytes to recognise a deposit
+# Chainflip has not witnessed yet -- see tests/conftest.py.
+from conftest import (  # noqa: E402
+    CF_DEST20,
+    CF_MIN_OUT,
+    CF_VAULT,
+    CF_VAULTS,
 )
-CF_MIN_OUT = 3 * 10**18
-
-
-def _payload(
-    version=1,
-    asset_id=1,
-    dest=CF_DEST20,
-    retry=100,
-    min_out=CF_MIN_OUT,
-    oracle=255,
-    chunks=1,
-    interval=2,
-    boost=0,
-    broker=0,
-    affiliates=b"\x00",
-):
-    return (
-        bytes([version, asset_id])
-        + dest
-        + retry.to_bytes(2, "little")
-        + min_out.to_bytes(16, "little")
-        + bytes([oracle])
-        + chunks.to_bytes(2, "little")
-        + interval.to_bytes(2, "little")
-        + bytes([boost, broker])
-        + affiliates
-    )
-
+from conftest import chainflip_vault_payload as _payload  # noqa: E402
 
 # The recorded live encoding must match what _payload builds, or every test
 # below is checking a layout Chainflip does not actually use.

@@ -187,3 +187,49 @@ ESPLORA_TX_PARTIAL_SEND = {
 @pytest.fixture
 def esplora_tx_partial_send() -> dict:
     return ESPLORA_TX_PARTIAL_SEND
+
+
+# --- Chainflip vault swaps ---------------------------------------------------
+#
+# A vault swap pays a protocol vault with the swap's whole intention encoded in
+# the OP_RETURN. Two suites decode those 48 bytes -- the gate (``test_verify``)
+# and ``status`` (``test_cli``) -- so the builder lives here: a byte layout
+# written out in two test modules is a layout that will drift in one of them.
+
+CF_DEST20 = bytes.fromhex("000000000000000000000000000000000000dead")
+CF_VAULT = "bc1p5rrs3gd9tlzucafucuj5jgvaj7rdtgn6je28y44wvvrv4d0vpsdslmnctx"
+CF_VAULTS = frozenset(
+    {CF_VAULT, "bc1p50rzjffd3ac87492wsrefdmyqtyfthfjse9ypeg2pf5l95zclsaq8g9pc5"}
+)
+CF_MIN_OUT = 3 * 10**18
+
+
+def chainflip_vault_payload(
+    version=1,
+    asset_id=1,
+    dest=CF_DEST20,
+    retry=100,
+    min_out=CF_MIN_OUT,
+    oracle=255,
+    chunks=1,
+    interval=2,
+    boost=0,
+    broker=0,
+    affiliates=b"\x00",
+) -> bytes:
+    """The 48 bytes a Chainflip vault swap carries in its OP_RETURN.
+
+    Kept honest by ``test_payload_helper_matches_a_live_chainflip_encoding``,
+    which compares the defaults against an encoding recorded from mainnet.
+    """
+    return (
+        bytes([version, asset_id])
+        + dest
+        + retry.to_bytes(2, "little")
+        + min_out.to_bytes(16, "little")
+        + bytes([oracle])
+        + chunks.to_bytes(2, "little")
+        + interval.to_bytes(2, "little")
+        + bytes([boost, broker])
+        + affiliates
+    )
