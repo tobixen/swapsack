@@ -31,10 +31,14 @@ from swapsack.net import HTTP_ERRORS, HttpClient
 from swapsack.swap import BroadcastError, Prepared, SwapAborted, SwapRequest
 from swapsack.thorchain import Quote
 from swapsack.verify import (
+    EVM_VAULT_PARAMS_VERSION,
     WEI_PER_THORCHAIN_UNIT,
+    ChainflipEvmVaultPlan,
     EthSendPlan,
     EthSwapPlan,
     EthTokenSendPlan,
+    decode_evm_vault_call,
+    decode_evm_vault_parameters,
     memo_pays_destination,
     verify_eth_send,
     verify_eth_swap,
@@ -57,6 +61,16 @@ ALLOWANCE_SELECTOR = "dd62ed3e"  # allowance(address,address)
 TRANSFER_SELECTOR = "a9059cbb"  # transfer(address,uint256) — plain ERC-20 send
 APPROVE_GAS = 70000
 TOKEN_DEPOSIT_GAS = 200000
+
+# A Chainflip vault swap is a call into the protocol's Vault contract, not a
+# memo deposit, so it gets its own budget rather than DEFAULT_GAS. Measured
+# against mainnet on 2026-09-02 via eth_estimateGas: 32,212 on Ethereum and
+# 32,754 on Arbitrum (which bills the L1 calldata cost as extra gas consumed)
+# for xSwapNative. These round that up generously — an unused limit is refunded,
+# and running out of gas burns the whole limit having delivered nothing. The
+# token figure also covers the ERC-20 transferFrom the Vault does on the way in.
+VAULT_SWAP_GAS = 120000
+VAULT_SWAP_TOKEN_GAS = 250000
 # Plain external sends: a bare value transfer is 21000; an ERC-20 transfer() is
 # ~50-65k. These are used by `send` (no router/approve), not the swap path.
 # NATIVE_SEND_GAS is Ethereum's exact floor with no slack, so an L2 that bills
@@ -228,6 +242,214 @@ def verify_eth_token_swap(
 
     if built.fee > max_fee_wei:
         problems.append(f"max fee {built.fee} wei exceeds limit {max_fee_wei}")
+    return problems
+
+
+@dataclasses.dataclass
+class EthVaultSwapBuilt:
+    """A Chainflip vault swap on an EVM chain: the Vault call, and the ERC-20
+    ``approve`` it needs when the source is a token.
+
+    Shaped like the other built-swap types (``txs``/``private_key``/``fee``) so
+    ``EthAdapter.sign``/``broadcast`` and ``_confirm_and_execute`` drive it
+    unchanged. ``approve_tx`` is ``None`` for a native source, and the gate
+    treats a mismatch between that and ``plan.source_token`` as a problem rather
+    than a shrug — an approve nobody asked for is an allowance left behind.
+    """
+
+    swap_tx: dict[str, Any]
+    private_key: Any
+    approve_tx: dict[str, Any] | None = None
+
+    @property
+    def txs(self) -> list[dict[str, Any]]:
+        return [tx for tx in (self.approve_tx, self.swap_tx) if tx is not None]
+
+    @property
+    def fee(self) -> int:
+        return sum(t["gas"] * t["maxFeePerGas"] for t in self.txs)
+
+
+def _verify_vault_parameters(
+    parameters: bytes, plan: ChainflipEvmVaultPlan
+) -> list[str]:
+    """The ``cfParameters`` half of the vault-swap gate: refund, floor, no skim."""
+    problems: list[str] = []
+    decoded = decode_evm_vault_parameters(parameters)
+    if decoded is None:
+        return [
+            f"vault swap parameters are {len(parameters)} bytes, expected the "
+            f"96-byte layout this wallet decodes"
+        ]
+    if decoded.version != EVM_VAULT_PARAMS_VERSION:
+        problems.append(
+            f"vault swap parameters are version {decoded.version} != "
+            f"{EVM_VAULT_PARAMS_VERSION}; refusing to guess their layout"
+        )
+    expected_refund = plan.refund_address.lower().removeprefix("0x")
+    if decoded.refund_address.hex() != expected_refund:
+        problems.append(
+            f"parameters refund to 0x{decoded.refund_address.hex()}, intended "
+            f"{plan.refund_address}"
+        )
+    if decoded.min_price < plan.min_price:
+        problems.append(
+            f"parameters min price {decoded.min_price} is below our floor "
+            f"{plan.min_price}"
+        )
+    # The last field in the payload that would otherwise be the broker's to
+    # choose. Zero refunds on the first block that does not clear the floor;
+    # past the chain's cap the protocol rejects a payload we have already paid
+    # into. Neither is a swap this wallet asked for.
+    if decoded.retry_duration != plan.retry_duration:
+        problems.append(
+            f"parameters retry duration {decoded.retry_duration} != intended "
+            f"{plan.retry_duration}"
+        )
+    if decoded.broker_fee:
+        problems.append(f"parameters carry a broker fee of {decoded.broker_fee} bps")
+    if decoded.boost_fee:
+        problems.append(f"parameters carry a boost fee of {decoded.boost_fee} bps")
+    if decoded.affiliates:
+        problems.append(
+            f"parameters carry {decoded.affiliates} affiliate fee entries; "
+            f"expected none"
+        )
+    # Three Options this wallet never asks for. A Some would lengthen the blob
+    # and fail the decode above, so reaching here with one set means the layout
+    # moved under us — which is exactly when to stop rather than guess.
+    for flag, label in (
+        (decoded.ccm, "a cross-chain message"),
+        (decoded.oracle_slippage, "an oracle slippage limit"),
+        (decoded.dca, "DCA parameters"),
+    ):
+        if flag:
+            problems.append(f"parameters carry {label}, which was not asked for")
+    return problems
+
+
+def verify_chainflip_evm_vault_swap(
+    *,
+    built: EthVaultSwapBuilt,
+    plan: ChainflipEvmVaultPlan,
+    now: int,
+    max_fee_wei: int,
+) -> list[str]:
+    """Return reasons the txs are not the vault swap we intend; empty means safe.
+
+    Two layers, as on the Bitcoin side. The EVM layer is the ordinary one: the
+    right contract, the right value, the right chain id, a sane fee, and — for a
+    token source — an ``approve`` for exactly the amount and no more. The
+    Chainflip layer then reads the calldata back and checks it promises what we
+    asked for: our destination, our refund address, our floor, nobody skimming.
+
+    The calldata is compared against ``plan.calldata`` *and* decoded. That looks
+    redundant and is not: the first binds the transaction to the bytes the
+    preparation step checked, the second is what makes those bytes mean
+    something. Either alone would pass a plan built from a bad encoding.
+    """
+    problems: list[str] = []
+    swap, approve = built.swap_tx, built.approve_tx
+
+    if now >= plan.expiry:
+        problems.append(f"quote expired (now {now} >= expiry {plan.expiry})")
+    if plan.vault_contract.lower() not in plan.known_vaults:
+        problems.append(
+            f"Vault contract {plan.vault_contract} is not the one the protocol "
+            f"publishes on-chain"
+        )
+    if swap["to"].lower() != plan.vault_contract.lower():
+        problems.append(f"tx 'to' {swap['to']} != Vault {plan.vault_contract}")
+    if swap["value"] != plan.value:
+        problems.append(f"tx value {swap['value']} wei != intended {plan.value}")
+    # xSwapToken is non-payable, so a real Vault would revert — but this layer
+    # is meant to hold on its own, without borrowing the contract's opinion.
+    if plan.source_token and plan.value:
+        problems.append(
+            f"a token vault swap must not send ether, but the plan carries "
+            f"{plan.value} wei"
+        )
+    if swap["chainId"] != plan.chain_id:
+        problems.append(f"chainId {swap['chainId']} != {plan.chain_id}")
+    expected_data = "0x" + plan.calldata.hex()
+    if (swap["data"] or "").lower() != expected_data.lower():
+        problems.append(f"calldata {swap['data']!r} != planned {expected_data!r}")
+
+    problems += _verify_vault_approve(approve, plan)
+
+    call = decode_evm_vault_call(bytes.fromhex(swap["data"].removeprefix("0x")))
+    if call is None:
+        problems.append("calldata is not a Chainflip Vault call we can read back")
+        return problems
+    if call.destination != plan.destination_bytes:
+        problems.append(
+            f"call pays destination {call.destination.hex()}, intended "
+            f"{plan.destination_bytes.hex()}"
+        )
+    if call.destination_asset_id != plan.destination_asset_id:
+        problems.append(
+            f"call pays output asset {call.destination_asset_id}, intended "
+            f"{plan.destination_asset_id}"
+        )
+    if call.destination_chain_id != plan.destination_chain_id:
+        problems.append(
+            f"call pays out on chain {call.destination_chain_id}, intended "
+            f"{plan.destination_chain_id}"
+        )
+    if call.source_token != plan.source_token:
+        problems.append(
+            f"call spends token {call.source_token or '(native)'}, intended "
+            f"{plan.source_token or '(native)'}"
+        )
+    # For a token the amount is an argument; for the native coin it is the
+    # transaction's own value, already checked above — and the argument must
+    # then be silent, or the call is not the shape we asked for.
+    moved = call.source_amount if plan.source_token else swap["value"]
+    if moved != plan.source_amount:
+        problems.append(
+            f"call moves {moved} source units, intended {plan.source_amount}"
+        )
+    if not plan.source_token and call.source_amount:
+        problems.append(
+            f"a native vault swap must carry no token amount, but the call "
+            f"names {call.source_amount}"
+        )
+    problems += _verify_vault_parameters(call.parameters, plan)
+
+    if built.fee > max_fee_wei:
+        problems.append(f"max fee {built.fee} wei exceeds limit {max_fee_wei}")
+    return problems
+
+
+def _verify_vault_approve(
+    approve: dict[str, Any] | None, plan: ChainflipEvmVaultPlan
+) -> list[str]:
+    """The ``approve`` half of the gate — including its absence being correct."""
+    if not plan.source_token:
+        return (
+            []
+            if approve is None
+            else ["a native vault swap must not be preceded by an approve"]
+        )
+    if approve is None:
+        return [f"a {plan.source_token} vault swap needs an approve, and has none"]
+    problems: list[str] = []
+    if approve["to"].lower() != plan.source_token.lower():
+        problems.append(f"approve 'to' {approve['to']} != token {plan.source_token}")
+    if approve["value"] != 0:
+        problems.append("approve tx must not send ETH value")
+    if approve["chainId"] != plan.chain_id:
+        problems.append(f"approve chainId {approve['chainId']} != {plan.chain_id}")
+    try:
+        spender, allowance = _decode_call(
+            approve["data"], APPROVE_SELECTOR, ["address", "uint256"]
+        )
+    except Exception:  # noqa: BLE001 - any decode failure is a reject
+        return [*problems, "approve calldata could not be decoded"]
+    if spender.lower() != plan.vault_contract.lower():
+        problems.append(f"approve spender {spender} != Vault {plan.vault_contract}")
+    if allowance != plan.source_amount:
+        problems.append(f"approve amount {allowance} != {plan.source_amount}")
     return problems
 
 
@@ -576,7 +798,10 @@ class EthAdapter(HttpClient):
             raw = signed.rawTransaction
         return "0x" + raw.hex()
 
-    def sign(self, built: EthBuiltSwap | EthTokenBuiltSwap | EthApprovals) -> list[str]:
+    def sign(
+        self,
+        built: EthBuiltSwap | EthTokenBuiltSwap | EthApprovals | EthVaultSwapBuilt,
+    ) -> list[str]:
         return [self._sign_tx(tx, built.private_key) for tx in built.txs]
 
     def _build_token_deposit(
@@ -724,6 +949,65 @@ class EthAdapter(HttpClient):
             max_fee_wei=max_fee_wei,
         )
         return Prepared(quote=quote, built=built, plan=plan, problems=problems)
+
+    def build_and_verify_vault_swap(
+        self,
+        *,
+        plan: ChainflipEvmVaultPlan,
+        now: int,
+        mnemonic: str,
+        nonce: int,
+        max_fee_per_gas: int,
+        max_priority_fee_per_gas: int,
+        max_fee_wei: int,
+        path: str = DEFAULT_ETH_DERIVATION,
+    ) -> Prepared:
+        """Build + gate a Chainflip vault swap: the Vault call, plus an approve
+        for a token source.
+
+        The calldata is the chain's, not ours — ``chainflip.prepare_evm_vault_
+        swap`` obtained and checked it, and it arrives here already bound to the
+        plan. What this adds is the transaction around it, and the gate that
+        proves the transaction is the one the plan describes.
+
+        Gas is :data:`VAULT_SWAP_GAS`/:data:`VAULT_SWAP_TOKEN_GAS` rather than
+        the caller's ``--eth-gas``: that budget sizes a memo deposit, and a
+        Vault call is a different piece of work.
+        """
+        account = self._key(mnemonic, path)
+        common = {
+            "type": 2,
+            "chainId": self.chain_id,
+            "maxFeePerGas": max_fee_per_gas,
+            "maxPriorityFeePerGas": max_priority_fee_per_gas,
+        }
+        approve_tx = None
+        if plan.source_token:
+            approve_tx = {
+                **common,
+                "nonce": nonce,
+                "to": to_checksum_address(plan.source_token),
+                "value": 0,
+                "gas": APPROVE_GAS,
+                "data": encode_approve(
+                    to_checksum_address(plan.vault_contract), plan.source_amount
+                ),
+            }
+        swap_tx = {
+            **common,
+            "nonce": nonce + (1 if approve_tx else 0),
+            "to": to_checksum_address(plan.vault_contract),
+            "value": plan.value,
+            "gas": VAULT_SWAP_TOKEN_GAS if plan.source_token else VAULT_SWAP_GAS,
+            "data": "0x" + plan.calldata.hex(),
+        }
+        built = EthVaultSwapBuilt(
+            swap_tx=swap_tx, private_key=account.key, approve_tx=approve_tx
+        )
+        problems = verify_chainflip_evm_vault_swap(
+            built=built, plan=plan, now=now, max_fee_wei=max_fee_wei
+        )
+        return Prepared(quote=None, built=built, plan=plan, problems=problems)
 
     def build_and_verify_send(
         self,

@@ -4,8 +4,10 @@ Status: **Phase A (CoW Protocol) done** (2026-07-12) — `--backend cow`/`auto`
 for same-chain ETH-token swaps; see `src/swapsack/cow.py`. **Phase B1
 (Chainflip quotes) done** (2026-08-28) — `--backend chainflip`/`auto` price it,
 and **B2 (execution from BTC, as a vault swap) done** the same day; see
-`src/swapsack/chainflip.py` and `docs/chainflip-effort.md`. Sources other than
-BTC quote but do not settle through Chainflip yet. This note records what a new backend must
+`src/swapsack/chainflip.py` and `docs/chainflip-effort.md`. **B2 also covers an
+EVM source since 2026-09-02** — a call into the Vault contract rather than a
+Bitcoin transaction, see `docs/chainflip-evm.md`. A Tron source, and Tron and
+Solana destinations, still quote but do not settle. This note records what a new backend must
 provide, which candidates are actually usable from a keyless CLI, and a
 recommended order — so the work starts from decisions, not mid-way through a
 money path. Style/spirit as `docs/dash.md`.
@@ -97,7 +99,7 @@ refunded — Chainflip has refund parameters worth setting.
    adapters. Live-tested: `tests/test_integration_cow.py` proves a signed
    order from an unfunded key clears every orderbook check up to
    `InsufficientBalance`.
-2. **Phase B — Chainflip** (cross-chain) — **done for a BTC source.** Quotes
+2. **Phase B — Chainflip** (cross-chain) — **done for BTC and EVM sources.** Quotes
    price-compete in `auto`; execution is a **vault swap** — pay a protocol vault
    with the swap parameters in an OP_RETURN, no broker and no deposit channel,
    which is the transaction shape `UtxoTxBuilder` already emits. The gate

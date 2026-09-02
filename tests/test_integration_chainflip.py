@@ -23,13 +23,18 @@ from swapsack.chainflip import (  # noqa: E402
     CHAINFLIP_ASSETS,
     DEFAULT_BROKER_ACCOUNTS,
     VAULT_SWAP_ASSET_IDS,
+    VAULT_SWAP_CHAIN_IDS,
     ChainflipBackend,
     ChainflipClient,
     ChainflipRpc,
     NoBrokerAvailable,
+    _bitcoin_extra_parameters,
     _request_encoding,
     bitcoin_vault_addresses,
+    deposit_units,
+    evm_vault_addresses,
     parse_chainflip_quote,
+    prepare_evm_vault_swap,
     prepare_vault_swap,
 )
 from swapsack.chains.btc import BtcAdapter  # noqa: E402
@@ -167,7 +172,7 @@ def test_the_broker_fallback_chain_has_not_run_out_live():
                     from_asset=BTC,
                     to_asset=ETH,
                     destination=DEST,
-                    floor=FLOOR,
+                    extra=_bitcoin_extra_parameters(floor=FLOOR),
                     accounts=(account,),
                 )
             except NoBrokerAvailable as exc:
@@ -211,7 +216,7 @@ def test_a_broker_refusal_is_still_recognised_live():
                 from_asset=BTC,
                 to_asset=ETH,
                 destination=DEST,
-                floor=FLOOR,
+                extra=_bitcoin_extra_parameters(floor=FLOOR),
                 accounts=(RETIRED_BROKER,),
             )
         except NoBrokerAvailable as exc:
@@ -289,5 +294,160 @@ def test_a_built_vault_swap_passes_the_gate_live():
         fee_rate=2,
         change_address=adapter.derive_address(mnemonic, adapter.change_path),
         max_fee=100_000,
+    )
+    assert prepared.problems == []
+
+
+# --- vault swaps from an EVM source -----------------------------------------
+#
+# Also read-only. What these prove is what no unit test can: that the calldata
+# layout `verify.decode_evm_vault_call` reads is the layout Chainflip encodes
+# today. It matters more here than on the Bitcoin side, because the chain
+# refuses to decode an EVM vault swap for us at all
+# (`cf_decode_vault_swap_parameter`: "only supports Bitcoin and Solana"), so
+# there is no second opinion to fall back on if this drifts.
+
+ONE_ETH = 10**18
+EVM_REFUND = "0x000000000000000000000000000000000000dEaD"
+BTC_DEST = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+
+
+def _evm_quote(from_asset, to_asset, amount):
+    with ChainflipClient() as client:
+        return parse_chainflip_quote(
+            client.quote(
+                CHAINFLIP_ASSETS[from_asset][:2],
+                CHAINFLIP_ASSETS[to_asset][:2],
+                amount,
+            ),
+            from_asset=from_asset,
+            to_asset=to_asset,
+        )
+
+
+def test_an_eth_source_encodes_a_vault_call_our_decoder_reads_back_live():
+    from swapsack.verify import decode_evm_vault_call, decode_evm_vault_parameters
+
+    quote = _evm_quote(ETH, BTC, ONE_ETH)
+    with ChainflipRpc() as rpc:
+        swap = prepare_evm_vault_swap(
+            rpc,
+            from_asset=ETH,
+            to_asset=BTC,
+            destination=BTC_DEST,
+            refund_address=EVM_REFUND,
+            input_amount=ONE_ETH,
+            quote=quote,
+            bps=250,
+        )
+    call = decode_evm_vault_call(swap.calldata)
+    assert call is not None, "a live Vault call no longer decodes — layout changed"
+    # A Bitcoin payout from an EVM source: the destination is the address
+    # string's own ASCII, which is the whole reason this pair is settleable.
+    assert call.destination.decode() == BTC_DEST
+    assert call.destination_chain_id == VAULT_SWAP_CHAIN_IDS["Bitcoin"]
+    assert call.destination_asset_id == VAULT_SWAP_ASSET_IDS[BTC]
+    assert swap.value == ONE_ETH
+    params = decode_evm_vault_parameters(call.parameters)
+    assert params is not None, "the cfParameters layout changed"
+    assert params.refund_address.hex() == EVM_REFUND[2:].lower()
+    assert params.min_price >= swap.min_price
+    assert (params.broker_fee, params.boost_fee, params.affiliates) == (0, 0, 0)
+
+
+def test_a_token_source_encodes_an_xswaptoken_naming_the_contract_live():
+    from swapsack.verify import decode_evm_vault_call
+
+    amount = 1000 * 10**6  # 1000 USDC
+    quote = _evm_quote(USDC, BTC, amount)
+    with ChainflipRpc() as rpc:
+        swap = prepare_evm_vault_swap(
+            rpc,
+            from_asset=USDC,
+            to_asset=BTC,
+            destination=BTC_DEST,
+            refund_address=EVM_REFUND,
+            input_amount=amount,
+            quote=quote,
+            bps=250,
+        )
+    assert swap.value == 0, "a token vault swap must send no ether"
+    assert swap.source_token == USDC.partition("-")[2].lower()
+    call = decode_evm_vault_call(swap.calldata)
+    assert call is not None
+    assert call.source_amount == amount
+
+
+def test_the_evm_vault_contract_is_the_one_published_on_chain_live():
+    quote = _evm_quote(ETH, BTC, ONE_ETH)
+    with ChainflipRpc() as rpc:
+        published = evm_vault_addresses(rpc, "Ethereum")
+        swap = prepare_evm_vault_swap(
+            rpc,
+            from_asset=ETH,
+            to_asset=BTC,
+            destination=BTC_DEST,
+            refund_address=EVM_REFUND,
+            input_amount=ONE_ETH,
+            quote=quote,
+            bps=250,
+        )
+    assert len(published) == 1
+    assert swap.vault_contract in published
+
+
+def test_a_built_evm_vault_swap_passes_the_gate_live():
+    # The end-to-end shape, short of broadcasting: quote, encode against
+    # mainnet, build a real unsigned transaction from a throwaway key, and
+    # require the gate to pass on it. The Bitcoin sibling of this test is
+    # test_a_built_vault_swap_passes_the_gate_live above.
+    from swapsack.chains.eth import EthAdapter
+    from swapsack.verify import ChainflipEvmVaultPlan
+
+    mnemonic = (
+        "abandon abandon abandon abandon abandon abandon "
+        "abandon abandon abandon abandon abandon about"
+    )
+    adapter = EthAdapter("http://rpc.invalid")  # nothing here touches the node
+    refund = adapter.derive_address(mnemonic)
+
+    amount = deposit_units(10_000_000, CHAINFLIP_ASSETS[ETH][2])  # 0.1 ETH
+    quote = _evm_quote(ETH, BTC, amount)
+    with ChainflipRpc() as rpc:
+        swap = prepare_evm_vault_swap(
+            rpc,
+            from_asset=ETH,
+            to_asset=BTC,
+            destination=BTC_DEST,
+            refund_address=refund,
+            input_amount=amount,
+            quote=quote,
+            bps=250,
+        )
+
+    now = int(time.time())
+    prepared = adapter.build_and_verify_vault_swap(
+        plan=ChainflipEvmVaultPlan(
+            vault_contract=swap.vault_contract,
+            calldata=swap.calldata,
+            value=swap.value,
+            source_token=swap.source_token,
+            source_amount=swap.source_amount,
+            expiry=now + 600,
+            chain_id=adapter.chain_id,
+            destination_chain_id=swap.destination_chain_id,
+            destination_asset_id=swap.destination_asset_id,
+            destination_bytes=swap.destination_bytes,
+            refund_address=refund,
+            min_price=swap.min_price,
+            retry_duration=swap.retry_duration,
+            known_vaults=swap.known_vaults,
+        ),
+        now=now,
+        mnemonic=mnemonic,
+        nonce=0,
+        max_fee_per_gas=2 * 10**9,
+        max_priority_fee_per_gas=10**9,
+        max_fee_wei=10**16,
     )
     assert prepared.problems == []

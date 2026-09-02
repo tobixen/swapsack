@@ -755,11 +755,13 @@ def test_a_vault_swap_backend_is_drivable_from_a_utxo_source(monkeypatch):
     assert chosen.name == "chainflip"
 
 
-def test_a_vault_swap_backend_is_refused_from_an_evm_source(monkeypatch):
-    # A Chainflip vault swap is a Bitcoin transaction; the EVM path cannot
-    # build one, so selection must refuse rather than hand it the quote.
-    with pytest.raises(cli.SwapAborted):
-        _select(monkeypatch, [_VaultSwapBackend()], executors=cli.EVM_EXECUTORS)
+def test_a_vault_swap_backend_is_drivable_from_an_evm_source(monkeypatch):
+    # A vault swap takes the shape of its source chain: a Bitcoin payment with
+    # an OP_RETURN, or a call into the Vault contract. Both paths can build one,
+    # so neither executor set may drop it. (Which *pairs* settle is a narrower
+    # question, and the backend's own can_execute answers it — see below.)
+    chosen = _select(monkeypatch, [_VaultSwapBackend()], executors=cli.EVM_EXECUTORS)
+    assert chosen.name == "chainflip"
 
 
 def test_a_signed_order_backend_is_refused_from_a_utxo_source(monkeypatch):
@@ -782,14 +784,15 @@ def test_auto_says_out_loud_when_the_price_only_backend_was_cheaper(
 
 
 def test_auto_names_a_backend_this_source_cannot_drive(monkeypatch, capsys):
-    # Chainflip can execute — just not from an EVM source. The note is still
-    # the honest thing to print: the price is real and reachable another way.
+    # CoW can execute — just not from a UTXO source, since a signed order needs
+    # an EVM signer. The note is still the honest thing to print: the price is
+    # real and reachable another way.
     _select(
         monkeypatch,
-        [_ExecutableBackend(out=1), _VaultSwapBackend(out=10**9)],
-        executors=cli.EVM_EXECUTORS,
+        [_ExecutableBackend(out=1), _SignedOrderBackend(out=10**9)],
+        executors=cli.UTXO_EXECUTORS,
     )
-    assert "chainflip quoted" in capsys.readouterr().err
+    assert "cow quoted" in capsys.readouterr().err
 
 
 def test_auto_stays_quiet_when_the_price_only_backend_was_not_cheaper(

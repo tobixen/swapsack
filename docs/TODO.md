@@ -387,8 +387,9 @@ labels, not lookups.
 
 ## Swap backends
 
-- **Chainflip — B1 (quotes), B2 (execution from BTC) and the mainnet
-  broadcast all done 2026-08-28.** The broadcast was
+- **Chainflip — B1 (quotes) done 2026-08-28; B2 (execution) done from BTC
+  2026-08-28, with a mainnet broadcast the same day, and from an EVM source
+  2026-09-02.** The BTC broadcast was
   `d7bbc290bcbdefbc3dd058ab8b0680842a596552051bc9f2ec3b159181214458`, block
   964460: it paid that epoch's vault, carried the 48-byte OP_RETURN, and
   Chainflip witnessed it as swap 1764999 — so the payload, the vault check,
@@ -404,17 +405,24 @@ labels, not lookups.
   sats refunded to the change output. Fill-or-kill did exactly what it is for.
   Cost of the round trip: 1,945 sats — and note both an EGRESS *and* a REFUND
   fee are charged although nothing was ever egressed in the output asset, so a
-  refused swap does not cost one fee. What remains:
-  **a source other than BTC** — Chainflip is not Bitcoin-only, and neither is
-  its vault-swap API: it covers EVM chains and Solana alongside Bitcoin, so
-  ETH/ARB (a contract call into the Vault contract) and SOL (a program
-  instruction) are reachable brokerlessly too. Neither reuses the UTXO builder
-  or the gate that checks its outputs, so each is its own piece of work; a
-  source the vault-swap API does not cover would need a deposit channel and a
-  broker instead. Today every non-BTC source prices in `auto` and settles
-  nowhere, and says so out loud when it was the cheaper route; a
-  **base58check decoder** so a Tron destination can be gated (Solana also needs
-  the 60-byte payload variant); and `cf_swap_rate_v2/v3` as a node-native quote
+  refused swap does not cost one fee.
+
+  **A source other than BTC** is no longer what remains: ETH, ARB and their
+  USDC/USDT now settle through a call into the Vault contract, and that also
+  made **BTC a Chainflip destination** (from an EVM source only: the protocol
+  carries a Bitcoin address as its own ASCII, where the 48-byte Bitcoin payload
+  has a fixed 20-byte destination field). `docs/chainflip-evm.md` has the
+  byte-level layout, the evidence, and the open questions. No EVM vault swap
+  has been broadcast, though everything short of it is covered by opt-in
+  network tests that encode against mainnet and gate a real unsigned tx.
+
+  What remains: **a Solana source** (a program instruction, and another key)
+  and **Tron/Solana destinations** are the last quote-but-do-not-settle cases,
+  and each says so out loud when it was the cheaper route; a **base58check
+  decoder** so a Tron destination can be gated (Solana also needs the 60-byte
+  payload variant); **`min_price`'s exact comparands**, which are read strictly
+  rather than known — reading the swapping pallet would settle it and could
+  relax the floor slightly; and `cf_swap_rate_v2/v3` as a node-native quote
   source, which would drop the hosted service as a dependency.
   Superseded detail, kept for the reasoning:
   `--backend chainflip`/`auto` price it; `swap` refuses to route there, and
@@ -467,6 +475,18 @@ labels, not lookups.
   longer window can ride out a dip. Note (a) and (b) pull against `--amount
   max` being impossible here anyway, so a rebuild always has change to work
   with.
+- **A USDT source needs the allowance reset, on both token paths.** The wallet
+  emits a bare `approve(spender, amount)` before an ERC-20 deposit — THORChain's
+  `_build_token_deposit` and now Chainflip's vault-swap builder both do. USDT
+  reverts on a non-zero -> non-zero allowance change, so once one attempt has
+  left an allowance behind (a deposit that fails after its approve lands), every
+  later USDT swap burns gas on a reverted approve and goes nowhere. The reset
+  machinery already exists and is unused here: `EthApprovals` in `chains/eth.py`
+  emits the 0-first pair and was written for CoW. Fixing it means routing both
+  builders through it and widening their gates to accept 0-2 approve txs.
+  Pre-existing, but the Chainflip EVM source newly routes USDT through a copy of
+  it — found by the clean-context review of that commit, filed rather than
+  fixed because a proper fix is a refactor of the shared approve path.
 - **Maya-only assets**: ADA and ETH-ARB are now exposed as destinations. Note
   what *isn't* there — the ARB **token** pool (`ARB.ARB`) is `Staged`, not
   tradeable, so "ARB" as a destination means native ETH on Arbitrum.
