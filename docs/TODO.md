@@ -3,6 +3,45 @@
 Only open work. Completed items live in `CHANGELOG.md` and the code; caveats that
 outlived the work that created them are kept below as open risk.
 
+## Low-hanging fruit (cheapest first)
+
+*Cheapest*, which is not the same as *most valuable* — **priority lives in
+*Next up* below**, and this list deliberately does not compete with it. Read it
+as the answer to "what is a short session worth of work", ranked by how much
+code it needs, with what each one is actually worth stated next to it.
+
+1. **BSC as a swap source — the cheapest feature on the whole list.**
+   `chains/bsc.py` already exists and already signs for chain 56; the swap
+   entry point is stubbed out by hand because nothing traded BSC, **and that
+   halt has since lifted** (2026-09-02). So the work is: unstub
+   `BscAdapter.build_and_verify`, and repeat the CLI wiring that
+   `chains/avax.py` just went through (`_EVM_ADAPTERS`, `ASSET`,
+   `_DESTINATION_DERIVERS`, `_wallet_adapters`, `cmd_address`, the `--bsc-rpc`
+   arg, `pricefeed`). No new adapter, no new chain family, no new signer.
+   **Worth checking the depth before you start**: the BSC stablecoin pools are
+   thinner than the `ARB.USDC` pool that *Next up* item 2 calls too thin to be
+   useful at size, so `BSC.BNB` may be the only leg worth wiring. Full entry,
+   with the numbers: *Swap backends* → the BSC bullet.
+2. **BASE, the same shape one step further out.** Its halt has lifted too, but
+   there is no adapter yet — so it is a `chains/avax.py`-shaped subclass plus a
+   `_RULES` line and an `_EVM_CHAINS` entry, on top of the same CLI wiring as
+   BSC. **`BASE.ETH` held ~2.6 ETH on 2026-09-02**, which is too thin to swap
+   against at any size; do BSC first and reuse whatever that teaches. Same
+   bullet's neighbours in *Swap backends*.
+3. **ATOM auto-derived instead of `--dest`-only.** One `_DESTINATION_DERIVERS`
+   entry and one `RECEIVE_ONLY_CHAINS` entry — the seam exists and is empty.
+   See *Next up* item 3's second follow-up for why the warning is the point.
+4. **The three address forms the *shape* rules refuse** (uppercase bech32,
+   uppercase cashaddr, BCH CashTokens `z…`). A `.lower()` in the right place,
+   but see *Other known gaps* — a bare `.lower()` would wrongly start accepting
+   mixed case, which BIP-173 forbids.
+
+If you want cheap **fixes** rather than cheap **features**, the two entries
+under *Known bugs* are both smaller than item 1 and both already diagnosed down
+to the fix, with the real API responses captured — and each currently tells you
+something false about your own money, which is why they sit above the feature
+work.
+
 ## Next up (priority order)
 
 Owner's requested goal (2026-08-16): **two-sided liquidity for `ETH.USDC` and
@@ -54,9 +93,10 @@ has never broadcast on Arbitrum, which is item 1.
    like ARB, since it *is* the ETH address); **SOL is the only remaining
    candidate, and it is blocked** — `SOL.SOL` exists on THORChain but is
    halted (a live `BTC->SOL.SOL` quote returns "trading is halted, can't
-   process swap"), the
-   same shape as the BSC block below. Revisit when `pools` shows
-   `trading_halted: false`, or reach it via Chainflip (see *Swap backends*).
+   process swap"). It is now the **only** chain still blocked this way — the
+   BSC and BASE halts this used to be compared to have both lifted (see *Swap
+   backends*). Revisit when `pools` shows `trading_halted: false`, or reach it
+   via Chainflip (see *Swap backends*).
    When it unblocks: SOL addresses are base58 with **no checksum at all** (a
    bare 32-byte ed25519 pubkey), so a `_RULES` shape rule is genuinely all there
    is — add `"SOL"` to `_NO_CHECKSUM` in `addresses.py`, which is what declares
@@ -484,7 +524,8 @@ labels, not lookups.
     `chains/avax.py`-shaped adapter. **Mind the depth before bothering**:
     `BASE.ETH` held ~2.6 ETH on 2026-09-02, which is far too thin to swap
     against at any size worth the work; `BASE.USDC` held ~31k. Re-measure.
-- **BSC's halt has lifted — the block is gone, the stub is not.** This entry
+- **BSC's halt has lifted — the block is gone, the stub is not.**
+  (*This is item 1 of* Low-hanging fruit *at the top of this file.*) This entry
   said "blocked, do not implement yet" on the strength of THORChain having BSC
   `chain_trading_paused`/`halted`. Re-checked **2026-09-02** and that is no
   longer true: `inbound_addresses` reports BSC `halted: false`,
