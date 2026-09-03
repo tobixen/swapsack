@@ -49,7 +49,10 @@ automatically from git tags (PEP 440 / SemVer).
   observed", which reads as *your money went nowhere*. It now asks Chainflip
   first and reports what the protocol says: the state, what went in, what came
   out, and the payout transaction. Amounts in assets this wallet has no key for
-  are shown in base units rather than scaled by a guess.
+  are shown in base units rather than scaled by a guess. A swap the protocol
+  refunded — the price moved before the deposit confirmed, so fill-or-kill
+  sent it back rather than filling worse — is reported as refunded, with the
+  amount and the refund transaction, not as still pending.
 
   Chainflip only witnesses a deposit **after it confirms**, though — which is
   not the moment you ask, having just broadcast one. In that window `status`

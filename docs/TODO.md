@@ -467,14 +467,6 @@ labels, not lookups.
   longer window can ride out a dip. Note (a) and (b) pull against `--amount
   max` being impossible here anyway, so a rebuild always has change to work
   with.
-- **`status` misreports a refunded Chainflip swap.** Chainflip's `state:
-  COMPLETED` means the swap's lifecycle is *over*, not that it succeeded; the
-  refund lives in `refundEgress`, which `_print_chainflip_swap` ignores. On the
-  aborted swap above it prints `COMPLETED (swap 1764999)` and `out: not paid
-  out yet (USDT)` — i.e. it reads as still pending when the money was already
-  back in the wallet. It should read `abortedReason` / `refundEgress` and say
-  refunded, with the amount and the refund txid. Worst-case reading of the
-  current output is a user re-sending a swap that already came back.
 - **Maya-only assets**: ADA and ETH-ARB are now exposed as destinations. Note
   what *isn't* there — the ARB **token** pool (`ARB.ARB`) is `Staged`, not
   tradeable, so "ARB" as a destination means native ETH on Arbitrum.

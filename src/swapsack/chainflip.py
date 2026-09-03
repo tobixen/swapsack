@@ -283,10 +283,46 @@ class SwapStatus:
     output_amount: int | None = None
     egress_txid: str = ""  # the payout transaction, once it has been sent
     witnessed_at: int | None = None  # ms since the epoch, as Chainflip dates it
+    # Set only when the swap did not fill: the price never cleared the
+    # encoded floor before the retry window ran out, so fill-or-kill sent the
+    # deposit back rather than executing at a worse one. Chainflip's own word
+    # for why, e.g. "MinPriceViolation" — same reasoning as `state` above.
+    aborted_reason: str = ""
+    # The refund leg, in *source*-asset base units on the *source* chain — it
+    # never became the destination asset, so it is not `output_amount`. None
+    # until the leg is witnessed, which can be after `aborted_reason` already
+    # names the refund as decided.
+    refund_amount: int | None = None
+    refund_txid: str = ""
 
     @property
     def settled(self) -> bool:
         return self.state.upper() == "COMPLETED"
+
+    @property
+    def aborted(self) -> bool:
+        """True once Chainflip has given up trying to fill this swap.
+
+        Not the same as :attr:`refunded`: an abort can end with the deposit
+        refunded, forfeited outright (below the chain's minimum, say, where a
+        refund would cost more in fees than the deposit is worth), or — in
+        the window between the decision and the refund transaction being
+        witnessed — neither yet.
+        """
+        return bool(self.aborted_reason)
+
+    @property
+    def refunded(self) -> bool:
+        """True once the refund leg itself exists — money has actually moved.
+
+        Deliberately independent of :attr:`aborted`: what proves a refund
+        happened is the refund leg's own fields, not the reason string that
+        (usually) triggers it. A response where the two drift — a renamed or
+        relocated reason field, ``refundEgress`` untouched — must not
+        silently regress this to "not refunded", which is the shape of the
+        bug this property exists to close.
+        """
+        return self.refund_amount is not None or bool(self.refund_txid)
 
 
 def _int_or_none(value: object) -> int | None:
@@ -306,6 +342,7 @@ def parse_swap_status(payload: dict) -> SwapStatus:
     """
     deposit = payload.get("deposit") or {}
     egress = payload.get("swapEgress") or {}
+    refund = payload.get("refundEgress") or {}
     return SwapStatus(
         state=str(payload.get("state", "") or ""),
         swap_id=str(payload.get("swapId", "") or ""),
@@ -321,6 +358,9 @@ def parse_swap_status(payload: dict) -> SwapStatus:
         output_amount=_int_or_none(egress.get("amount")),
         egress_txid=str(egress.get("txRef", "") or ""),
         witnessed_at=_int_or_none(deposit.get("witnessedAt")),
+        aborted_reason=str(payload.get("abortedReason", "") or ""),
+        refund_amount=_int_or_none(refund.get("amount")),
+        refund_txid=str(refund.get("txRef", "") or ""),
     )
 
 
