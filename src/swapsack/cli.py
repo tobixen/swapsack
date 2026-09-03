@@ -3616,11 +3616,45 @@ def _print_chainflip_swap(args: argparse.Namespace) -> bool | None:
         when = f"  witnessed {stamp} UTC"
     deposited = _swap_amount(swap.deposit_amount, swap.src_chain, swap.src_asset)
     print(f"  in:  {deposited}{when}")
-    out = _swap_amount(swap.output_amount, swap.dest_chain, swap.dest_asset)
-    print(f"  out: {out} -> {swap.dest_address}")
-    if swap.egress_txid:
-        print(f"       payout tx {swap.egress_txid}")
-    if not swap.settled:
+    # A payout and a refund are independent legs, not alternatives — a DCA
+    # swap can fill part of the deposit and have fill-or-kill refuse the
+    # rest, so both can exist on the same swap. Print whichever actually has
+    # data rather than picking one; a payout that fires must never go unsaid
+    # just because a refund also happened, or the reverse.
+    has_payout = swap.output_amount is not None or bool(swap.egress_txid)
+    if has_payout:
+        out = _swap_amount(swap.output_amount, swap.dest_chain, swap.dest_asset)
+        print(f"  out: {out} -> {swap.dest_address}")
+        if swap.egress_txid:
+            print(f"       payout tx {swap.egress_txid}")
+    if swap.refunded:
+        # `state: COMPLETED` alone reads as "filled" — it only means the
+        # lifecycle is over, and this is the other way it can end: the price
+        # never cleared the encoded floor, so fill-or-kill sent the deposit
+        # back rather than executing worse. Report *that*, not a destination-
+        # asset payout that never happened.
+        reason = f" ({swap.aborted_reason})" if swap.aborted_reason else ""
+        refunded = _swap_amount(swap.refund_amount, swap.src_chain, swap.src_asset)
+        print(f"  refunded: {refunded}{reason}")
+        if swap.refund_txid:
+            print(f"       refund tx {swap.refund_txid}")
+    elif swap.aborted:
+        # The protocol has given up on filling, but that alone proves neither
+        # a refund is coming nor that one already happened — it could still
+        # be witnessed, or the deposit could have been forfeited outright
+        # (below the chain's minimum, say, where refunding costs more in fees
+        # than it's worth). Say only what is actually known.
+        print(
+            f"  note: aborted ({swap.aborted_reason}) — no payout and no "
+            "refund witnessed yet; re-run shortly, or check scan.chainflip.io",
+            file=sys.stderr,
+        )
+    elif not has_payout:
+        # Genuinely still in flight: neither leg exists and nothing says it
+        # never will.
+        out = _swap_amount(swap.output_amount, swap.dest_chain, swap.dest_asset)
+        print(f"  out: {out} -> {swap.dest_address}")
+    if not (swap.settled or swap.aborted or swap.refunded):
         print(
             "  note: not finished yet — Chainflip is still working through it",
             file=sys.stderr,

@@ -992,6 +992,110 @@ def test_parse_swap_status_reads_both_legs():
     assert s.egress_txid.startswith("4PLBcs")
 
 
+# Recorded live: GET chainflip-swap.chainflip.io/v2/swaps/<txid> for the
+# mainnet BTC->USDT vault swap in docs/chainflip-effort.md, 2026-08-28
+# (deposit d7bbc290bcbdefbc3dd058ab8b0680842a596552051bc9f2ec3b159181214458,
+# witnessed as swap 1764999) -- fetched again while writing this fix to
+# confirm `abortedReason` really is a top-level key and `refundEgress`
+# mirrors `swapEgress`'s shape, not assumed from the TODO prose alone. Only
+# the keys the parser reads are kept. The deposit sat in the mempool while
+# BTC fell ~2%, the encoded floor could no longer be met, and fill-or-kill
+# refunded 498,294 of the 500,000 deposited sats rather than filling worse.
+REFUNDED_SWAP_STATUS = {
+    "state": "COMPLETED",
+    "swapId": "1764999",
+    "srcAsset": "BTC",
+    "srcChain": "Bitcoin",
+    "destAsset": "USDT",
+    "destChain": "Ethereum",
+    "destAddress": "0xa8745f8ad1b1d51dfbc2a5ee9b866e9de02b0442",
+    "deposit": {
+        "amount": "500000",
+        "txRef": "d7bbc290bcbdefbc3dd058ab8b0680842a596552051bc9f2ec3b159181214458",
+        "witnessedAt": 1787936934000,
+    },
+    "refundEgress": {
+        "amount": "498294",
+        "witnessedAt": 1787938086000,
+        "txRef": "382c981825cbdecacc862e356bfe2f9623741e22eb4be4e98b91e1ac734f44e4",
+    },
+    "abortedReason": "MinPriceViolation",
+}
+
+
+def test_parse_swap_status_reads_a_refund():
+    """`state: COMPLETED` means the lifecycle is over, not that it filled --
+    a fill and a refund both end there.
+    """
+    from swapsack.chainflip import parse_swap_status
+
+    s = parse_swap_status(REFUNDED_SWAP_STATUS)
+    assert s.state == "COMPLETED"
+    assert s.aborted_reason == "MinPriceViolation"
+    # Refunded in the *source* asset, back on the *source* chain -- it never
+    # became the destination asset, so it is not `output_amount`.
+    assert s.refund_amount == 498_294
+    assert s.refund_txid.startswith("382c9818")
+    assert s.aborted is True
+    assert s.refunded is True
+    # And, the failure mode this whole fix exists for: no fill happened, so
+    # there is no destination-asset payout to report.
+    assert s.output_amount is None
+    assert s.egress_txid == ""
+
+
+def test_a_filled_swap_is_neither_aborted_nor_refunded():
+    from swapsack.chainflip import parse_swap_status
+
+    s = parse_swap_status(SWAP_STATUS)
+    assert s.aborted_reason == ""
+    assert s.refund_amount is None
+    assert s.aborted is False
+    assert s.refunded is False
+
+
+def test_an_abort_with_no_refund_leg_is_not_reported_as_refunded():
+    """`aborted_reason` says the protocol gave up trying to fill -- it does
+    not by itself say money came back. A deposit Chainflip forfeits outright
+    (too small to cover the egress fee, say) aborts with nothing to refund,
+    and conflating the two would assert a refund that never happens."""
+    from swapsack.chainflip import parse_swap_status
+
+    s = parse_swap_status(
+        {**REFUNDED_SWAP_STATUS, "refundEgress": None, "state": "FAILED"}
+    )
+    assert s.aborted is True
+    assert s.refunded is False
+
+
+def test_a_refund_leg_is_recognised_even_without_an_abort_reason():
+    """The refund leg's own fields are what prove money moved -- not the
+    reason string that (usually) triggers it. A schema where the two drift
+    (`abortedReason` renamed or relocated, `refundEgress` untouched) must not
+    silently fall back to reporting the swap as still pending, which is
+    exactly the bug this fix exists to close."""
+    from swapsack.chainflip import parse_swap_status
+
+    s = parse_swap_status({**REFUNDED_SWAP_STATUS, "abortedReason": None})
+    assert s.aborted is False
+    assert s.refunded is True
+    assert s.refund_amount == 498_294
+
+
+def test_aborted_reads_true_before_the_refund_leg_is_witnessed():
+    """`abortedReason` can appear before `refundEgress` does -- the protocol
+    has decided to refund before it has actually sent it. `refunded` must
+    stay False until the leg itself exists (nothing to report yet beyond the
+    decision), while `aborted` says a fill will not happen."""
+    from swapsack.chainflip import parse_swap_status
+
+    s = parse_swap_status({**REFUNDED_SWAP_STATUS, "refundEgress": None})
+    assert s.aborted is True
+    assert s.refunded is False
+    assert s.refund_amount is None
+    assert s.refund_txid == ""
+
+
 def test_parse_swap_status_of_a_swap_that_has_not_paid_out_yet():
     """Every leg past the deposit is absent while a swap is in flight. That must
     read as "not yet", not as a zero payout or a KeyError."""

@@ -4942,6 +4942,108 @@ def test_status_says_a_chainflip_swap_is_still_in_flight(monkeypatch, capsys):
     assert "not paid out yet" in out.lower() or "pending" in out.lower()
 
 
+def test_status_reports_a_refunded_swap_as_refunded_not_pending(monkeypatch, capsys):
+    """`state: COMPLETED` used to be read as "filled" -- it only means the
+    lifecycle is over, and a refund ends there too. The old output for this
+    exact case (docs/TODO.md, the 2026-08-28 mainnet broadcast) was
+    `COMPLETED (swap 1764999)` / `out: not paid out yet (USDT)`: correct
+    words, entirely the wrong story -- the money was already back."""
+    _stub_chainflip(
+        monkeypatch,
+        _cf_status(
+            swap_id="1764999",
+            deposit_amount=500_000,
+            output_amount=None,
+            egress_txid="",
+            aborted_reason="MinPriceViolation",
+            refund_amount=498_294,
+            refund_txid="382c981825cbdecacc862e356bfe2f9623741e22eb4be4e98b91e1ac734f44e4",
+        ),
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    out = capsys.readouterr().out
+    assert "COMPLETED" in out
+    assert "refunded: 0.00498294 BTC (MinPriceViolation)" in out
+    assert "refund tx 382c98" in out
+    # The failure this replaces: nothing paid out, so nothing pending either.
+    assert "not paid out yet" not in out.lower()
+
+
+def test_status_reports_a_refund_leg_even_without_an_abort_reason(monkeypatch, capsys):
+    """The refund leg's own fields are what prove money moved, not the reason
+    string that usually triggers it — see `SwapStatus.refunded`'s docstring.
+    A response where the two drift must not fall back to "not paid out yet"."""
+    _stub_chainflip(
+        monkeypatch,
+        _cf_status(
+            output_amount=None,
+            egress_txid="",
+            aborted_reason="",
+            refund_amount=498_294,
+            refund_txid="382c98",
+        ),
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    out = capsys.readouterr().out
+    assert "refunded: 0.00498294 BTC" in out
+    assert "not paid out yet" not in out.lower()
+
+
+def test_status_does_not_claim_a_refund_that_has_no_refund_leg(monkeypatch, capsys):
+    """An abort reason is not by itself proof money is coming back — a
+    deposit Chainflip forfeits outright aborts with nothing to refund. The
+    old wording ("refunded: not sent yet") asserted a refund on the strength
+    of the reason string alone; this must say only what is actually known."""
+    _stub_chainflip(
+        monkeypatch,
+        _cf_status(
+            state="FAILED",
+            output_amount=None,
+            egress_txid="",
+            aborted_reason="InsufficientDepositAmount",
+            refund_amount=None,
+            refund_txid="",
+        ),
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "refunded" not in combined.lower()
+    assert "aborted (InsufficientDepositAmount)" in combined
+    assert "not paid out yet" not in combined.lower()
+    # And not the pre-existing "still working through it" note either: FAILED
+    # is as terminal as COMPLETED is, once a reason has been given.
+    assert "still working through it" not in combined.lower()
+
+
+def test_status_reports_both_legs_of_a_partially_filled_partially_refunded_swap(
+    monkeypatch, capsys
+):
+    """A DCA swap can fill part of the deposit and have fill-or-kill refuse
+    the rest -- the payout and the refund are independent legs, not
+    alternatives, and printing one must never hide the other."""
+    _stub_chainflip(
+        monkeypatch,
+        _cf_status(
+            output_amount=200_000_000,
+            egress_txid="0xpartialpayout",
+            aborted_reason="MinPriceViolation",
+            refund_amount=250_000,
+            refund_txid="382c98",
+        ),
+    )
+    args = build_parser().parse_args(["status", "3b" * 32])
+    assert cli.cmd_status(args) == 0
+    out = capsys.readouterr().out
+    assert "out: 200.000000 USDT -> 0xrecipient" in out
+    assert "payout tx 0xpartialpayout" in out
+    assert "refunded: 0.00250000 BTC (MinPriceViolation)" in out
+    assert "refund tx 382c98" in out
+
+
 def test_status_prints_base_units_for_an_asset_it_cannot_scale(monkeypatch, capsys):
     """Chainflip trades assets this wallet has no key for. Scaling one by a
     guessed number of decimals would misreport the amount by orders of
