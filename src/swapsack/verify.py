@@ -934,3 +934,195 @@ def verify_chainflip_vault_swap(
             f"one was intended"
         )
     return problems
+
+
+# --- Chainflip vault swaps from an EVM source --------------------------------
+#
+# A Bitcoin vault swap is a *payment* carrying an OP_RETURN; an EVM one is a
+# *call* into the protocol's Vault contract — xSwapNative for the chain's own
+# coin, xSwapToken for an ERC-20. Both carry the same intention: where the swap
+# pays out (dstChain / dstAddress / dstToken), and a SCALE-encoded
+# ``cfParameters`` blob holding the refund address and the on-chain price floor.
+#
+# Everything below decodes those bytes *locally*, for the same reason the
+# Bitcoin decoder does: the node that produced the calldata cannot be the one
+# that tells us what it says. Unlike Bitcoin, the chain offers no readback at
+# all — ``cf_decode_vault_swap_parameter`` answers "Decoding Vault Swap only
+# supports Bitcoin and Solana" — so this decoder is the only readback there is.
+#
+# Selectors and the parameter layout were mapped by differential encoding
+# against mainnet on 2026-09-02 (vary one RPC field, see which byte moves), and
+# both selectors were confirmed against keccak of their signatures. See
+# ``docs/chainflip-evm.md``.
+
+XSWAP_NATIVE_SELECTOR = "dd687345"  # xSwapNative(uint32,bytes,uint32,bytes)
+XSWAP_TOKEN_SELECTOR = (
+    "04fc7da0"  # xSwapToken(uint32,bytes,uint32,address,uint256,bytes)
+)
+
+# Words in each call's ABI head, i.e. how many 32-byte slots precede the
+# dynamic tail. Hard-coded rather than derived: the gate must know the exact
+# shape it accepts, and a call whose head is a different size is not one of
+# these two functions however plausibly it decodes.
+_XSWAP_NATIVE_WORDS = 4
+_XSWAP_TOKEN_WORDS = 6
+
+
+def _abi_word(raw: bytes, index: int) -> int:
+    """The ``index``-th 32-byte word of an ABI argument block, as an integer."""
+    start = index * 32
+    return int.from_bytes(raw[start : start + 32], "big")
+
+
+def _abi_bytes(raw: bytes, offset: int, *, head_words: int) -> bytes | None:
+    """The dynamic ``bytes`` at ``offset``, or ``None`` if it is not canonical.
+
+    Strict on purpose. Solidity's encoder emits one canonical form, so anything
+    else — an offset pointing into the head, a length running past the end,
+    padding that is not zero — is a hand-made calldata trying to make one
+    decoder disagree with another. Refusing is free; being lenient here is the
+    hole the whole gate exists to close.
+    """
+    if offset < head_words * 32 or offset + 32 > len(raw) or offset % 32:
+        return None
+    length = _abi_word(raw, offset // 32)
+    end = offset + 32 + length
+    if end > len(raw):
+        return None
+    padded = end + (-length % 32)
+    if padded > len(raw) or any(raw[end:padded]):
+        return None
+    return raw[offset + 32 : end]
+
+
+@dataclasses.dataclass(frozen=True)
+class DecodedEvmVaultCall:
+    """A Chainflip Vault call, decoded from its calldata alone."""
+
+    destination_chain_id: int
+    destination: bytes
+    destination_asset_id: int
+    # "" and 0 for xSwapNative, where the transaction's own value is the amount.
+    source_token: str
+    source_amount: int
+    parameters: bytes
+
+
+def decode_evm_vault_call(calldata: bytes) -> DecodedEvmVaultCall | None:
+    """Decode an ``xSwapNative``/``xSwapToken`` call, or ``None`` if it is not one."""
+    if len(calldata) < 4:
+        return None
+    selector = calldata[:4].hex()
+    args = calldata[4:]
+    if selector == XSWAP_NATIVE_SELECTOR:
+        words, token_word, amount_word, params_word = _XSWAP_NATIVE_WORDS, None, None, 3
+    elif selector == XSWAP_TOKEN_SELECTOR:
+        words, token_word, amount_word, params_word = _XSWAP_TOKEN_WORDS, 3, 4, 5
+    else:
+        return None
+    if len(args) < words * 32:
+        return None
+    destination = _abi_bytes(args, _abi_word(args, 1), head_words=words)
+    parameters = _abi_bytes(args, _abi_word(args, params_word), head_words=words)
+    if destination is None or parameters is None:
+        return None
+    token, amount = "", 0
+    if token_word is not None and amount_word is not None:
+        raw_token = _abi_word(args, token_word)
+        if raw_token >= 1 << 160:  # a padded address with dirty high bits
+            return None
+        token = f"0x{raw_token:040x}"
+        amount = _abi_word(args, amount_word)
+    return DecodedEvmVaultCall(
+        destination_chain_id=_abi_word(args, 0),
+        destination=destination,
+        destination_asset_id=_abi_word(args, 2),
+        source_token=token,
+        source_amount=amount,
+        parameters=parameters,
+    )
+
+
+# The SCALE layout of ``cfParameters`` as the protocol encodes it for an EVM
+# source with no CCM, no oracle-slippage limit and no DCA — the only shape this
+# wallet asks for, and the only one it will sign. Every Option below is None in
+# that shape and takes one zero byte; a Some would lengthen the blob, which the
+# length check catches before any offset here is read.
+EVM_VAULT_PARAMS_BYTES = 96
+EVM_VAULT_PARAMS_VERSION = 1
+_EVP_RETRY = slice(1, 5)
+_EVP_REFUND = slice(5, 25)
+_EVP_MIN_PRICE = slice(25, 57)
+_EVP_CCM = 57  # Option<CcmChannelMetadata> on the refund leg
+_EVP_ORACLE = 58  # Option<u8> max_oracle_price_slippage
+_EVP_DCA = 59  # Option<DcaParameters>
+_EVP_BOOST = 60
+_EVP_BROKER = slice(61, 93)
+_EVP_BROKER_FEE = slice(93, 95)
+_EVP_AFFILIATES = 95
+
+
+@dataclasses.dataclass(frozen=True)
+class DecodedEvmVaultParameters:
+    """A Chainflip EVM ``cfParameters`` blob, decoded from its bytes alone."""
+
+    version: int
+    retry_duration: int
+    refund_address: bytes
+    min_price: int
+    ccm: int
+    oracle_slippage: int
+    dca: int
+    boost_fee: int
+    broker: bytes
+    broker_fee: int
+    affiliates: int
+
+
+def decode_evm_vault_parameters(params: bytes) -> DecodedEvmVaultParameters | None:
+    """Decode a 96-byte ``cfParameters`` blob, or ``None`` if it is not one."""
+    if len(params) != EVM_VAULT_PARAMS_BYTES:
+        return None
+    little = "little"
+    return DecodedEvmVaultParameters(
+        version=params[0],
+        retry_duration=int.from_bytes(params[_EVP_RETRY], little),
+        refund_address=params[_EVP_REFUND],
+        min_price=int.from_bytes(params[_EVP_MIN_PRICE], little),
+        ccm=params[_EVP_CCM],
+        oracle_slippage=params[_EVP_ORACLE],
+        dca=params[_EVP_DCA],
+        boost_fee=params[_EVP_BOOST],
+        broker=params[_EVP_BROKER],
+        broker_fee=int.from_bytes(params[_EVP_BROKER_FEE], little),
+        affiliates=params[_EVP_AFFILIATES],
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class ChainflipEvmVaultPlan:
+    """What we intend a Chainflip vault swap from an EVM chain to do.
+
+    ``known_vaults`` comes from the chain's own ``cf_get_vault_addresses``, as
+    on the Bitcoin side: the contract we are about to hand money to is not
+    something to take from the encoding response, it is something to find in the
+    protocol's published list.
+
+    ``source_token`` is ``""`` for a native-coin source, which also says the
+    transaction must be an ``xSwapNative`` with no ``approve`` beside it.
+    """
+
+    vault_contract: str
+    calldata: bytes
+    value: int
+    source_token: str
+    source_amount: int
+    expiry: int
+    chain_id: int
+    destination_chain_id: int
+    destination_asset_id: int
+    destination_bytes: bytes
+    refund_address: str
+    min_price: int
+    retry_duration: int
+    known_vaults: frozenset[str]

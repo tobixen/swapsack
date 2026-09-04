@@ -26,6 +26,26 @@ automatically from git tags (PEP 440 / SemVer).
   checked by the same safety gate as Ethereum's and covered by tests, but as
   with Arbitrum, the first real transaction will be yours. Start small.
 
+- **Chainflip swaps from an EVM source.** `swap --from ETH`, `ETH-ARB`,
+  `USDC-ETH`, `USDT-ETH` or `USDC-ARB` with `--backend chainflip` (or `auto`)
+  now goes through, where it previously only showed you a price. A token source
+  is two transactions, an approve and the swap, and is warned about like the
+  other token paths.
+
+  **BTC is now a Chainflip destination** too — but only from one of those EVM
+  sources, not from BTC itself. And unlike a Chainflip swap from BTC,
+  `--amount max` works here.
+
+  As before, nothing is registered on your behalf and nothing is trusted: the
+  gate reads the transaction it is about to sign and checks that it pays your
+  address, refunds to your address, clears your floor, carries no
+  broker/boost/affiliate fee, and goes to the vault the protocol itself
+  publishes. What it enforces on-chain here is a minimum *price* rather than a
+  minimum amount, computed on the strict side — a swap that drifts is more
+  likely to refund than to underpay.
+
+  Not yet proven with real money: no EVM vault swap has been broadcast.
+
 - **`history` and `utxos`.** `swapsack history` lists every transaction that
   touched the wallet — newest first, mempool first — with what it did to your
   balance, the full txid, who else was paid, and the memo that marks a swap

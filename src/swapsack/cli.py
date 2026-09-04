@@ -1030,7 +1030,7 @@ def _is_cow_order_uid(value: str) -> bool:
 # transaction, so neither is drivable from every `swap --from`.
 MEMO_DEPOSIT_ONLY = frozenset({"memo-deposit"})
 UTXO_EXECUTORS = frozenset({"memo-deposit", "vault-swap"})
-EVM_EXECUTORS = frozenset({"memo-deposit", "signed-order"})
+EVM_EXECUTORS = frozenset({"memo-deposit", "signed-order", "vault-swap"})
 # What the parser's --backend list can reach at all, for the error message.
 EXECUTABLE_EXECUTORS = UTXO_EXECUTORS | EVM_EXECUTORS
 
@@ -2148,6 +2148,26 @@ def _swap_via_chainflip(
     return _confirm_and_execute(prepared, adapter, args)
 
 
+def _evm_sweep_gas(backend: str, requested: int | None = None) -> int:
+    """How much gas a native EVM sweep must hold back, given the backend choice.
+
+    A sweep sizes itself before the backend is chosen — the amount is an input
+    to the price comparison that picks one — so the reserve has to cover the
+    most expensive executor still in the running. A Chainflip vault swap is a
+    Vault contract call and declares :data:`VAULT_SWAP_GAS`, roughly double a
+    memo deposit's; reserving the deposit's budget and then building the call
+    left the transaction unable to pay for itself, and the node refused it every
+    time. An over-reserve only leaves a little more dust behind, so the branch
+    that cannot reach Chainflip keeps the old number.
+    """
+    from swapsack.chains.eth import DEFAULT_GAS, VAULT_SWAP_GAS
+
+    gas = DEFAULT_GAS if requested is None else requested
+    if backend in ("auto", "chainflip"):
+        return max(gas, VAULT_SWAP_GAS)
+    return gas
+
+
 def _swap_from_evm(args: argparse.Namespace, adapter_factory) -> int:  # noqa: ANN001
     from swapsack.chains.coins import (
         InsufficientFunds,
@@ -2190,7 +2210,7 @@ def _swap_from_evm(args: argparse.Namespace, adapter_factory) -> int:  # noqa: A
             try:
                 amount = eth_sweep_amount(
                     adapter.fetch_balance(from_address),
-                    gas=args.eth_gas,
+                    gas=_evm_sweep_gas(args.backend, requested=args.eth_gas),
                     max_fee_per_gas=max_fee_per_gas,
                 )
             except InsufficientFunds as exc:
@@ -2217,6 +2237,19 @@ def _swap_from_evm(args: argparse.Namespace, adapter_factory) -> int:  # noqa: A
         except SwapAborted as exc:
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
+        if backend.executor == "vault-swap":
+            return _swap_via_chainflip_evm(
+                args,
+                adapter,
+                backend,
+                request=request,
+                dest=dest,
+                mnemonic=mnemonic,
+                from_address=from_address,
+                nonce=nonce,
+                max_fee_per_gas=max_fee_per_gas,
+                max_priority_fee_per_gas=max_priority_fee_per_gas,
+            )
         if backend.executor == "signed-order":
             return _swap_via_cow(
                 args,
@@ -2274,6 +2307,139 @@ def _swap_from_evm(args: argparse.Namespace, adapter_factory) -> int:  # noqa: A
                 f"{_eur_suffix(max_fee_eth, native, price_check=args.price_check)}"
             )
             return _confirm_and_execute(prepared, adapter, args)
+
+
+def _swap_via_chainflip_evm(
+    args: argparse.Namespace,
+    adapter,  # noqa: ANN001 (EthAdapter / ArbAdapter)
+    backend,  # noqa: ANN001 (ChainflipBackend)
+    *,
+    request: SwapRequest,
+    dest: str,
+    mnemonic: str,
+    from_address: str,
+    nonce: int,
+    max_fee_per_gas: int,
+    max_priority_fee_per_gas: int,
+) -> int:
+    """Chainflip's execute path from an EVM source: a call into the Vault.
+
+    The EVM sibling of :func:`_swap_via_chainflip`. Same protocol and same
+    promise — nothing is registered anywhere on our behalf, so the gate can
+    prove the whole intention from the bytes about to be published — but the
+    transaction is a contract call rather than a payment, the refund address has
+    to be named rather than inferred from a change output, and the on-chain
+    floor is a price rather than an amount. See
+    ``chains.eth.verify_chainflip_evm_vault_swap``.
+    """
+    from swapsack.chainflip import (
+        CHAINFLIP_ASSETS,
+        VAULT_SWAP_PLAN_TTL,
+        ChainflipError,
+        ChainflipRpc,
+        deposit_units,
+        parse_chainflip_quote,
+        prepare_evm_vault_swap,
+    )
+    from swapsack.verify import ChainflipEvmVaultPlan
+
+    to_key = args.to_
+    bps = getattr(args, "tolerance_bps", None)
+    src = CHAINFLIP_ASSETS[request.from_asset]
+    dst = CHAINFLIP_ASSETS[request.to_asset]
+    # The wallet-wide 1e8 amount in the source asset's own decimals — what both
+    # the quote and the transaction speak, and the one number they must agree on.
+    input_amount = deposit_units(request.amount, src[2])
+    try:
+        with backend.client as client:
+            # Re-quote here rather than reuse selection's: the floor encoded
+            # into the call has to come from the price we are about to commit
+            # to, not from one taken a few round trips ago.
+            parsed = parse_chainflip_quote(
+                client.quote(src[:2], dst[:2], input_amount),
+                from_asset=request.from_asset,
+                to_asset=request.to_asset,
+            )
+    except (ChainflipError, *HTTP_ERRORS) as exc:
+        print(f"ABORTED: chainflip quote failed: {exc}", file=sys.stderr)
+        return 1
+
+    now = int(time.time())
+    try:
+        with ChainflipRpc() as rpc:
+            vault_swap = prepare_evm_vault_swap(
+                rpc,
+                from_asset=request.from_asset,
+                to_asset=request.to_asset,
+                destination=dest,
+                # Refunds come back to the address that paid, which is also the
+                # only address the gate will accept: ours.
+                refund_address=from_address,
+                input_amount=input_amount,
+                quote=parsed,
+                bps=bps,
+            )
+    except (ChainflipError, *HTTP_ERRORS) as exc:
+        print(f"ABORTED: {exc}", file=sys.stderr)
+        return 1
+
+    plan = ChainflipEvmVaultPlan(
+        vault_contract=vault_swap.vault_contract,
+        calldata=vault_swap.calldata,
+        value=vault_swap.value,
+        source_token=vault_swap.source_token,
+        source_amount=vault_swap.source_amount,
+        expiry=now + VAULT_SWAP_PLAN_TTL,
+        chain_id=adapter.chain_id,
+        destination_chain_id=vault_swap.destination_chain_id,
+        destination_asset_id=vault_swap.destination_asset_id,
+        destination_bytes=vault_swap.destination_bytes,
+        refund_address=from_address,
+        min_price=vault_swap.min_price,
+        retry_duration=vault_swap.retry_duration,
+        known_vaults=vault_swap.known_vaults,
+    )
+    prepared = adapter.build_and_verify_vault_swap(
+        plan=plan,
+        now=now,
+        mnemonic=mnemonic,
+        nonce=nonce,
+        max_fee_per_gas=max_fee_per_gas,
+        max_priority_fee_per_gas=max_priority_fee_per_gas,
+        max_fee_wei=ETH_MAX_FEE_WEI,
+    )
+
+    dest_unit = 10 ** dst[2]
+    out = parsed.egress_amount / dest_unit
+    floor = vault_swap.min_output_amount / dest_unit
+    effective_bps = bps if bps is not None else parsed.recommended_slippage_bps
+    max_fee_eth = prepared.built.fee / 10**18
+    native = adapter.native_symbol
+    print(f"via:     {backend.name} (vault swap — no broker, no memo protocol)")
+    print(
+        f"send:    {input_amount / 10 ** src[2]:.8f} {args.from_} to the "
+        f"{adapter.chain} Vault {plan.vault_contract}"
+    )
+    print(f"expect:  {out:.8f} {to_key} -> {dest}")
+    print(
+        f"floor:   {floor:.8f} {to_key} enforced on-chain "
+        f"({effective_bps} bps tolerance); below it the swap refunds to "
+        f"{from_address}"
+    )
+    print(f"eta:     ~{parsed.estimated_duration_seconds // 60} min")
+    _print_swap_costs(
+        parsed, args.from_, to_key, request.amount, price_check=args.price_check
+    )
+    print(
+        f"inbound: {max_fee_eth:.6f} {native} max "
+        f"({len(prepared.built.txs)} tx)"
+        f"{_eur_suffix(max_fee_eth, native, price_check=args.price_check)}"
+    )
+    print(
+        "track:   this is not a THORChain swap; follow the deposit on "
+        "scan.chainflip.io once it confirms"
+    )
+    return _confirm_and_execute(prepared, adapter, args)
 
 
 def _swap_via_cow(
@@ -4048,9 +4214,11 @@ def _add_swap_args(sub: argparse.ArgumentParser) -> None:
         default="auto",
         help="swap backend (auto = lowest price across all; cow = same-chain "
         "ETH-token swaps via a signed intent order, no memo/vault; chainflip = "
-        "an independent cross-chain venue, executed from BTC as a vault swap — "
-        "no broker, no deposit channel; EVM destinations only, "
-        "see docs/chainflip-effort.md)",
+        "an independent cross-chain venue, executed as a vault swap — no "
+        "broker, no deposit channel — from BTC (an OP_RETURN) or from ETH/ARB "
+        "and their tokens (a Vault contract call); EVM destinations, plus BTC "
+        "from an EVM source; see docs/chainflip-effort.md and "
+        "docs/chainflip-evm.md)",
     )
     _add_price_check_args(sub)
     sub.add_argument(

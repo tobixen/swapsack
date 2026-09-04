@@ -8,10 +8,11 @@ Two kinds of backend exist behind one small protocol (``name``, ``client``,
   a memo (``executor = "memo-deposit"``).
 - *CoW Protocol*: same-chain ETH-token swaps executed by signing an EIP-712
   order (``executor = "signed-order"``); see ``swapsack.cow``.
-- *Chainflip*: an independent cross-chain venue, executed by paying a protocol
-  vault with the swap parameters in the transaction's own OP_RETURN
-  (``executor = "vault-swap"``, drivable only from a UTXO source); see
-  ``swapsack.chainflip`` and ``docs/chainflip-effort.md``.
+- *Chainflip*: an independent cross-chain venue, executed by putting the swap
+  parameters in our own transaction (``executor = "vault-swap"``) — an
+  OP_RETURN from a UTXO source, a call into the Vault contract from an EVM one;
+  see ``swapsack.chainflip``, ``docs/chainflip-effort.md`` and
+  ``docs/chainflip-evm.md``.
 
 ``gather_quotes`` asks every backend that can serve the pair and normalizes to
 "expected output in 1e8 units", so ``best_quote`` picks the backend giving the
@@ -56,7 +57,8 @@ class SwapBackend(Protocol):
 
     name: str
     client: object  # has close(); thornode-style backends expose ThorchainClient
-    executor: str  # "memo-deposit" | "signed-order" — the CLI dispatches on it
+    executor: str  # "memo-deposit" | "signed-order" | "vault-swap"; the CLI
+    # dispatches on it
 
     def serves(self, from_asset: str, to_asset: str) -> bool: ...
 
@@ -142,9 +144,10 @@ def swap_backends() -> list[SwapBackend]:
 
     Chainflip earns its place as an independent protocol: it keeps answering
     when THORChain and Maya halt together (as they did on 2026-08-18). Its
-    ``vault-swap`` executor is a Bitcoin transaction, so the CLI routes
-    execution there only from a UTXO source and only to a destination the
-    payload can encode — see ``cli._can_execute``.
+    ``vault-swap`` executor takes the shape of its source chain — a Bitcoin
+    transaction or an EVM contract call — so the CLI routes execution there
+    only for the pairs it can both build and gate; see ``cli._can_execute`` and
+    ``chainflip.can_settle_vault_swap``.
     """
     from swapsack.chainflip import default_chainflip_backend
     from swapsack.cow import default_cow_backend
