@@ -28,6 +28,7 @@ from swapsack.chainflip import (
     CHAINFLIP_ASSETS,
     DEFAULT_BROKER_ACCOUNTS,
     DEFAULT_RETRY_DURATION_BLOCKS,
+    EVM_CHAIN_IDS,
     EVM_VAULT_CHAINS,
     PRICE_FRACTIONAL_BITS,
     VAULT_SWAP_ASSET_IDS,
@@ -49,7 +50,10 @@ from swapsack.chains.eth import (
     encode_approve,
     verify_chainflip_evm_vault_swap,
 )
+from swapsack.evm import keccak256
 from swapsack.verify import (
+    XSWAP_NATIVE_SELECTOR,
+    XSWAP_TOKEN_SELECTOR,
     ChainflipEvmVaultPlan,
     decode_evm_vault_call,
     decode_evm_vault_parameters,
@@ -246,6 +250,20 @@ def test_destination_bytes_keeps_bitcoin_case_significant():
     assert destination_bytes(BTC, "1BvBMSEY") != destination_bytes(BTC, "1bvbmsey")
 
 
+def test_the_selectors_are_the_keccak_of_the_signatures_they_name():
+    # The comment above them says they were confirmed against keccak once, by
+    # hand. A golden fixture cannot make that claim: it pins recorded bytes, so
+    # it would agree with a typo in the constant just as happily.
+    for selector, signature in (
+        (XSWAP_NATIVE_SELECTOR, b"xSwapNative(uint32,bytes,uint32,bytes)"),
+        (
+            XSWAP_TOKEN_SELECTOR,
+            b"xSwapToken(uint32,bytes,uint32,address,uint256,bytes)",
+        ),
+    ):
+        assert keccak256(signature)[:4].hex() == selector
+
+
 # --- the price floor --------------------------------------------------------
 
 QUOTE_PAYLOAD = {
@@ -275,9 +293,38 @@ TOKEN_QUOTE_PAYLOAD = dict(
 )
 
 
-def _quote(payload=None, *, from_asset=ETH, to_asset=USDC):
+def _stamp(fees, from_asset, to_asset):
+    """Say which asset each fee leg is charged in, the way mainnet does.
+
+    The fixtures carry amounts only; a real ``/v2/quote`` names the chain and
+    asset of every leg, and the parser checks the two the price floor does
+    arithmetic with against the swap's own ends. Stamping here keeps the
+    fixtures honest for whichever pair the test is quoting, so a mis-denominated
+    leg is something a test constructs deliberately rather than the shape every
+    fixture happens to have.
+    """
+    where = {
+        "INGRESS": CHAINFLIP_ASSETS[from_asset],
+        "EGRESS": CHAINFLIP_ASSETS[to_asset],
+        "NETWORK": CHAINFLIP_ASSETS[USDC],
+    }
+    return [
+        {**fee, "chain": where[fee["type"]][0], "asset": where[fee["type"]][1]}
+        if fee["type"] in where
+        else dict(fee)
+        for fee in fees
+    ]
+
+
+def _quote(payload=None, *, from_asset=ETH, to_asset=USDC, stamp=True):
+    payload = payload if payload is not None else QUOTE_PAYLOAD
+    if stamp:
+        payload = dict(
+            payload,
+            includedFees=_stamp(payload["includedFees"], from_asset, to_asset),
+        )
     return parse_chainflip_quote(
-        payload if payload is not None else QUOTE_PAYLOAD,
+        payload,
         from_asset=from_asset,
         to_asset=to_asset,
     )
@@ -325,6 +372,37 @@ def test_a_tighter_tolerance_raises_the_price_floor():
 def test_min_price_defaults_to_the_quotes_own_recommendation():
     quote = _quote()
     assert min_price(quote, None) == min_price(quote, quote.recommended_slippage_bps)
+
+
+def test_min_price_refuses_a_leg_denominated_in_the_wrong_asset():
+    # The floor is a ratio of the swap's own two ends, so a leg charged in
+    # something else would be subtracted from the wrong currency — quietly
+    # encoding a floor below the one printed.
+    fees = _stamp(QUOTE_PAYLOAD["includedFees"], ETH, USDC)
+    fees[2] = {**fees[2], "chain": "Bitcoin", "asset": "BTC"}
+    quote = _quote(dict(QUOTE_PAYLOAD, includedFees=fees), stamp=False)
+    with pytest.raises(ChainflipError, match="EGRESS"):
+        min_price(quote, 250)
+
+
+def test_min_price_refuses_a_fee_type_this_wallet_does_not_know():
+    # A renamed or split INGRESS lands in the OTHER bucket, where it would read
+    # as a zero ingress fee and overstate the deposit — the same lax direction
+    # as a wrong denomination, by a likelier route.
+    fees = [dict(fee) for fee in QUOTE_PAYLOAD["includedFees"]]
+    fees[0] = {**fees[0], "type": "INGRESS_V2"}
+    quote = _quote(dict(QUOTE_PAYLOAD, includedFees=fees))
+    with pytest.raises(ChainflipError, match="does not recognise"):
+        min_price(quote, 250)
+
+
+def test_min_price_refuses_a_leg_that_names_no_asset_at_all():
+    # Every mainnet response carries chain and asset on every leg. A response
+    # that stopped would otherwise restore the old unchecked behaviour without
+    # saying anything.
+    quote = _quote(stamp=False)
+    with pytest.raises(ChainflipError, match="unstated"):
+        min_price(quote, 250)
 
 
 def test_min_price_refuses_a_deposit_the_ingress_fee_swallows():
@@ -494,15 +572,19 @@ def _asset_for(pair):
     )
 
 
-def _prepare(rpc=None, *, from_asset=ETH, to_asset=BTC, destination=None, bps=250):
+def _prepare(
+    rpc=None, *, from_asset=ETH, to_asset=BTC, destination=None, bps=250, refund=REFUND
+):
     return prepare_evm_vault_swap(
         rpc if rpc is not None else _StubRpc(),
         from_asset=from_asset,
         to_asset=to_asset,
         destination=destination or (BTC_DEST if to_asset == BTC else EVM_DEST),
-        refund_address=REFUND,
+        refund_address=refund,
         input_amount=NATIVE_VALUE,
-        quote=_quote(to_asset=to_asset if to_asset != BTC else USDC),
+        quote=_quote(
+            from_asset=from_asset, to_asset=to_asset if to_asset != BTC else USDC
+        ),
         bps=bps,
     )
 
@@ -552,7 +634,7 @@ def test_prepare_from_a_token_source_names_the_contract_and_sends_no_value():
         destination=BTC_DEST,
         refund_address=REFUND,
         input_amount=TOKEN_AMOUNT,
-        quote=_quote(TOKEN_QUOTE_PAYLOAD),
+        quote=_quote(TOKEN_QUOTE_PAYLOAD, from_asset=USDC),
         bps=250,
     )
     assert swap.source_token == USDC_CONTRACT
@@ -563,6 +645,31 @@ def test_prepare_from_a_token_source_names_the_contract_and_sends_no_value():
 def test_prepare_uses_the_arbitrum_vault_for_an_arbitrum_source():
     swap = _prepare(from_asset=ARB_ETH, to_asset=USDC)
     assert swap.vault_contract == ARB_VAULT
+
+
+def test_the_evm_chain_ids_are_the_adapters_own():
+    # The id now has two sources — this table and the adapters — and the gate
+    # compares them, so a typo in either refuses every real vault swap on that
+    # chain. Asserting the literals here would agree with the typo.
+    from swapsack.chains.arb import ARB_CHAIN_ID
+    from swapsack.chains.eth import CHAIN_ID
+
+    assert EVM_CHAIN_IDS["Ethereum"] == CHAIN_ID
+    assert EVM_CHAIN_IDS["Arbitrum"] == ARB_CHAIN_ID
+
+
+def test_the_swap_names_the_evm_chain_id_its_source_lives_on():
+    # The EVM chain id is what the signature commits to, and it is not
+    # Chainflip's own chain numbering (Ethereum is 1 in both; Arbitrum is 4
+    # there and 42161 here). Taking it from the adapter would make a mis-wired
+    # adapter send the call to an address that is not a contract on the chain
+    # it signs for.
+    assert _prepare().source_chain_id == 1
+    assert _prepare(from_asset=ARB_ETH, to_asset=USDC).source_chain_id == 42161
+
+
+def test_every_chain_we_can_source_from_has_an_evm_chain_id():
+    assert set(EVM_CHAIN_IDS) == set(EVM_VAULT_CHAINS)
 
 
 def test_prepare_refuses_a_source_that_is_not_an_evm_chain():
@@ -718,12 +825,13 @@ def _built(plan, **over):
     return EthVaultSwapBuilt(swap_tx=swap_tx, private_key=b"\x01" * 32, **over)
 
 
-def _gate(plan, built=None, *, now=NOW, max_fee_wei=10**16):
+def _gate(plan, built=None, *, now=NOW, max_fee_wei=10**16, owned_address=None):
     return verify_chainflip_evm_vault_swap(
         built=built if built is not None else _built(plan),
         plan=plan,
         now=now,
         max_fee_wei=max_fee_wei,
+        owned_address=plan.refund_address if owned_address is None else owned_address,
     )
 
 
@@ -750,6 +858,15 @@ def test_the_gate_refuses_a_tx_sending_a_different_value():
     plan = _plan()
     built = _built(plan, swap_tx={"value": plan.value - 1})
     assert any("wei != intended" in p for p in _gate(plan, built))
+
+
+def test_the_gate_refuses_a_refund_to_an_address_we_do_not_own():
+    # The plan is internally consistent — the calldata refunds where the plan
+    # says — and that is exactly what this catches: consistency with a plan
+    # nobody checked is not the same as paying ourselves back.
+    plan = _plan()
+    problems = _gate(plan, owned_address="0x" + "44" * 20)
+    assert any("this wallet" in p for p in problems)
 
 
 def test_the_gate_refuses_a_tx_signed_for_another_chain():
@@ -805,15 +922,15 @@ def test_the_gate_refuses_parameters_of_an_unknown_version():
 # --- the token pair ---------------------------------------------------------
 
 
-def _token_plan(**over):
+def _token_plan(refund=REFUND, **over):
     swap = prepare_evm_vault_swap(
         _StubRpc(),
         from_asset=USDC,
         to_asset=BTC,
         destination=BTC_DEST,
-        refund_address=REFUND,
+        refund_address=refund,
         input_amount=TOKEN_AMOUNT,
-        quote=_quote(TOKEN_QUOTE_PAYLOAD),
+        quote=_quote(TOKEN_QUOTE_PAYLOAD, from_asset=USDC),
         bps=250,
     )
     return _plan(swap, **over)
@@ -889,6 +1006,16 @@ MNEMONIC = (
 )
 
 
+# The address behind MNEMONIC. Plans handed to the adapter must refund to it:
+# the gate binds the refund to the signing key, so REFUND (a burn address, and
+# what the golden fixtures encode) is refused there by design.
+WALLET = _adapter().derive_address(MNEMONIC)
+
+
+def _owned_plan(**over):
+    return _plan(_prepare(refund=WALLET), **over)
+
+
 def _build(plan, adapter=None, nonce=7):
     return (adapter or _adapter()).build_and_verify_vault_swap(
         plan=plan,
@@ -902,7 +1029,7 @@ def _build(plan, adapter=None, nonce=7):
 
 
 def test_the_adapter_builds_a_native_swap_the_gate_accepts():
-    prepared = _build(_plan())
+    prepared = _build(_owned_plan())
     assert prepared.problems == []
     assert len(prepared.built.txs) == 1
     assert prepared.built.swap_tx["nonce"] == 7
@@ -910,7 +1037,7 @@ def test_the_adapter_builds_a_native_swap_the_gate_accepts():
 
 
 def test_the_adapter_builds_a_token_swap_as_approve_then_call():
-    plan = _token_plan()
+    plan = _token_plan(refund=WALLET)
     prepared = _build(plan)
     assert prepared.problems == []
     assert len(prepared.built.txs) == 2
@@ -924,7 +1051,7 @@ def test_the_adapter_builds_a_token_swap_as_approve_then_call():
 def test_the_adapter_signs_for_the_chain_the_plan_names():
     # Arbitrum's whole failure mode in one test: an ARB swap signed with chain
     # id 1 is a *valid Ethereum transaction* paying a different contract.
-    plan = _plan(
+    plan = _owned_plan(
         chain_id=42161,
         vault_contract=ARB_VAULT,
         known_vaults=frozenset({ARB_VAULT}),
@@ -976,7 +1103,14 @@ class _FakeClient:
 
     def quote(self, src, dst, amount):
         self.asked.append((src, dst, amount))
-        return dict(QUOTE_PAYLOAD, depositAmount=str(amount))
+        # src/dst are Chainflip's own (chain, asset) pairs, which is exactly
+        # what the service stamps on the fee legs it answers with.
+        legs = {"INGRESS": src, "EGRESS": dst, "NETWORK": ("Ethereum", "USDC")}
+        fees = [
+            {**fee, "chain": legs[fee["type"]][0], "asset": legs[fee["type"]][1]}
+            for fee in QUOTE_PAYLOAD["includedFees"]
+        ]
+        return dict(QUOTE_PAYLOAD, depositAmount=str(amount), includedFees=fees)
 
 
 def _run_cli(monkeypatch, argv, *, from_asset=ETH, to_asset=BTC, amount=10_000_000):

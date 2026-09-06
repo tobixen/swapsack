@@ -135,6 +135,11 @@ class ChainflipQuote:
     # the price the protocol enforces is a ratio of the swap's own two ends.
     ingress_fee: int = 0  # native source units
     egress_fee: int = 0  # native destination units
+    # Why those two must not be used as arithmetic, or "" when they can be.
+    # Recorded rather than raised: a fee surprise makes the *floor* uncomputable
+    # (min_price refuses), but it does not make the price wrong enough to drop
+    # the venue that exists as the halt hedge — so `quote` still answers.
+    unusable_fee_legs: str = ""
 
 
 def select_quote(payload: Any) -> Mapping[str, Any]:  # noqa: ANN401 (JSON)
@@ -189,7 +194,11 @@ def _parse_quote_fields(
     deposit = int(quote["depositAmount"])
     intermediate = quote.get("intermediateAmount")
     intermediate = int(intermediate) if intermediate is not None else None
-    native = _native_fee_legs(quote["includedFees"])
+    native, unusable = _native_fee_legs(
+        quote["includedFees"],
+        ingress_asset=CHAINFLIP_ASSETS[from_asset][:2],
+        egress_asset=CHAINFLIP_ASSETS[to_asset][:2],
+    )
     fees = _convert_fees(
         native,
         to_asset=to_asset,
@@ -211,12 +220,16 @@ def _parse_quote_fields(
         raw=quote,
         ingress_fee=native["INGRESS"],
         egress_fee=native["EGRESS"],
+        unusable_fee_legs=unusable,
     )
 
 
 def _native_fee_legs(
     included: Sequence[Mapping[str, Any]],
-) -> dict[str, int]:
+    *,
+    ingress_asset: tuple[str, str],
+    egress_asset: tuple[str, str],
+) -> tuple[dict[str, int], str]:
     """Sum ``includedFees`` per leg, each still in its own asset's native units.
 
     Split out from :func:`_convert_fees` because the two callers want different
@@ -225,12 +238,49 @@ def _native_fee_legs(
     unrecognised leg is money too, so it gets its own bucket rather than being
     dropped; :func:`_convert_fees` values it at the end-to-end rate, the only
     one that can be right for a leg whose asset we cannot name.
+
+    Returns the legs and, second, why INGRESS/EGRESS must not be used as
+    arithmetic — ``""`` when they can be. Those two are the ones that leave
+    here as numbers rather than as value: :func:`min_price` subtracts the first
+    from the deposit in source units and adds the second to the floor in
+    destination units. Two things would make that arithmetic wrong, both in the
+    lax direction, both silent:
+
+    * a leg **denominated** in something other than the asset it is subtracted
+      from — checked against the ``(chain, asset)`` the quote states, and a leg
+      that states neither key is not taken at its word either, since a response
+      that stopped carrying them would quietly restore the old behaviour;
+    * a leg that is **not there at all** under the name we look for. An
+      unrecognised ``type`` lands in OTHER, where a renamed or split INGRESS
+      would read as a zero fee and overstate the deposit. This wallet asks for
+      no broker commission and no boost, so a non-zero OTHER is already a
+      surprise.
+
+    Neither is fatal to a *price*: the caller records the reason on the quote
+    and only :func:`min_price` turns it into a refusal.
     """
+    denominated = {"INGRESS": ingress_asset, "EGRESS": egress_asset}
     legs = {"INGRESS": 0, "NETWORK": 0, "EGRESS": 0, "OTHER": 0}
+    unusable = ""
     for fee in included:
         kind = str(fee.get("type", ""))
+        stated = (str(fee.get("chain", "")), str(fee.get("asset", "")))
+        expected = denominated.get(kind)
+        if expected is not None and stated != expected and not unusable:
+            unusable = (
+                f"the {kind} fee is charged in "
+                f"{stated[1] or 'an unstated asset'} on "
+                f"{stated[0] or 'an unstated chain'}, not the {expected[1]} on "
+                f"{expected[0]} the price floor computes with"
+            )
         legs[kind if kind in legs else "OTHER"] += int(fee["amount"])
-    return legs
+    if legs["OTHER"] and not unusable:
+        unusable = (
+            f"the quote carries {legs['OTHER']} units of fee under a type this "
+            f"wallet does not recognise, so a leg the floor needs may be "
+            f"missing from the ones it can see"
+        )
+    return legs, unusable
 
 
 def _convert_fees(
@@ -602,6 +652,15 @@ VAULT_SWAP_CHAIN_IDS: dict[str, int] = {"Ethereum": 1, "Bitcoin": 3, "Arbitrum":
 # a Vault on Solana too, but that is a program instruction and another key.
 EVM_VAULT_CHAINS = frozenset({"Ethereum", "Arbitrum"})
 
+# The EIP-155 chain ids of those chains — the number the *signature* commits
+# to, which is a different namespace from Chainflip's own (Arbitrum is 4 above
+# and 42161 here; Ethereum is 1 in both, which is exactly how a confusion
+# between the two would go unnoticed). A vault swap names its source chain, so
+# the chain id belongs to the swap and not to whichever adapter happens to
+# build it: the Vault contracts differ per chain, and a call signed for the
+# wrong one pays an address that is not a contract there.
+EVM_CHAIN_IDS: dict[str, int] = {"Ethereum": 1, "Arbitrum": 42161}
+
 # Blocks Chainflip keeps retrying a swap whose price never clears the floor
 # before refunding to the change output. The chain caps this
 # (max_swap_retry_duration_blocks, 600 at the time of writing) and rejects more.
@@ -792,6 +851,10 @@ def min_price(quote: ChainflipQuote, bps: int | None) -> tuple[int, int]:
     that drifted, never a delivery below the floor. The other rounding is the
     one that quietly pays out less than promised, and there is no undoing it.
     """
+    if quote.unusable_fee_legs:
+        raise ChainflipError(
+            f"cannot compute an on-chain price floor: {quote.unusable_fee_legs}"
+        )
     floor = min_output_amount(quote, bps)
     swap_input = quote.deposit_amount - quote.ingress_fee
     if swap_input <= 0:
@@ -1119,6 +1182,7 @@ class EvmVaultSwap:
     min_price: int
     retry_duration: int
     min_output_amount: int  # what min_price is meant to buy, for the display
+    source_chain_id: int  # EIP-155, for the transaction that carries the call
 
 
 def _token_contract(asset: str) -> str:
@@ -1242,6 +1306,7 @@ def prepare_evm_vault_swap(
         min_price=price_floor,
         retry_duration=DEFAULT_RETRY_DURATION_BLOCKS,
         min_output_amount=output_floor,
+        source_chain_id=EVM_CHAIN_IDS[source_chain],
     )
 
 

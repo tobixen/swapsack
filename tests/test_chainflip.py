@@ -94,6 +94,20 @@ def _quote(payload=None, *, from_asset=BTC, to_asset=ETH) -> ChainflipQuote:
 # --- quote parsing / normalization ------------------------------------------
 
 
+def test_a_fee_leg_charged_in_another_asset_still_prices_but_is_marked():
+    # The ingress fee is subtracted from the deposit and the egress fee added
+    # to the floor, each in its own asset's units, so a leg denominated in
+    # something else cannot be used as arithmetic. That is a reason to refuse a
+    # *floor*, not a reason to drop the backend from price comparison — this
+    # venue is the hedge for a THORChain/Maya halt, and a wrong fee display is
+    # a smaller harm than a silently vanished quote.
+    fees = [dict(fee) for fee in QUOTE_PAYLOAD["includedFees"]]
+    fees[0] = {**fees[0], "chain": "Ethereum", "asset": "FLIP"}
+    quote = _quote(dict(QUOTE_PAYLOAD, includedFees=fees))
+    assert quote.expected_amount_out > 0
+    assert "INGRESS" in quote.unusable_fee_legs
+
+
 def test_expected_amount_out_is_1e8_of_destination():
     # 3.175019159… ETH, truncated to 1e8 units so best_quote can compare it
     # against a thornode quote.

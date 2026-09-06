@@ -334,6 +334,7 @@ def verify_chainflip_evm_vault_swap(
     plan: ChainflipEvmVaultPlan,
     now: int,
     max_fee_wei: int,
+    owned_address: str,
 ) -> list[str]:
     """Return reasons the txs are not the vault swap we intend; empty means safe.
 
@@ -342,6 +343,13 @@ def verify_chainflip_evm_vault_swap(
     token source — an ``approve`` for exactly the amount and no more. The
     Chainflip layer then reads the calldata back and checks it promises what we
     asked for: our destination, our refund address, our floor, nobody skimming.
+
+    ``owned_address`` is the address of the key that will sign, and the refund
+    is checked against *it* rather than against the plan alone. Without that the
+    gate is only self-consistent: a plan naming a stranger's refund address
+    would decode back to the same stranger and pass. Bitcoin gets this from
+    ``owned_addresses`` on the change output; here the refund is a field, so it
+    is one comparison instead.
 
     The calldata is compared against ``plan.calldata`` *and* decoded. That looks
     redundant and is not: the first binds the transaction to the bytes the
@@ -371,6 +379,11 @@ def verify_chainflip_evm_vault_swap(
         )
     if swap["chainId"] != plan.chain_id:
         problems.append(f"chainId {swap['chainId']} != {plan.chain_id}")
+    if plan.refund_address.lower() != owned_address.lower():
+        problems.append(
+            f"the plan refunds to {plan.refund_address}, which is not this "
+            f"wallet's {owned_address}"
+        )
     expected_data = "0x" + plan.calldata.hex()
     if (swap["data"] or "").lower() != expected_data.lower():
         problems.append(f"calldata {swap['data']!r} != planned {expected_data!r}")
@@ -1005,7 +1018,11 @@ class EthAdapter(HttpClient):
             swap_tx=swap_tx, private_key=account.key, approve_tx=approve_tx
         )
         problems = verify_chainflip_evm_vault_swap(
-            built=built, plan=plan, now=now, max_fee_wei=max_fee_wei
+            built=built,
+            plan=plan,
+            now=now,
+            max_fee_wei=max_fee_wei,
+            owned_address=account.address,
         )
         return Prepared(quote=None, built=built, plan=plan, problems=problems)
 
