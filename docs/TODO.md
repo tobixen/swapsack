@@ -424,89 +424,20 @@ labels, not lookups.
   rather than known — reading the swapping pallet would settle it and could
   relax the floor slightly; and `cf_swap_rate_v2/v3` as a node-native quote
   source, which would drop the hosted service as a dependency.
-  Superseded detail, kept for the reasoning:
-  `--backend chainflip`/`auto` price it; `swap` refuses to route there, and
-  `auto` notes out loud when it was the cheaper route. Calldata-style
-  aggregators (ParaSwap/1inch/0x/LiFi) and custodial instant exchangers: still
-  not planned (gating problem / custody — and, measured 2026-08-28, the
-  custodial ones lose on price too).
-  **B2 is a vault swap, not a deposit channel**: `cf_request_swap_parameter_
-  encoding` (keyless) returns an OP_RETURN payload carrying our own destination
-  and an on-chain `min_output_amount` floor, paid to a vault that
-  `cf_get_vault_addresses` confirms, and `cf_decode_vault_swap_parameter` reads
-  every field back for the gate. No broker, no channel expiry. The order of
-  work, from `docs/chainflip-effort.md`: **first** widen
-  `build_unsigned_swap`'s `memo` from `str` to `bytes` as its own commit (the
-  payload is binary SCALE; this touches the shared BTC/DASH/ZEC money path and
-  can break three chains at once), **then** the gate and the CLI path. Note
-  `--amount max` can never work here — Chainflip requires a non-zero,
-  above-dust change output.
-  **Priority raised 2026-08-28**: THORChain and Maya were halted simultaneously
-  (Maya's $1.7M exploit on 08-18), leaving BTC→ETH with no route through this
-  wallet at all. B1 — the keyless quote as a read-only source in `auto` — is
-  small, carries no money-path risk, and is what would have let `quote` still
-  answer. `docs/halt-alternatives.md` has the outage record, the live price
-  comparison against custodial exchangers and CEX orderbooks (Chainflip wins by
-  70–241 bps and ~40 bps respectively), and the manual stopgap.
-  **`docs/chainflip-effort.md` (2026-08-28) sizes the work**: B1 ~1 session
-  (~600 lines), B2 ~2–3 sessions (~800), together the order of the CoW commit.
-  It also supersedes this bullet's broker premise — Chainflip **vault swaps**
-  need no broker and no deposit channel, the destination is ours to encode and
-  to read back, and the tx shape (pay vault / OP_RETURN / change) is the one
-  `UtxoTxBuilder` already emits. Two corrections that came out of sizing it: the
-  `python-urllib` 403 is a non-issue (niquests gets a 200), and
-  `cf_*_open_deposit_channels` return **liquidity-provision** channels with no
-  destination or expiry in them — `docs/chainflip.md`'s readback plan does not
-  work as written.
-- **Chainflip's price floor is set at build time and enforced ~20 minutes
-  later** — the lesson of the 2026-08-28 broadcast above, and the one thing
-  that stands between a working vault swap and a filled one. Between the quote
-  and the witnessing sit the mempool wait, two Bitcoin confirmations, and the
-  100-block (~10 min) retry window. `min_output_amount`'s docstring already
-  allows for the confirmations; what that run showed is that the **mempool
-  wait dominates**, and it is the only term the wallet controls. Three
-  candidate fixes, none implemented: (a) refuse to build a vault swap at a fee
-  rate that will not confirm in ~2 blocks, or give this path a tighter
-  `--fee-blocks` default than a plain `send` — 239 sats of fee saved cost
-  1,706 sats of protocol fees and a round trip; (b) when a swap tx is still
-  unconfirmed after N blocks, **re-quote and rebuild** rather than CPFP — a
-  stale floor cannot be fixed by confirming faster, which is exactly what the
-  CPFP rescue did here; (c) expose `retryDurationBlocks` (encoded as 100) so a
-  longer window can ride out a dip. Note (a) and (b) pull against `--amount
-  max` being impossible here anyway, so a rebuild always has change to work
-  with.
-- **A USDT source needs the allowance reset, on both token paths.** The wallet
-  emits a bare `approve(spender, amount)` before an ERC-20 deposit — THORChain's
-  `_build_token_deposit` and now Chainflip's vault-swap builder both do. USDT
-  reverts on a non-zero -> non-zero allowance change, so once one attempt has
-  left an allowance behind (a deposit that fails after its approve lands), every
-  later USDT swap burns gas on a reverted approve and goes nowhere. The reset
-  machinery already exists and is unused here: `EthApprovals` in `chains/eth.py`
-  emits the 0-first pair and was written for CoW. Fixing it means routing both
-  builders through it and widening their gates to accept 0-2 approve txs.
-  Pre-existing, but the Chainflip EVM source newly routes USDT through a copy of
-  it — found by the clean-context review of that commit, filed rather than
-  fixed because a proper fix is a refactor of the shared approve path.
-- **Maya-only assets**: ADA and ETH-ARB are now exposed as destinations. Note
-  what *isn't* there — the ARB **token** pool (`ARB.ARB`) is `Staged`, not
-  tradeable, so "ARB" as a destination means native ETH on Arbitrum.
-  CACAO's **full wallet side is done** — hold, balance, `send` (`MsgSend`) and
-  swap-**from** (`MsgDeposit`) all ship via `chains/cosmos.py` +
-  `chains/maya.py`. The `MsgDeposit` build/sign/broadcast is mainnet-proven
-  (`docs/live-session-2026-08-16.md`); `MsgSend` has still never broadcast. (An earlier version of this line, and
-  the status header of `docs/cacao.md`, called it "not started"; both were
-  stale. `docs/cacao.md`'s own phasing section was correct.) So *Next up* item
-  1's CACAO leg needs no new chain work. (CACAO needs `thorchain.asset_unit` to
-  stay 1e10, not 1e8 — see `docs/cacao.md`.)
-- **USDC on cheaper chains — done for ARB and AVAX; BASE and BSC remain.**
-  This used to say "so do A2/A3 first rather than copy it per chain"; that is
-  no longer the trade-off. `EthAdapter` parameterizes `chain_id`,
-  `chains/bsc.py` is a ~60-line subclass proving the seam, and the per-chain
-  adapter *is* the shared code path. Evidence: `chains/arb.py` (~50 lines of
-  configuration) and now `chains/avax.py` (~100, most of it the docstring),
-  each of which brought its chain's whole wallet side — hold, balance,
-  destination, send/sweep and swap-from — for the native coin *and* its
-  tracked tokens.
+
+  **`status` is blind to an EVM vault swap until Chainflip witnesses it.**
+  Once witnessed there is no gap at all: `_print_chainflip_swap` asks
+  `/v2/swaps/{txid}` with the deposit's own transaction id, which is the key
+  the endpoint takes, so state, swap id, amounts, payout and refund all print
+  for an EVM source exactly as they do for Bitcoin. Two things are missing
+  *before* that. The pre-witness fallback reads the swap out of the deposit's
+  OP_RETURN, which a contract call does not have — so the window right after
+  broadcast, which is when a user runs `status`, says nothing. And
+  `_print_onchain_tx` is Esplora-only, so an EVM txid gets no transaction view
+  either and falls through to thornode's "not observed by ...", the misleading
+  answer that fallback exists to avoid. Both want the same missing piece: an
+  EVM transaction reader, and `verify.decode_evm_vault_call` already reads our
+  own calldata back once it has one.
 
   What is left on this path is **BASE and BSC**, and both are now purely a
   missing adapter rather than a protocol block (see the halt entry below).
