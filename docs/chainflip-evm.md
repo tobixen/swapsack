@@ -150,6 +150,19 @@ reserves whichever is larger, `--eth-gas` or the vault swap's own budget. Get
 that wrong the other way and the transaction cannot pay for itself: the first
 cut of this reserved the deposit's 60,000 and the node refused every sweep.
 
+One thing the generosity costs. The gate's fee ceiling (`ETH_MAX_FEE_WEI`, 0.01
+ETH) is computed on the *limit*, not on what the call will burn — an unused
+limit is refunded by the chain, but the gate does not know that yet when it
+decides. The native path reserves 120,000 gas against a measured 32,212, so it
+is refused above ~83 gwei; the token path reserves 70,000 + 250,000 and is
+refused above ~31 gwei, and what a token call actually burns has not been
+measured (the estimates above are `xSwapNative`; the token path also pays an
+`approve` and the Vault's `transferFrom`). The refusal is safe and says what it
+is (`max fee … exceeds limit`), but it arrives during a gas spike and reads
+like a bug in the swap rather than a ceiling doing its job. Lowering the budget
+is the wrong fix — running out of gas burns it — so the ceiling is what would
+have to move.
+
 ## What is still open
 
 - **The mainnet broadcast.** Unproven, as above.

@@ -44,6 +44,11 @@ automatically from git tags (PEP 440 / SemVer).
   minimum amount, computed on the strict side — a swap that drifts is more
   likely to refund than to underpay.
 
+  One limit to know: `status` cannot tell you anything about one of these
+  swaps until Chainflip has witnessed the deposit — the window right after you
+  broadcast, which is when you are most likely to ask. After that it reports
+  the swap in full, as it does for Bitcoin.
+
   Not yet proven with real money: no EVM vault swap has been broadcast.
 
 - **`history` and `utxos`.** `swapsack history` lists every transaction that
