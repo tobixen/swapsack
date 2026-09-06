@@ -979,7 +979,7 @@ def _abi_bytes(raw: bytes, offset: int, *, head_words: int) -> bytes | None:
 
     Strict on purpose. Solidity's encoder emits one canonical form, so anything
     else — an offset pointing into the head, a length running past the end,
-    padding that is not zero — is a hand-made calldata trying to make one
+    padding that is not zero — is hand-made calldata trying to make one
     decoder disagree with another. Refusing is free; being lenient here is the
     hole the whole gate exists to close.
     """
@@ -1110,6 +1110,11 @@ class ChainflipEvmVaultPlan:
 
     ``source_token`` is ``""`` for a native-coin source, which also says the
     transaction must be an ``xSwapNative`` with no ``approve`` beside it.
+
+    ``chain_id`` is the EIP-155 id of the chain Chainflip encoded *for*, not the
+    one the adapter happens to sign with — the gate compares the two, so an
+    adapter pointed at the wrong network is a refusal rather than a call to an
+    address that is not a contract there.
     """
 
     vault_contract: str

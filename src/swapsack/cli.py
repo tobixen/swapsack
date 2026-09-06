@@ -2390,7 +2390,7 @@ def _swap_via_chainflip_evm(
         source_token=vault_swap.source_token,
         source_amount=vault_swap.source_amount,
         expiry=now + VAULT_SWAP_PLAN_TTL,
-        chain_id=adapter.chain_id,
+        chain_id=vault_swap.source_chain_id,
         destination_chain_id=vault_swap.destination_chain_id,
         destination_asset_id=vault_swap.destination_asset_id,
         destination_bytes=vault_swap.destination_bytes,

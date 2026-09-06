@@ -434,7 +434,7 @@ def test_a_built_evm_vault_swap_passes_the_gate_live():
             source_token=swap.source_token,
             source_amount=swap.source_amount,
             expiry=now + 600,
-            chain_id=adapter.chain_id,
+            chain_id=swap.source_chain_id,
             destination_chain_id=swap.destination_chain_id,
             destination_asset_id=swap.destination_asset_id,
             destination_bytes=swap.destination_bytes,
