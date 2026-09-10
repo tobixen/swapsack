@@ -42,9 +42,11 @@ GOLDEN_PUBKEY = bytes.fromhex(
 )
 
 # The golden 0/0 address is NOT fresh on mainnet: other users of the standard
-# test mnemonic really used it (two 2018-era Overwinter txs, long emptied) —
-# on-chain history never disappears, which makes it a stable live target for
-# the used-but-emptied path that keeps the gap-limit scan going.
+# test mnemonic really used it (two 2018-era Overwinter txs onwards) — on-chain
+# history never disappears, which makes it a stable live target for the
+# has-history path that keeps the gap-limit scan going. Its *balance* is not
+# stable: anyone with the test mnemonic can fund or sweep it, so no live test
+# may assert an amount there.
 
 
 def test_derive_address_matches_golden_vectors():
@@ -313,22 +315,32 @@ def test_lp_backends_is_maya_only():
 def test_live_lightwalletd_roundtrip():
     # Read-only guards against lightwalletd API drift, all in one connection:
     # the chain tip is past the 2026-07 height, the golden 0/0 address shows
-    # history-but-no-funds (the case that must keep a scan going), and a random
-    # never-used address shows neither. The random address is fresh with
-    # overwhelming probability (a 160-bit collision would break Zcash itself).
+    # history (the case that must keep a scan going even at zero balance), and
+    # a random never-used address shows neither. The random address is fresh
+    # with overwhelming probability (a 160-bit collision would break Zcash
+    # itself).
     import secrets
 
     fresh_addr = p2pkh_address(secrets.token_bytes(33), b"\x1c\xb8")
     with ZecAdapter() as a:
         assert a.latest_height() > 3_400_000
+        # Balance and UTXO set back to back: a tx touching this address
+        # confirming between the two calls would break the equality below.
         used = a.address_info(GOLDEN["m/44'/133'/0'/0/0"])
+        utxos = a.fetch_utxos(GOLDEN["m/44'/133'/0'/0/0"])
         fresh = a.address_info(fresh_addr)
-        # Phase-2 read-only surface: a real branch id, and an emptied address
-        # has no UTXOs (its history notwithstanding).
+        # Phase-2 read-only surface: a real branch id, and the UTXO set agrees
+        # with the balance. Its *value* is not ours to assert — anyone holding
+        # the standard test mnemonic can fund or sweep this address at will
+        # (someone dusted it with 1000 zatoshi on 2026-09-08); what must hold
+        # is that GetTaddressUtxos and GetTaddressBalance tell the same story.
         assert a.branch_id() > 0
-        assert a.fetch_utxos(GOLDEN["m/44'/133'/0'/0/0"]) == []
+        assert a.fetch_utxos(fresh_addr) == []
     assert used.has_history
-    assert used.confirmed == 0
+    assert sum(u.value for u in utxos) == used.confirmed
+    # Once the dust is swept the sum above is 0 == 0 and decodes nothing, so
+    # check the shape of whatever is there while there is something to check.
+    assert all(u.value > 0 and len(u.txid) == 64 for u in utxos)
     assert not fresh.has_history
     assert fresh.confirmed == 0
 

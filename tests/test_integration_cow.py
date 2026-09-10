@@ -45,13 +45,13 @@ def test_usdt_to_usdc_quote_live():
 def test_dust_amount_raises_live():
     # 1 wei of USDT is untradeable -> the API errors instead of quoting a
     # nonsensical trade. Guards our error-body parsing (errorType/description).
-    # Which error we get is CoW's routing, not our contract: the fee check and
-    # the liquidity check both fire down here, and where the boundary sits
-    # moves (as of 2026-08-20, 1 wei says InsufficientLiquidity while 100 says
-    # SellAmountDoesNotCoverFee). Accept either; a third name means real drift.
-    with pytest.raises(
-        CowError, match="SellAmountDoesNotCoverFee|InsufficientLiquidity"
-    ):
+    # Which error we get is CoW's routing, not our contract, and it is not even
+    # stable between runs minutes apart: the fee check and both liquidity
+    # checks all fire down here (seen so far: SellAmountDoesNotCoverFee,
+    # InsufficientLiquidity, NoLiquidity). Assert the shape we parse — an
+    # errorType naming fee or liquidity, then a description — rather than which
+    # of them the solvers happened to reach first.
+    with pytest.raises(CowError, match=r"^\w*(Fee|Liquidity)\w*: \S"):
         with CowClient() as client:
             client.quote(USDT, USDC, 1, from_address=DEST, receiver=DEST)
 
