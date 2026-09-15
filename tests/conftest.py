@@ -156,11 +156,12 @@ class FakeResponse:
     Only what ``swapsack.net`` looks at. A plain string outcome from
     ``FakeSession`` stands for "some response the loop passes straight
     through"; this is for the statuses it must act on (429/503) and for the
-    ``Retry-After`` that comes with them.
+    ``Retry-After`` that comes with them, plus the body that says who refused.
     """
 
-    def __init__(self, status_code: int, **headers: str) -> None:
+    def __init__(self, status_code: int, text: str = "", **headers: str) -> None:
         self.status_code = status_code
+        self.text = text
         self.headers = {k.replace("_", "-"): v for k, v in headers.items()}
 
 

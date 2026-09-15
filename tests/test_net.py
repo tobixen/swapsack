@@ -355,6 +355,39 @@ def test_every_endpoint_throttling_says_so_without_the_address(no_sleep):
     assert len(session.gets) == 4  # two endpoints x (1 retry + 1) laps
 
 
+def test_a_throttle_names_who_refused_it(no_sleep):
+    # The live Chainflip tests started drawing a 503 on GitHub's runners only;
+    # "rate-limited (HTTP 503)" could not say whether Cloudflare's edge or the
+    # API behind it sent it.
+    refusal = FakeResponse(503, "error code: 1015", Server="cloudflare")
+    client, _ = _failover(*[refusal] * 20, retries=1)
+    with pytest.raises(RateLimited) as exc:
+        client._get_with_fallback("address/bc1qsecretaddress")
+    message = str(exc.value)
+    assert "cloudflare" in message
+    assert "1015" in message
+
+
+def test_who_refused_is_named_without_echoing_the_page(no_sleep):
+    # The body is the refusing server's, and an error page is free to repeat
+    # the URL it refused — one of the wallet's addresses. Only the recognised
+    # parts get through, and a header is not a place to smuggle escapes from.
+    page = (
+        "<html><title>Access denied</title>Error code 1015 for "
+        "https://blockstream.info/api/address/bc1qsecretaddress</html>"
+    )
+    refusal = FakeResponse(503, page, Server="nginx\x1b[2J" + "x" * 200)
+    client, _ = _failover(*[refusal] * 20, retries=1)
+    with pytest.raises(RateLimited) as exc:
+        client._get_with_fallback("address/bc1qsecretaddress")
+    message = str(exc.value)
+    assert "1015" in message and "nginx" in message
+    assert "bc1qsecretaddress" not in message
+    assert "Access denied" not in message
+    assert "\x1b" not in message
+    assert len(message) < 200
+
+
 def test_rate_limited_is_caught_wherever_a_transport_failure_is(no_sleep):
     # Every call site already catches HTTP_ERRORS, and the walkers that degrade
     # to INCOMPLETE catch HostUnreachable specifically.

@@ -13,6 +13,7 @@ listing draws one out of a public explorer sooner or later.
 from __future__ import annotations
 
 import email.utils
+import re
 import sys
 import time
 from collections.abc import Sequence
@@ -116,18 +117,50 @@ def _describe(
     return f"{line}\n{hint}" if hint else line
 
 
+# Cloudflare's own refusals carry a numbered error — "error code: 1015" as plain
+# text, "Error code 1015" on its HTML page — and the number names the rule.
+_CF_ERROR_CODE = re.compile(r"error code:?\s*(\d{4})\b", re.IGNORECASE)
+
+
+def _refused_by(resp: object) -> str:
+    """Who sent a throttle: the ``Server`` header and any Cloudflare error code.
+
+    Enough to tell a CDN edge turning away a whole IP range from the API behind
+    it asking one client to slow down. Never the body itself — an error page may
+    repeat the URL it refused — and the header is squeezed down to characters a
+    terminal cannot mistake for control sequences.
+    """
+    headers = getattr(resp, "headers", None)
+    server = (headers or {}).get("Server") if hasattr(headers, "get") else None
+    parts = []
+    name = re.sub(r"[^A-Za-z0-9._/-]", "", str(server or ""))[:32]
+    if name:
+        parts.append(f"from {name}")
+    body = getattr(resp, "text", None)
+    match = _CF_ERROR_CODE.search(body[:4096]) if isinstance(body, str) else None
+    if match:
+        parts.append(f"error code {match.group(1)}")
+    return ", ".join(parts)
+
+
 def _describe_throttle(
-    hosts: Sequence[str], status: int, attempts: int, hint: str | None
+    hosts: Sequence[str],
+    status: int,
+    attempts: int,
+    hint: str | None,
+    refusal: str = "",
 ) -> str:
     """The same one line, for endpoints that answered but refused to serve.
 
     Same reason as :func:`_describe` for not interpolating the response: the
     stock message is "429 Client Error: Too Many Requests for url: .../address/
     bc1q…", which puts one of the wallet's own addresses on the terminal.
+    ``refusal`` is :func:`_refused_by` of the last throttling answer.
     """
+    detail = f"HTTP {status} {refusal}" if refusal else f"HTTP {status}"
     line = (
         f"{', '.join(dict.fromkeys(hosts))} rate-limited the request "
-        f"(HTTP {status}) — gave up after {attempts} attempts"
+        f"({detail}) — gave up after {attempts} attempts"
     )
     return f"{line}\n{hint}" if hint else line
 
@@ -229,6 +262,7 @@ class HttpClient:
         hosts = [urlsplit(u).netloc for u in urls]
         last: Exception | None = None
         last_status: int | None = None
+        last_throttle: object = None
         for lap in range(self._retries + 1):
             wait = self._backoff * 2**lap
             for index, url in enumerate(urls):
@@ -241,6 +275,7 @@ class HttpClient:
                 status = getattr(resp, "status_code", None)
                 if status in THROTTLE_STATUSES:
                     last_status = status
+                    last_throttle = resp
                     wait = max(wait, _retry_after(resp))
                     self._report(hosts, index, lap, f"HTTP {status}")
                     continue
@@ -252,7 +287,13 @@ class HttpClient:
         # user can act on (wait, or point --esplora somewhere less busy).
         if last_status is not None:
             raise RateLimited(
-                _describe_throttle(hosts, last_status, attempts, self._hint)
+                _describe_throttle(
+                    hosts,
+                    last_status,
+                    attempts,
+                    self._hint,
+                    _refused_by(last_throttle),
+                )
             ) from last
         assert last is not None  # urls is non-empty, so the loop ran
         raise HostUnreachable(

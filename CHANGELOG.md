@@ -109,7 +109,8 @@ automatically from git tags (PEP 440 / SemVer).
   to the next explorer, which throttles independently of the first; if every
   one of them says no, the wait honours their `Retry-After` (capped, so a
   "come back in an hour" ends the run rather than hanging it) and the failure
-  names the hosts and the status without the address. `history` and `utxos`
+  names the hosts, the status and who refused — the `Server` header and any
+  Cloudflare error code — without the address. `history` and `utxos`
   additionally return the pages they did get, marked INCOMPLETE, instead of
   losing them.
 
