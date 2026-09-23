@@ -265,6 +265,99 @@ def test_prepare_translates_generic_thorchain_error_into_abort():
         prepare(thor=thor)
 
 
+def test_prepare_explains_mayas_wording_of_a_tolerance_rejection():
+    # Maya refuses the identical condition from its tx-out manager, in words
+    # of its own: `(emitted/limit)` in 1e8 units of the output asset. Observed
+    # live 2026-08-16 on a CACAO->ETH swap at the 300 bps default.
+    thor = _RaisingThor(
+        "failed to simulate swap: internal error\n"
+        "* outbound amount does not meet requirements (2323009/2326360)",
+        path_prefix="mayachain",
+    )
+    with pytest.raises(SwapAborted) as exc:
+        prepare(thor=thor)
+    msg = str(exc.value)
+    assert msg.startswith("Maya rejected the quote")
+    assert "--tolerance-bps" in msg
+    # limit = feeless * (10000 - 300) / 10000, so clearing this quote takes
+    # ceil(10000 - 9700 * 2323009 / 2326360) = 314 bps.
+    assert "314" in msg
+
+
+def test_prepare_names_the_tolerance_that_clears_a_thorchain_rejection():
+    thor = _RaisingThor(
+        "failed to simulate swap: emit asset 2425906900 less than price "
+        "limit 2707570991: invalid request"
+    )
+    with pytest.raises(SwapAborted) as exc:
+        prepare(thor=thor)
+    msg = str(exc.value)
+    assert msg.startswith("THORChain rejected the quote")
+    # ceil(10000 - 9700 * 2425906900 / 2707570991) = 1310
+    assert "1310" in msg
+
+
+def test_prepare_names_maya_for_an_unrelated_maya_rejection():
+    thor = _RaisingThor("pool suspended", path_prefix="mayachain")
+    with pytest.raises(SwapAborted) as exc:
+        prepare(thor=thor)
+    assert str(exc.value) == "Maya rejected the quote: pool suspended"
+
+
+def test_prepare_does_not_read_any_number_pair_as_slippage():
+    # Only the tolerance wordings are explained; a bare `(a/b)` elsewhere in
+    # an unrelated failure must not be dressed up as a slippage rejection.
+    thor = _RaisingThor(
+        "failed to simulate swap: internal error\n* fail to prepare (12/34)",
+        path_prefix="mayachain",
+    )
+    with pytest.raises(SwapAborted) as exc:
+        prepare(thor=thor)
+    assert "tolerance" not in str(exc.value)
+
+
+def _maya_abort(call):
+    with pytest.raises(SwapAborted) as exc:
+        call()
+    msg = str(exc.value)
+    assert "Maya" in msg
+    assert "THORChain" not in msg
+    return msg
+
+
+def test_prepare_names_maya_when_the_chain_is_not_tradable():
+    _maya_abort(lambda: prepare(thor=FakeThor(tradable=False, path_prefix="mayachain")))
+
+
+def test_prepare_names_maya_when_the_quote_has_no_memo():
+    thor = FakeThor(quote=make_quote(memo=None), path_prefix="mayachain")
+    _maya_abort(lambda: prepare(thor=thor))
+
+
+def test_prepare_liquidity_names_maya_when_the_chain_is_not_tradable():
+    _maya_abort(
+        lambda: prepare_liquidity(
+            thorchain=FakeThor(tradable=False, path_prefix="mayachain"),
+            adapter=FakeAdapter(),
+            memo="+:BTC.BTC",
+            amount=1,
+            now=0,
+        )
+    )
+
+
+def test_prepare_liquidity_names_maya_when_lp_is_paused():
+    _maya_abort(
+        lambda: prepare_liquidity(
+            thorchain=FakeThor(mimir={"PAUSELP": 1}, path_prefix="mayachain"),
+            adapter=FakeAdapter(),
+            memo="+:BTC.BTC",
+            amount=50000,
+            now=0,
+        )
+    )
+
+
 def test_prepare_aborts_when_quote_omits_inbound_address():
     # parse_quote tolerates a missing inbound_address (native quotes have
     # none), but for an external-chain source an empty vault must abort loudly

@@ -106,13 +106,14 @@ side. That is the one thing symmetric buys over a single-sided add, and it is
 now demonstrated rather than asserted.
 
 **Query it by the CACAO address.** The same lookup keyed by the *asset* address
-returns a zeros stub — the cause of the `balance` bug in `docs/TODO.md`'s
-*Known bugs*, which is why this position does not appear in `swapsack balance`.
+returns a zeros stub — the cause of a `balance` bug (since fixed, see
+`CHANGELOG.md`), which is why this position did not appear in `swapsack
+balance`.
 
 ## 3. Two quote rejections worth keeping
 
-Both are correct protocol behaviour, both were opaque on screen, and both are
-the observed cases behind *Known bugs* entries in `docs/TODO.md`. Neither
+Both are correct protocol behaviour, both were opaque on screen, and both were
+the observed cases behind bugs since fixed (see `CHANGELOG.md`). Neither
 produced a transaction — they were refused before anything was built.
 
 `swap --from CACAO --to ETH --amount 10` →
@@ -124,11 +125,13 @@ floor to **4.31 CACAO**, because the ARB outbound fee is 6459 against ETH's
 
 `swap --from CACAO --to ETH --amount 400` →
 `outbound amount does not meet requirements (2323009/2326360)`. The pair is
-`emitted/limit` in 1e8. The swap's real cost was **303 bps** against the 300 bps
-default tolerance — rejected by three basis points. Confirmed against the live
-quote API that `expected_amount_out` is identical at 300/400/500/1000 bps:
-tolerance sets only the memo's min-out limit, never the price obtained, so
-raising it costs nothing.
+`emitted/limit` in 1e8. Maya sets the limit at `feeless × (10000 − tolerance)
+/ 10000`, so the swap's real cost was about **314 bps** against the 300 bps
+default tolerance — rejected by some fourteen basis points. (An earlier
+version of this note said 303; the pair and Maya's formula say 314.) Confirmed
+against the live quote API that `expected_amount_out` is identical at
+300/400/500/1000 bps: tolerance sets only the memo's min-out limit, never the
+price obtained, so raising it costs nothing.
 
 ## Why the rehearsal advice was wrong
 
@@ -144,5 +147,5 @@ wrong version was committed and acted on.
 
 Every defect this session surfaced was in *reporting*, not in a money path — the
 transactions were all correct and the tool described them wrongly. See
-`docs/TODO.md` *Known bugs* for the diagnoses. This is the standing reason to
+`CHANGELOG.md` for the fixes. This is the standing reason to
 verify against the chain rather than trusting `swapsack`'s own output.
