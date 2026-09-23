@@ -388,6 +388,24 @@ def test_who_refused_is_named_without_echoing_the_page(no_sleep):
     assert len(message) < 200
 
 
+def test_the_code_is_found_on_cloudflares_own_error_page(no_sleep):
+    # Cloudflare's HTML refusal puts the number in its own span, after a <head>
+    # of several KB of inline CSS. Reconstructed from its cf-error-details
+    # template, not a captured page: none was at hand offline.
+    head = "<head><style>" + "body{margin:0}" * 700 + "</style></head>"
+    page = (
+        f'<!DOCTYPE html><html>{head}<body><div id="cf-wrapper">'
+        '<h1><span class="cf-error-type" data-translate="error">Error</span>\n'
+        '<span class="cf-error-code">1015</span></h1>'
+        "<h2>You are being rate limited</h2></div></body></html>"
+    )
+    refusal = FakeResponse(429, page, Server="cloudflare")
+    client, _ = _failover(*[refusal] * 20, retries=1)
+    with pytest.raises(RateLimited) as exc:
+        client._get_with_fallback("address/bc1qsecretaddress")
+    assert "error code 1015" in str(exc.value)
+
+
 def test_rate_limited_is_caught_wherever_a_transport_failure_is(no_sleep):
     # Every call site already catches HTTP_ERRORS, and the walkers that degrade
     # to INCOMPLETE catch HostUnreachable specifically.

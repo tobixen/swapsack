@@ -118,8 +118,12 @@ def _describe(
 
 
 # Cloudflare's own refusals carry a numbered error — "error code: 1015" as plain
-# text, "Error code 1015" on its HTML page — and the number names the rule.
-_CF_ERROR_CODE = re.compile(r"error code:?\s*(\d{4})\b", re.IGNORECASE)
+# text, <span class="cf-error-code">1015</span> on its HTML page, which comes
+# after several KB of inline CSS — and the number names the rule.
+_CF_ERROR_CODE = re.compile(
+    r'(?:error code:?\s*|cf-error-code">)(\d{4})\b', re.IGNORECASE
+)
+_CF_SCAN_BYTES = 64 * 1024
 
 
 def _refused_by(resp: object) -> str:
@@ -137,7 +141,9 @@ def _refused_by(resp: object) -> str:
     if name:
         parts.append(f"from {name}")
     body = getattr(resp, "text", None)
-    match = _CF_ERROR_CODE.search(body[:4096]) if isinstance(body, str) else None
+    match = (
+        _CF_ERROR_CODE.search(body[:_CF_SCAN_BYTES]) if isinstance(body, str) else None
+    )
     if match:
         parts.append(f"error code {match.group(1)}")
     return ", ".join(parts)
