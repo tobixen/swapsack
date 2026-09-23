@@ -25,12 +25,13 @@ new money path and maintenance surface. Honest reasons to add one anyway:
    separately), LiFi/Kyberswap **99.71** (plus ~$0.10 gas).
 2. **Assets neither protocol lists** — SOL and DOT exist on Chainflip; nothing
    on THORChain/Maya serves them.
-3. **Resilience.** `thornode.thorchain.network` (our default) had a DNS outage
-   while this note was written, and went dark to DNS entirely on 2026-07-12
-   — `ThorchainClient` now takes an ordered list of nodes and falls through
-   on connection failure (see `thorchain.DEFAULT_BASE_URLS`), rather than a
-   single hardcoded default. `--backend auto` across *independent* protocols
-   also hedges against one protocol's infra/halt days.
+3. **Resilience.** `thornode.thorchain.network` (then our default, a Nine
+   Realms host) had a DNS outage while this note was written, and went dark
+   to DNS for good on 2026-07-12 when Nine Realms wound down; it has since
+   been removed. `ThorchainClient` takes an ordered list of nodes and falls
+   through on connection failure (see `thorchain.DEFAULT_BASE_URLS`), rather
+   than a single hardcoded default. `--backend auto` across *independent*
+   protocols also hedges against one protocol's infra/halt days.
 
 ## What a backend must provide (current abstraction)
 
