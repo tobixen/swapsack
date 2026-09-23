@@ -12,6 +12,8 @@ copy per source chain; see A4 in docs/core-review.md.
 from __future__ import annotations
 
 import dataclasses
+import math
+import re
 from typing import Protocol
 
 # DEFAULT_TOLERANCE_BPS lives in thorchain (re-exported here for callers like
@@ -30,25 +32,56 @@ class SwapAborted(RuntimeError):
     """Raised when a swap must not proceed (halted chain, too small, unsafe tx)."""
 
 
-def _explain_quote_error(exc: ThorchainError, tolerance_bps: int) -> str:
-    """Turn a raw THORChain quote rejection into an actionable abort message.
+# The two wordings of one refusal: the swap's emit, after fees, fell below the
+# limit the quote derived from ``tolerance_bps``. THORChain phrases it at the
+# swap; Maya at its tx-out manager, whose string its own source marks as not to
+# be changed. Both carry the emitted amount and the limit, in that order.
+_TOLERANCE_REJECTIONS = (
+    re.compile(r"emit asset (\d+) less than price limit (\d+)"),
+    re.compile(r"outbound amount does not meet requirements \((\d+)/(\d+)\)"),
+)
 
-    The common, confusing case is ``emit asset ... less than price limit ...``:
-    THORChain derives the price limit from ``tolerance_bps`` off the spot price,
-    so when the swap's fees/slippage exceed the tolerance the emitted amount
-    falls below the limit and the quote is refused. Small swaps trip this easily
-    because fixed outbound fees dominate them.
+_NETWORK_NAMES = {"thorchain": "THORChain", "mayachain": "Maya"}
+
+
+def _network_name(thorchain: object) -> str:
+    """The network a client talks to, for user-facing messages."""
+    prefix = getattr(thorchain, "path_prefix", "thorchain")
+    return _NETWORK_NAMES.get(prefix, prefix)
+
+
+def _explain_quote_error(
+    exc: ThorchainError, tolerance_bps: int, network: str = "THORChain"
+) -> str:
+    """Turn a raw THORChain/Maya quote rejection into an actionable abort message.
+
+    The common, confusing case is the swap's emit falling below its price limit:
+    the quote derives that limit as ``feeless_emit * (10000 - tolerance_bps) /
+    10000``, so when fees and slippage exceed the tolerance the quote is
+    refused. Small swaps trip this easily because fixed outbound fees dominate
+    them. The rejection carries the emit and the limit, which is enough to
+    name the tolerance that would have cleared this particular quote.
     """
     msg = str(exc)
-    if "price limit" in msg:
+    for pattern in _TOLERANCE_REJECTIONS:
+        if (found := pattern.search(msg)) is None:
+            continue
+        emitted, limit = (int(n) for n in found.groups())
+        needed = ""
+        if limit:
+            bps = math.ceil(10000 - (10000 - tolerance_bps) * emitted / limit)
+            needed = (
+                f" This quote needed about --tolerance-bps {bps}; prices move, "
+                f"so leave some margin above that."
+            )
         return (
-            f"THORChain rejected the quote: the swap's fees and slippage exceed "
+            f"{network} rejected the quote: the swap's fees and slippage exceed "
             f"your {tolerance_bps / 100:.2f}% tolerance. Send a larger amount "
             f"(fixed outbound fees dominate small swaps), spread it over blocks "
-            f"with --stream-interval to cut slippage, or raise --tolerance-bps. "
-            f"[{msg}]"
+            f"with --stream-interval to cut slippage, or raise --tolerance-bps."
+            f"{needed} [{msg}]"
         )
-    return f"THORChain rejected the quote: {msg}"
+    return f"{network} rejected the quote: {msg}"
 
 
 class BroadcastError(RuntimeError):
@@ -199,7 +232,8 @@ def prepare_swap(
     else:
         status = thorchain.inbound_addresses().get(adapter.chain)
         if status is None or not status.tradable:
-            raise SwapAborted(f"{adapter.chain} is not currently tradable on THORChain")
+            network = _network_name(thorchain)
+            raise SwapAborted(f"{adapter.chain} is not currently tradable on {network}")
 
     try:
         # Streaming drops tolerance_bps (LIM=0) — the same shared rule backend
@@ -214,14 +248,18 @@ def prepare_swap(
             tolerance_bps=effective_tolerance_bps(tolerance_bps, streaming_interval),
         )
     except ThorchainError as exc:
-        raise SwapAborted(_explain_quote_error(exc, tolerance_bps)) from exc
+        raise SwapAborted(
+            _explain_quote_error(exc, tolerance_bps, _network_name(thorchain))
+        ) from exc
     if request.amount < quote.recommended_min_amount_in:
         raise SwapAborted(
             f"amount {request.amount} is below the recommended minimum "
             f"{quote.recommended_min_amount_in}; swap would be uneconomical"
         )
     if not quote.memo:
-        raise SwapAborted("THORChain quote returned no memo (missing destination?)")
+        raise SwapAborted(
+            f"{_network_name(thorchain)} quote returned no memo (missing destination?)"
+        )
     # parse_quote tolerates a missing inbound_address because native (RUNE/
     # CACAO) quotes legitimately have none — but an external-chain source pays
     # *to* that vault, so an empty one (degraded/malformed node response) must
@@ -261,7 +299,9 @@ def prepare_liquidity(
     """
     status = thorchain.inbound_addresses().get(adapter.chain)
     if status is None or not status.tradable:
-        raise SwapAborted(f"{adapter.chain} is not currently tradable on THORChain")
+        raise SwapAborted(
+            f"{adapter.chain} is not currently tradable on {_network_name(thorchain)}"
+        )
     if not status.address:
         raise SwapAborted(f"no inbound vault address for {adapter.chain}")
     # An add-liquidity deposit (memo "+:POOL") is refunded minus gas while LP is
@@ -271,7 +311,8 @@ def prepare_liquidity(
         reason = lp_deposit_pause_reason(thorchain.mimir(), pool)
         if reason:
             raise SwapAborted(
-                f"THORChain has LP deposits paused (mimir {reason}); an add would "
+                f"{_network_name(thorchain)} has LP deposits paused (mimir {reason}); "
+                f"an add would "
                 f"be observed and then refunded minus gas. Not broadcasting."
             )
     # A withdraw (amount=None) triggers with a nominal deposit of the chain's

@@ -53,12 +53,6 @@ code it needs, with what each one is actually worth stated next to it.
    but see *Other known gaps* — a bare `.lower()` would wrongly start accepting
    mixed case, which BIP-173 forbids.
 
-If you want cheap **fixes** rather than cheap **features**, the entry
-under *Known bugs* is smaller than item 1 and already diagnosed down to the
-fix, with the real API response captured — and it currently tells you
-something false about your own money, which is why it sits above the feature
-work.
-
 ## Next up (priority order)
 
 Owner's requested goal (2026-08-16): **two-sided liquidity for `ETH.USDC` and
@@ -137,51 +131,6 @@ has never broadcast on Arbitrum, which is item 1.
      that — derive, but warn loudly that funds land somewhere only another
      wallet can spend. (**ARB no longer belongs here**: it is spendable now, so
      it is simply a `_DESTINATION_DERIVERS` entry with no warning needed.)
-
-## Known bugs (found, diagnosed, not yet fixed)
-
-Four surfaced during a real 2026-08-16 session
-(`docs/live-session-2026-08-16.md`); **the two `balance` ones and the `status`
-one are fixed** (see `CHANGELOG.md`), and the one below remains. It does not
-risk funds — it is a *reporting* defect over a money path that was correct —
-but it tells the user something false about their money, which is why it sits
-above the feature work rather than in *Other known gaps*.
-
-(A third, found 2026-08-17 while explaining those: `withdraw-liquidity` could
-not exit a symmetric position at all. That one is **fixed** — the trigger now
-goes out from the CACAO side. See `docs/liquidity-symmetric.md`.)
-
-### A tolerance rejection is only explained when **THORChain** phrases it
-
-`_explain_quote_error` (`swap.py:43`) turns the "your swap costs more than your
-slippage tolerance" rejection into an actionable message — send more, stream it,
-or raise `--tolerance-bps`. It fires on `if "price limit" in msg`, which is
-THORChain's wording. **Maya words the identical condition differently**, so on
-`--backend maya` the user gets the raw node error and no guidance:
-
-```
-* outbound amount does not meet requirements (2323009/2326360)
-```
-
-The two numbers are `emitted/limit` in 1e8 — everything needed to say *how far
-short* the user is, which the current message could not say even if it fired.
-
-Observed 2026-08-16: `swap --from CACAO --to ETH --amount 400 --backend maya`
-refused at the 300 bps default. The swap's real cost was **303 bps** — rejected
-by three basis points, with nothing on screen to suggest that `--tolerance-bps
-400` was the entire fix. (Confirmed against the live quote API: identical
-`expected_amount_out` at 300/400/500/1000 bps; tolerance only sets the memo's
-min-out limit, never the price obtained.)
-
-**Fix**: match Maya's phrasing as well as THORChain's, and parse the
-`(emitted/limit)` pair to name the shortfall and the tolerance that would clear
-it. Do not match on the numbers alone — an `internal error` line accompanies it,
-and the wrapper must not start explaining unrelated failures as slippage.
-
-Second, smaller defect in the same string: the message is hardcoded
-`"THORChain rejected the quote"` regardless of backend, so a Maya rejection is
-attributed to THORChain. That is what the user sees while explicitly passing
-`--backend maya`.
 
 ## Symmetric liquidity — the standing risk notes
 
@@ -623,6 +572,14 @@ and released.
 
 ## Other known gaps
 
+- **With `--backend auto`, a slippage refusal is not explained.**
+  `gather_quotes` (`backends.py`) swallows each backend's `ThorchainError`, so
+  when every backend refuses, the default path ends in "no swap backend can
+  serve this pair/amount" and says nothing about `--tolerance-bps`. The
+  explanation in `swap.py::_explain_quote_error` only runs once one backend is
+  chosen: an explicit `--backend`, or a native RUNE/CACAO source. Fix: carry
+  each backend's refusal out of `gather_quotes` and let `_select_backend`
+  explain it when nothing could serve the swap.
 - **The address checksum guard can now over-reject, which is the worse
   failure.** `validate_destination_address` verifies base58check / bech32 /
   bech32m / cashaddr / EIP-55 as well as the shape. It is fail-open where no

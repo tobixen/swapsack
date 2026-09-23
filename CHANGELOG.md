@@ -107,6 +107,15 @@ automatically from git tags (PEP 440 / SemVer).
   `--backend auto` printed the *other* protocol's empty answer instead. It
   now asks whether the node returned the transaction at all.
 
+- **A swap Maya refuses for slippage is now explained.** When a swap's fees
+  and slippage exceed `--tolerance-bps`, THORChain's refusal came with advice
+  (send more, stream it, or raise the tolerance), but Maya's differently
+  worded refusal came through as a raw node error. Both are explained now when
+  you pick the backend with `--backend` (with the default `auto`, a refusal
+  still reads "no swap backend can serve this pair/amount"), and the message
+  names the tolerance that would have cleared that quote. Maya's refusals and
+  halts are also no longer attributed to THORChain.
+
 - **A rate-limited explorer no longer kills the run.** A public Esplora
   instance answers a busy wallet with `429 Too Many Requests` — and it took
   only a plain `swap` to draw one. That was a hard error: the run died with
