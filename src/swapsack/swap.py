@@ -50,6 +50,32 @@ def _network_name(thorchain: object) -> str:
     return _NETWORK_NAMES.get(prefix, prefix)
 
 
+def _require_tradable(thorchain: ThorchainLike, chain: str) -> ChainStatus:
+    """Return ``chain``'s inbound status, or abort naming the network and why.
+
+    The flags are the ones ``inbound_addresses`` reports; a global halt (Maya's
+    ``HALTCHAINGLOBAL``) shows up there as every chain halted at once.
+    """
+    network = _network_name(thorchain)
+    status = thorchain.inbound_addresses().get(chain)
+    if status is None:
+        raise SwapAborted(f"{chain} is not listed by {network}'s inbound addresses")
+    if not status.tradable:
+        flags = [
+            label
+            for label, set_ in (
+                ("chain halted", status.halted),
+                ("global trading paused", status.global_trading_paused),
+                ("chain trading paused", status.chain_trading_paused),
+            )
+            if set_
+        ]
+        raise SwapAborted(
+            f"{chain} is not currently tradable on {network} ({', '.join(flags)})"
+        )
+    return status
+
+
 def _explain_quote_error(
     exc: ThorchainError, tolerance_bps: int, network: str = "THORChain"
 ) -> str:
@@ -230,10 +256,7 @@ def prepare_swap(
                 f"{adapter.chain} itself — use the {adapter.chain}-native backend"
             )
     else:
-        status = thorchain.inbound_addresses().get(adapter.chain)
-        if status is None or not status.tradable:
-            network = _network_name(thorchain)
-            raise SwapAborted(f"{adapter.chain} is not currently tradable on {network}")
+        _require_tradable(thorchain, adapter.chain)
 
     try:
         # Streaming drops tolerance_bps (LIM=0) — the same shared rule backend
@@ -297,11 +320,7 @@ def prepare_liquidity(
     are simple and unit-tested, and LP is opt-in experimental. Treat the vault
     as trusted only as far as you trust the configured THORNode.
     """
-    status = thorchain.inbound_addresses().get(adapter.chain)
-    if status is None or not status.tradable:
-        raise SwapAborted(
-            f"{adapter.chain} is not currently tradable on {_network_name(thorchain)}"
-        )
+    status = _require_tradable(thorchain, adapter.chain)
     if not status.address:
         raise SwapAborted(f"no inbound vault address for {adapter.chain}")
     # An add-liquidity deposit (memo "+:POOL") is refunded minus gas while LP is
@@ -438,12 +457,11 @@ def prepare_symmetric_liquidity(
     reason = lp_deposit_pause_reason(thorchain.mimir(), pool)
     if reason:
         raise SwapAborted(
-            f"LP deposits are paused (mimir {reason}); a symmetric add would be "
-            f"observed and then refunded minus gas on both legs. Not broadcasting."
+            f"{_network_name(thorchain)} has LP deposits paused (mimir {reason}); "
+            f"a symmetric add would be observed and then refunded minus gas on "
+            f"both legs. Not broadcasting."
         )
-    status = thorchain.inbound_addresses().get(asset_adapter.chain)
-    if status is None or not status.tradable:
-        raise SwapAborted(f"{asset_adapter.chain} is not currently tradable")
+    status = _require_tradable(thorchain, asset_adapter.chain)
     if not status.address:
         raise SwapAborted(f"no inbound vault address for {asset_adapter.chain}")
 

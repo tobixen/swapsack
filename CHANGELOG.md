@@ -114,7 +114,8 @@ automatically from git tags (PEP 440 / SemVer).
   you pick the backend with `--backend` (with the default `auto`, a refusal
   still reads "no swap backend can serve this pair/amount"), and the message
   names the tolerance that would have cleared that quote. Maya's refusals and
-  halts are also no longer attributed to THORChain.
+  halts are also no longer attributed to THORChain, and a refusal over a halt
+  now says why: the chain is halted, or its trading is paused.
 
 - **A rate-limited explorer no longer kills the run.** A public Esplora
   instance answers a busy wallet with `429 Too Many Requests` — and it took
