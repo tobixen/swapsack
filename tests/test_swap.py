@@ -5,6 +5,7 @@ chain-agnostic flow; the real build+verify integration lives in the per-chain
 adapter tests.
 """
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
@@ -76,8 +77,10 @@ class FakeThor:
         dust_threshold=1000,
         path_prefix="thorchain",
         pool_depth=None,
+        status=None,
     ):
         self._quote = quote or make_quote()
+        self._status = status
         self._tradable = tradable
         self._chain = chain
         self._mimir = mimir or {}
@@ -86,6 +89,8 @@ class FakeThor:
         self._pool_depth = pool_depth
 
     def inbound_addresses(self):
+        if self._status is not None:
+            return {self._status.chain: self._status}
         return {self._chain: make_status(self._chain, self._tradable, self._dust)}
 
     def quote_swap(self, *args, **kwargs):
@@ -683,9 +688,57 @@ def test_symmetric_gates_the_protocol_leg_against_the_lp_pause():
     assert protocol_adapter.built is None
 
 
+def test_symmetric_lp_pause_names_the_network():
+    thor = FakeThor(chain="ETH", mimir={"PAUSELP": 1}, path_prefix="mayachain")
+    with pytest.raises(SwapAborted, match="^Maya has LP deposits paused"):
+        make_symmetric(thor=thor)
+
+
 def test_symmetric_aborts_when_the_asset_chain_is_halted():
     with pytest.raises(SwapAborted):
         make_symmetric(thor=FakeThor(chain="ETH", tradable=False))
+
+
+def _maya_global_halt(chain):
+    # What Maya's inbound_addresses showed under HALTCHAINGLOBAL=1 on
+    # 2026-09-24: every chain halted and trading-paused, global flag absent.
+    return dataclasses.replace(
+        make_status(chain), halted=True, chain_trading_paused=True
+    )
+
+
+_HALT_GATES = {
+    "swap": lambda thor: prepare(thor=thor, adapter=FakeAdapter(chain="ARB")),
+    "liquidity": lambda thor: prepare_liquidity(
+        thorchain=thor,
+        adapter=FakeAdapter(chain="ARB"),
+        memo="+:ARB.ETH",
+        amount=1,
+        now=0,
+    ),
+    "symmetric": lambda thor: make_symmetric(thor=thor),
+}
+
+
+@pytest.mark.parametrize("gate", sorted(_HALT_GATES))
+def test_halt_abort_names_the_backend_and_the_flags(gate):
+    # A Maya halt used to be reported as "not currently tradable on THORChain",
+    # sending the user to check the wrong network, with no hint of why.
+    chain = "ETH" if gate == "symmetric" else "ARB"
+    thor = FakeThor(path_prefix="mayachain", status=_maya_global_halt(chain))
+    with pytest.raises(SwapAborted) as err:
+        _HALT_GATES[gate](thor)
+    msg = str(err.value)
+    assert f"{chain} is not currently tradable on Maya" in msg
+    assert "THORChain" not in msg
+    assert "chain halted" in msg and "chain trading paused" in msg
+
+
+@pytest.mark.parametrize("gate", sorted(_HALT_GATES))
+def test_unlisted_chain_abort_says_it_is_unlisted(gate):
+    thor = FakeThor(path_prefix="mayachain", chain="NOPE")
+    with pytest.raises(SwapAborted, match="not listed by Maya"):
+        _HALT_GATES[gate](thor)
 
 
 def test_symmetric_aborts_when_protocol_balance_is_short():
