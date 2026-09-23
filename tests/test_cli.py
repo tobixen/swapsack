@@ -5403,6 +5403,63 @@ def test_status_names_thorchain_on_a_memo_op_return_line(
     assert "thorchain" in op_return[0].lower() or "maya" in op_return[0].lower()
 
 
+@pytest.mark.parametrize("backend", ["thorchain", "maya"])
+def test_status_reports_a_completed_swap_as_observed(
+    monkeypatch, capsys, no_onchain_btc, no_chainflip, backend
+):
+    """Once inbound observation completes, the node drops `started` from the
+    stage. Keying on that flag reported every finished swap as "not observed".
+
+    The fixture is modelled on these live `/tx/status/{hash}` captures:
+
+    - unknown hash, either node: top-level keys `stages` only, and
+      `{"started": false, "final_count": 0, "completed": false}`
+    - completed, THORChain 2026-08-16: has `tx`, and
+      `{"final_count": 93, "completed": true}`
+    - completed, Maya 2026-09-23: keys `out_txs`, `planned_out_txs`,
+      `stages`, `tx`, and `{"final_count": 0, "completed": true}`
+    """
+    completed = {
+        "tx": {"id": "AB" * 32, "memo": "=:ETH.ETH:0xabc"},
+        "planned_out_txs": [],
+        "out_txs": [],
+        "stages": {"inbound_observed": {"final_count": 93, "completed": True}},
+    }
+    monkeypatch.setattr(
+        "swapsack.backends.get_backend", lambda name: _StubBackend(name, completed)
+    )
+    args = build_parser().parse_args(["status", "ab" * 32, "--backend", backend])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert f"backend: {backend}" in captured.out
+    assert "not observed" not in (captured.out + captured.err).lower()
+
+
+def test_status_auto_stops_at_the_backend_that_completed_the_swap(
+    monkeypatch, capsys, no_onchain_btc, no_chainflip
+):
+    """With `--backend auto`, a completed THORChain swap used to read as
+    unobserved, so `status` fell through and printed Maya's empty body."""
+    completed = {
+        "tx": {"id": "AB" * 32, "memo": "=:ETH.ETH:0xabc"},
+        "stages": {"inbound_observed": {"final_count": 93, "completed": True}},
+    }
+    monkeypatch.setattr(
+        "swapsack.backends.default_backends",
+        lambda: [
+            _StubBackend("thorchain", completed),
+            _StubBackend("maya", NOT_OBSERVED),
+        ],
+    )
+    args = build_parser().parse_args(["status", "ab" * 32])
+    assert cli.cmd_status(args) == 0
+    captured = capsys.readouterr()
+    assert "backend: thorchain" in captured.out
+    assert "backend: maya" not in captured.out
+    assert '"started": false' not in captured.out
+    assert "not observed" not in (captured.out + captured.err).lower()
+
+
 def test_status_names_the_backend_even_when_only_one_was_asked(
     monkeypatch, capsys, no_onchain_btc, no_chainflip
 ):

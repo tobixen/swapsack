@@ -101,6 +101,12 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Fixed
 
+- **`status` no longer reports a finished swap as "not observed".** It read
+  "observed" off a stage flag that THORChain and Maya both stop sending once
+  the stage completes — so it worked mid-flight and broke on success, and with
+  `--backend auto` printed the *other* protocol's empty answer instead. It
+  now asks whether the node returned the transaction at all.
+
 - **A rate-limited explorer no longer kills the run.** A public Esplora
   instance answers a busy wallet with `429 Too Many Requests` — and it took
   only a plain `swap` to draw one. That was a hard error: the run died with
