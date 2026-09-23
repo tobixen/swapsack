@@ -53,10 +53,10 @@ code it needs, with what each one is actually worth stated next to it.
    but see *Other known gaps* — a bare `.lower()` would wrongly start accepting
    mixed case, which BIP-173 forbids.
 
-If you want cheap **fixes** rather than cheap **features**, the two entries
-under *Known bugs* are both smaller than item 1 and both already diagnosed down
-to the fix, with the real API responses captured — and each currently tells you
-something false about your own money, which is why they sit above the feature
+If you want cheap **fixes** rather than cheap **features**, the entry
+under *Known bugs* is smaller than item 1 and already diagnosed down to the
+fix, with the real API response captured — and it currently tells you
+something false about your own money, which is why it sits above the feature
 work.
 
 ## Next up (priority order)
@@ -141,51 +141,15 @@ has never broadcast on Arbitrum, which is item 1.
 ## Known bugs (found, diagnosed, not yet fixed)
 
 Four surfaced during a real 2026-08-16 session
-(`docs/live-session-2026-08-16.md`); **the two `balance` ones are fixed** (see
-`CHANGELOG.md`), and the two below remain. Neither risks funds — both are
-*reporting* defects over a money path that was correct — but each tells the user
-something false about their money, which is why they sit above the feature work
-rather than in *Other known gaps*.
+(`docs/live-session-2026-08-16.md`); **the two `balance` ones and the `status`
+one are fixed** (see `CHANGELOG.md`), and the one below remains. It does not
+risk funds — it is a *reporting* defect over a money path that was correct —
+but it tells the user something false about their money, which is why it sits
+above the feature work rather than in *Other known gaps*.
 
 (A third, found 2026-08-17 while explaining those: `withdraw-liquidity` could
 not exit a symmetric position at all. That one is **fixed** — the trigger now
 goes out from the CACAO side. See `docs/liquidity-symmetric.md`.)
-
-### `status` reports a **completed** swap as "not observed"
-
-`cli.py:2466` decides whether a backend saw the tx with:
-
-```python
-observed = status.get("stages", {}).get("inbound_observed", {}).get("started")
-```
-
-Thornode does not serialise `started` once the stage is done. Verified against
-the live API (`/thorchain/tx/status/{hash}`) on 2026-08-16:
-
-| hash | `stages.inbound_observed` |
-|---|---|
-| unknown | `{"started": false, "final_count": 0, "completed": false}` |
-| observed + completed | `{"final_count": 93, "completed": true}` — **no `started`** |
-
-So `.get("started")` is falsy in *both* cases, and the check fails exactly when
-the answer is "yes, fully observed". The polarity is the worst available one:
-`status` works while a swap is mid-flight and breaks once it succeeds, telling
-the user their finished swap vanished.
-
-With the default `--backend auto` it then falls through to the next backend and
-prints *that* one's empty body — so a completed THORChain swap is reported using
-Maya's answer, and Maya has never heard of the hash (TRON is THORChain-only).
-The observed case: a TRX→ETH swap that had completed in 41 seconds still read as
-"not observed" minutes later.
-
-**Fix**: thornode returns a `tx` object only for hashes it knows — unknown hash
-gives top-level keys `['stages']`, a known one gives
-`['out_txs', 'planned_out_txs', 'stages', 'tx']`. Key the "this backend saw it"
-decision off that instead of a stage flag whose absence is meaningful. Broadening
-the stage test (`started or completed or final_count > 0`) also works but keeps
-depending on which flags a given thornode version happens to emit — and Maya, an
-older fork, still emits `started`, so the two node families must both be handled.
-Worth a regression test built on both real response shapes, captured above.
 
 ### A tolerance rejection is only explained when **THORChain** phrases it
 

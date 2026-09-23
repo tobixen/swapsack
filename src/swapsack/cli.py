@@ -3691,8 +3691,12 @@ def cmd_status(args: argparse.Namespace) -> int:
                 status = thor.tx_status(args.txid)
         except HTTP_ERRORS:
             continue
-        observed = status.get("stages", {}).get("inbound_observed", {}).get("started")
-        if observed:
+        # A node returns `tx` only for a hash it knows. The stage's `started`
+        # flag is not a substitute: both THORChain and Maya drop it once the
+        # stage completes, so it is absent exactly when the answer is "yes".
+        # It stays as a fallback for a mid-flight body that carries it.
+        stage = status.get("stages", {}).get("inbound_observed", {})
+        if "tx" in status or stage.get("started"):
             # On stdout, and whether or not more than one backend was asked:
             # which protocol settled a swap is part of the answer, not a
             # diagnostic. It used to be stderr-only and suppressed for a single
