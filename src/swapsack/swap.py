@@ -87,6 +87,11 @@ def _explain_quote_error(
     refused. Small swaps trip this easily because fixed outbound fees dominate
     them. The rejection carries the emit and the limit, which is enough to
     name the tolerance that would have cleared this particular quote.
+
+    Checked in both sources: thornode derives the limit in
+    ``x/thorchain/querier_quotes.go`` and compares the emit, net of the
+    outbound fee, in ``swap_current.go`` (develop, 2026-09-24); mayanode does
+    the same.
     """
     msg = str(exc)
     for pattern in _TOLERANCE_REJECTIONS:
