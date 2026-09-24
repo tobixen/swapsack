@@ -572,6 +572,13 @@ and released.
 
 ## Other known gaps
 
+- **The Cloudflare error-code match is tested only against a reconstructed
+  page.** `net.py` finds the code in `<span class="cf-error-code">`, but the
+  fixture in `tests/test_net.py`
+  (`test_the_code_is_found_on_cloudflares_own_error_page`) is rebuilt from
+  Cloudflare's template, not captured. If a live 1015 page puts the number in a
+  bare span instead, the match silently finds nothing. Save the body of the next
+  real Cloudflare refusal and replace the fixture with it.
 - **With `--backend auto`, a slippage refusal is not explained.**
   `gather_quotes` (`backends.py`) swallows each backend's `ThorchainError`, so
   when every backend refuses, the default path ends in "no swap backend can
