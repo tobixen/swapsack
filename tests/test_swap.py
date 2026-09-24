@@ -286,7 +286,7 @@ def test_prepare_explains_mayas_wording_of_a_tolerance_rejection():
     assert "--tolerance-bps" in msg
     # limit = feeless * (10000 - 300) / 10000, so clearing this quote takes
     # ceil(10000 - 9700 * 2323009 / 2326360) = 314 bps.
-    assert "314" in msg
+    assert "--tolerance-bps 314;" in msg
 
 
 def test_prepare_names_the_tolerance_that_clears_a_thorchain_rejection():
@@ -299,7 +299,7 @@ def test_prepare_names_the_tolerance_that_clears_a_thorchain_rejection():
     msg = str(exc.value)
     assert msg.startswith("THORChain rejected the quote")
     # ceil(10000 - 9700 * 2425906900 / 2707570991) = 1310
-    assert "1310" in msg
+    assert "--tolerance-bps 1310;" in msg
 
 
 def test_prepare_names_maya_for_an_unrelated_maya_rejection():
