@@ -40,9 +40,27 @@ from swapsack.verify import (
 
 # THORChain/Maya share this derivation (SLIP-44 coin type 931, secp256k1).
 DEFAULT_DERIVATION = "m/44'/931'/0'/0/0"
+# Cosmos Hub is coin type 118 — the path Keplr and every other Cosmos wallet
+# use, so a seed imported there finds the same cosmos1 address. Same curve and
+# address hash as above; only the path and the HRP differ.
+GAIA_DERIVATION = "m/44'/118'/0'/0/0"
 # Gas limit for a native tx. THORChain-family chains charge a fixed native-tx fee
 # themselves (deducted from the account), so the cosmos Fee carries no coins.
 DEFAULT_GAS_LIMIT = 2_000_000
+
+
+def derive_keys(mnemonic: str, passphrase: str, path: str) -> tuple[bytes, bytes]:
+    """Return ``(private_byte, compressed_public_byte)`` for ``path``."""
+    seed = Mnemonic().to_seed(mnemonic, passphrase)
+    key = HDKey.from_seed(seed).key_for_path(path)
+    return key.private_byte, key.public_byte
+
+
+def derive_address(mnemonic: str, passphrase: str, hrp: str, path: str) -> str:
+    """The bech32 account address ``bech32(hrp, hash160(pubkey))`` at ``path``."""
+    _, pubkey = derive_keys(mnemonic, passphrase, path)
+    return bech32_encode(hrp, hash160(pubkey))
+
 
 # --- balance parsing --------------------------------------------------------
 
@@ -107,14 +125,11 @@ class CosmosAdapter(HttpClient):
 
     def _keys(self, mnemonic: str, path: str) -> tuple[bytes, bytes]:
         """Return ``(private_byte, compressed_public_byte)`` for ``path``."""
-        seed = Mnemonic().to_seed(mnemonic, self.bip39_passphrase)
-        key = HDKey.from_seed(seed).key_for_path(path)
-        return key.private_byte, key.public_byte
+        return derive_keys(mnemonic, self.bip39_passphrase, path)
 
     def derive_address(self, mnemonic: str, path: str = DEFAULT_DERIVATION) -> str:
         """Derive the bech32 account address for ``path`` (default receive key)."""
-        _, pubkey = self._keys(mnemonic, path)
-        return bech32_encode(self.hrp, hash160(pubkey))
+        return derive_address(mnemonic, self.bip39_passphrase, self.hrp, path)
 
     def fetch_balance(self, address: str) -> int:
         """Confirmed native balance in base units; 0 for a fresh account."""

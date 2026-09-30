@@ -517,6 +517,11 @@ def cmd_address(args: argparse.Namespace) -> int:
     print("ZEC: ", ZecAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("MAYA:", MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("THOR:", ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
+    print(
+        "ATOM:",
+        _derive_gaia(mnemonic, passphrase),
+        "(receive-only: swapsack cannot spend it)",
+    )
     return 0
 
 
@@ -850,6 +855,12 @@ def _derive_thor(mnemonic: str, passphrase: str) -> str:
     return ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
 
+def _derive_gaia(mnemonic: str, passphrase: str) -> str:
+    from swapsack.chains.cosmos import GAIA_DERIVATION, derive_address
+
+    return derive_address(mnemonic, passphrase, "cosmos", GAIA_DERIVATION)
+
+
 # The one source of truth for "which destination chains can we derive from the
 # seed": chain -> deriver. DERIVABLE_CHAINS (used by cmd_quote to decide whether
 # to decrypt the keystore) is the key set, so the tuple and the derivation
@@ -869,14 +880,15 @@ _DESTINATION_DERIVERS: dict[str, Callable[[str, str], str]] = {
     "ZEC": _derive_zec,
     "MAYA": _derive_maya,
     "THOR": _derive_thor,
+    # Cosmos Hub: no adapter, receive-only (see RECEIVE_ONLY_CHAINS).
+    "GAIA": _derive_gaia,
 }
 DERIVABLE_CHAINS = tuple(_DESTINATION_DERIVERS)
 # Chains we can receive on but not spend from (Phase 1 in their design notes,
 # mapped here) — auto-deriving a swap destination there parks the funds, so
-# warn loudly. (DASH graduated: send/sweep landed with Phase 2.)
-# Currently empty (DASH and ZEC both graduated with their send paths); the
-# mechanism stays for the next Phase-1 chain.
-RECEIVE_ONLY_CHAINS: dict[str, str] = {}
+# warn loudly. (DASH and ZEC graduated when their send paths landed.)
+# Value: where to read more.
+RECEIVE_ONLY_CHAINS: dict[str, str] = {"GAIA": "README.md (the ATOM row)"}
 
 
 def _derive_destination_address(
@@ -962,10 +974,19 @@ def _resolve_destination(
     # auto-derived --dest would pay an address the user cannot spend.
     chain = _derivable_chain(args.to_)
     if chain in RECEIVE_ONLY_CHAINS:
+        # With a passphrase, the seed alone opens a different, empty address —
+        # and not every wallet can take a passphrase at all.
+        recovery = (
+            "funds stay recoverable by importing the seed AND its BIP-39 "
+            "passphrase into another wallet that supports one — the seed "
+            "alone opens a different, empty address"
+            if passphrase
+            else "funds stay recoverable by importing the seed into another wallet"
+        )
         _warn(
-            f"the derived {chain} destination is receive-only:",
+            f"the derived {args.to_} destination is receive-only:",
             "this wallet cannot spend from it yet (no spend path implemented)",
-            "funds stay recoverable by importing the seed into another wallet",
+            recovery,
             f"see {RECEIVE_ONLY_CHAINS[chain]} — or pay an external --dest instead",
         )
     return _derive_destination_address(chain, mnemonic, passphrase)

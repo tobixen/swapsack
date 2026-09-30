@@ -45,10 +45,7 @@ code it needs, with what each one is actually worth stated next to it.
    BSC. **`BASE.ETH` held ~2.6 ETH on 2026-09-02**, which is too thin to swap
    against at any size; do BSC first and reuse whatever that teaches. Same
    bullet's neighbours in *Swap backends*.
-3. **ATOM auto-derived instead of `--dest`-only.** One `_DESTINATION_DERIVERS`
-   entry and one `RECEIVE_ONLY_CHAINS` entry — the seam exists and is empty.
-   See *Next up* item 3's second follow-up for why the warning is the point.
-4. **The three address forms the *shape* rules refuse** (uppercase bech32,
+3. **The three address forms the *shape* rules refuse** (uppercase bech32,
    uppercase cashaddr, BCH CashTokens `z…`). A `.lower()` in the right place,
    but see *Other known gaps* — a bare `.lower()` would wrongly start accepting
    mixed case, which BIP-173 forbids.
@@ -115,7 +112,7 @@ has never broadcast on Arbitrum, which is item 1.
    *rejected* by the invariant test in `test_addresses.py`, deliberately: every
    chain must name a checksum strategy or explicitly say it has none.
 
-   Two follow-ups this work exposed, neither blocking:
+   A follow-up this work exposed, not blocking:
    - **ADA is usually unreachable from a UTXO source.** The Shelley *base*
      address wallets hand out is 103 chars, so the memo exceeds the 80-byte
      OP_RETURN — see *N5* below, which this made live. Not a blanket rule: the
@@ -124,13 +121,6 @@ has never broadcast on Arbitrum, which is item 1.
      it read as "no route". Reaching ADA from BTC would need a THORName (a
      registered short alias resolving to the address) — worth considering as a
      general memo-length escape hatch, not just for ADA.
-   - **ATOM could be auto-derived rather than requiring `--dest`.** It is the
-     same Cosmos derivation as `thor1`/`maya1` with a different HRP, but is
-     deliberately `--dest`-only because the wallet cannot *spend* on Cosmos Hub;
-     `RECEIVE_ONLY_CHAINS` in `cli.py` is the existing (empty) seam for exactly
-     that — derive, but warn loudly that funds land somewhere only another
-     wallet can spend. (**ARB no longer belongs here**: it is spendable now, so
-     it is simply a `_DESTINATION_DERIVERS` entry with no warning needed.)
 
 ## Symmetric liquidity — the standing risk notes
 

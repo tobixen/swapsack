@@ -3488,6 +3488,74 @@ def test_avax_is_a_derivable_destination():
     assert "AVAX" not in cli.RECEIVE_ONLY_CHAINS
 
 
+# The standard BIP39 test mnemonic at m/44'/118'/0'/0/0 — bitcoinlib and
+# eth-account agree on the key, and it is the address cosmjs and Keplr print
+# for this seed. Coin type 118, NOT THORChain's 931: an address at 931 with a
+# cosmos HRP is one no Cosmos wallet will find when the seed is imported.
+GOLDEN_ATOM_ADDRESS = "cosmos19rl4cm2hmr8afy4kldpxz3fka4jguq0auqdal4"
+
+
+def test_atom_is_derived_at_the_cosmos_hub_coin_type():
+    import swapsack.cli as cli
+
+    assert "GAIA" in cli.DERIVABLE_CHAINS
+    assert cli._derive_destination_address("GAIA", MNEMONIC) == GOLDEN_ATOM_ADDRESS
+
+
+def test_derived_atom_destination_warns_it_is_receive_only(capsys):
+    """We cannot spend on Cosmos Hub, so an auto-derived ATOM payout parks the
+    funds where only another wallet can reach them — say so, loudly."""
+    import swapsack.cli as cli
+
+    args = build_parser().parse_args(
+        ["swap", "--from", "BTC", "--to", "ATOM", "--amount", "0.01"]
+    )
+    assert cli._resolve_destination(args, MNEMONIC) == GOLDEN_ATOM_ADDRESS
+    warning = capsys.readouterr().err
+    assert "the derived ATOM destination is receive-only" in warning
+    assert "another wallet" in warning
+    assert "passphrase" not in warning
+
+
+def test_derived_atom_warning_names_the_passphrase_when_one_is_set(capsys):
+    """With a BIP-39 passphrase, the mnemonic alone opens a different, empty
+    address in the recovering wallet — the warning must not promise otherwise."""
+    import swapsack.cli as cli
+
+    args = build_parser().parse_args(
+        ["swap", "--from", "BTC", "--to", "ATOM", "--amount", "0.01"]
+    )
+    derived = cli._resolve_destination(args, MNEMONIC, "secret")
+    assert derived.startswith("cosmos1")
+    assert derived != GOLDEN_ATOM_ADDRESS
+    warning = capsys.readouterr().err
+    assert "BIP-39 passphrase" in warning
+
+
+def test_address_command_lists_atom_as_receive_only(monkeypatch, capsys):
+    # So the payout address can be checked against a Cosmos wallet first.
+    import swapsack.cli as cli
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
+    assert cli.cmd_address(build_parser().parse_args(["address"])) == 0
+    line = next(
+        row for row in capsys.readouterr().out.splitlines() if row.startswith("ATOM")
+    )
+    assert GOLDEN_ATOM_ADDRESS in line
+    assert "receive-only" in line
+
+
+def test_explicit_atom_dest_is_not_warned_as_receive_only(capsys):
+    # The warning is about *our* derived address; an external --dest may well
+    # belong to a wallet that can spend there.
+    from swapsack.cli import _resolve_destination
+
+    assert _resolve_destination(_swap_args("ETH", "ATOM", ATOM_DEST), MNEMONIC) == (
+        ATOM_DEST
+    )
+    assert "receive-only" not in capsys.readouterr().err
+
+
 def test_address_command_lists_arb(monkeypatch, capsys):
     import swapsack.cli as cli
 

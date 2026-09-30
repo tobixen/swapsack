@@ -99,6 +99,13 @@ automatically from git tags (PEP 440 / SemVer).
   memo" either: it says whether the bytes are a Chainflip vault swap or a
   recognised THORChain/Maya memo, and prints the memo.
 
+- **`--to ATOM` no longer needs a `--dest`.** Without one, the payout goes to
+  your own `cosmos1…` address, derived the way Keplr and other Cosmos wallets
+  derive it. swapsack still cannot *spend* ATOM, so the swap warns you:
+  getting the coins out means importing your seed into a Cosmos wallet
+  (with your BIP-39 passphrase, if you use one — not every wallet takes
+  one). `swapsack address` shows the address, so you can check it first.
+
 ### Fixed
 
 - **`status` no longer reports a finished swap as "not observed".** It read
