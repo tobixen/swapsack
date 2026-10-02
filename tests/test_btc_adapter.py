@@ -63,6 +63,58 @@ def test_built_swap_passes_verify_gate():
     assert problems == []
 
 
+# bitcoinlib's script parser takes any 64-byte script for a bare (Schnorr
+# signature sized) data push, so OP_RETURN + a 62-byte memo came out as an
+# "unknown" output with address "" -- and a Maya CACAO memo is exactly that
+# long. The gate then saw no OP_RETURN and a change output to nobody.
+MEMO_62 = "=:c:maya1" + "q" * 38 + ":39636357793095"
+
+
+@pytest.mark.parametrize("n", range(1, 81))
+def test_extract_outputs_finds_op_return_of_any_length(n):
+    from bitcoinlib.transactions import Transaction
+
+    from swapsack.chains.coins import encode_op_return
+    from swapsack.chains.utxo import extract_outputs
+
+    data = bytes(range(n))
+    tx = Transaction(network="bitcoin", witness_type="segwit")
+    tx.add_output(0, lock_script=encode_op_return(data))
+    (out,) = extract_outputs(tx)
+    assert out.address is None
+    assert out.op_return_data == data
+
+
+def test_built_swap_with_62_byte_memo_passes_verify_gate():
+    assert len(MEMO_62) == 62
+    a = BtcAdapter()
+    utxos = [
+        Utxo(txid="aa" * 32, vout=0, value=200000, address=EXPECTED_ADDR, path=PATH)
+    ]
+    built = a.build_unsigned_swap(
+        mnemonic=MNEMONIC,
+        utxos=utxos,
+        vault_address=VAULT,
+        amount=150000,
+        memo=MEMO_62,
+        fee_rate=2,
+    )
+    plan = SwapPlan(
+        inbound_address=VAULT, amount=150000, memo=MEMO_62, expiry=9_999_999_999
+    )
+    problems = verify_btc_swap(
+        built.outputs,
+        fee=built.fee,
+        plan=plan,
+        owned_addresses={EXPECTED_ADDR, built.change_address},
+        now=0,
+        max_fee=100_000,
+    )
+    assert problems == []
+    a.sign(built)
+    assert built.tx.verify() is True
+
+
 def test_signs_multiple_inputs_across_paths():
     a = BtcAdapter()
     path0, path1 = "m/84'/0'/0'/0/0", "m/84'/0'/0'/0/1"

@@ -108,6 +108,12 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Fixed
 
+- **A BTC swap whose memo is exactly 62 bytes is no longer refused.**
+  bitcoinlib misreads an OP_RETURN of that length, so the safety gate saw no
+  memo and a change output to an empty address, and stopped the swap. A
+  BTC → CACAO memo is typically that long. Nothing was broadcast; the gate
+  now reads the OP_RETURN itself.
+
 - **`status` no longer reports a finished swap as "not observed".** It read
   "observed" off a stage flag that THORChain and Maya both stop sending once
   the stage completes — so it worked mid-flight and broke on success, and with

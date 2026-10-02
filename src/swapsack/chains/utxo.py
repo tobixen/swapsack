@@ -22,6 +22,7 @@ from bitcoinlib.mnemonic import Mnemonic
 from bitcoinlib.transactions import Transaction
 
 from swapsack.chains.coins import (
+    OP_RETURN_OPCODE,
     P2WPKH,
     InsufficientFunds,
     ScriptParams,
@@ -73,7 +74,10 @@ class BuiltSwap:
 def extract_outputs(tx: Transaction) -> list[TxOutput]:
     outputs: list[TxOutput] = []
     for o in tx.outputs:
-        if o.script_type == "nulldata":
+        # Classify by the opcode, not bitcoinlib's ``script_type``: its parser
+        # takes any 64-byte script for a bare data push, so OP_RETURN plus a
+        # 62-byte memo (a Maya CACAO memo, typically) came out "unknown".
+        if bytes(o.lock_script)[:1] == bytes([OP_RETURN_OPCODE]):
             outputs.append(
                 TxOutput(
                     address=None,
