@@ -11,6 +11,9 @@ exclude = [
   '^https?://([^/]+\.)?example(/|$|[:?#])',
   # PyPI project page 404s until the first release (both /p/ and /project/ forms).
   '^https?://pypi\.org/(p|project)/swapsack',
+  # Volunteer-run signet faucet that goes offline for days (bot abuse, 522s);
+  # an outage there must not block a push.
+  '^https?://signetfaucet\.com(/|$|[?#])',
 ]
 
 # Hosts that rate-limit or block automated requests still count as reachable.

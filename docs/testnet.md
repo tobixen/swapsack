@@ -47,8 +47,12 @@ dedicated small-value seed over reusing a real wallet's.
 
 ## Faucets
 
-- **BTC signet:** https://signetfaucet.com/ · https://faucet.mutinynet.com/
-  (signet coins are stable and the faucet is reliable, unlike testnet3). If you
+- **BTC signet:** https://signetfaucet.com/ (volunteer-run and unreliable:
+  it has been offline for stretches, e.g. Cloudflare 522 in October 2026) ·
+  https://alt.signetfaucet.com/ (a mirror run by someone else).  Signet coins
+  are stable, unlike testnet3.  Not https://faucet.mutinynet.com/: that pays
+  out on Mutinynet, a separate signet, so the coins never reach the default
+  signet the tests use.  If you
   switch back to testnet3: https://coinfaucet.eu/en/btc-testnet/ ·
   https://bitcoinfaucet.uo1.net/ (chronically drained).
 - **ETH Sepolia:** https://sepoliafaucet.com/ · https://www.alchemy.com/faucets/ethereum-sepolia
