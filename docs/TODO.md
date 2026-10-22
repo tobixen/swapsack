@@ -490,6 +490,38 @@ So no `~` marker; an unconfirmed row simply shows today's rate.
 - `--json` gets the rate and the value as separate fields, so a spreadsheet
   can recompute.
 
+## LP yield and EUR P/L for liquidity positions
+
+`balance` shows each LP position's redeemable amount, its deposit re-valued
+at today's pool rate, and (newer versions) its EUR value. Whether a pool
+actually pays, and whether the position made money, has so far been worked
+out by an external script that parses saved `balance` output over time. That
+script has to guess at things swapsack knows, and every guess has failed on
+real data:
+
+- **Deposit vs. price move vs. loss.** From the printed figures alone, a
+  liquidity add, a CACAO/RUNE price rise and a withdrawal can look the same:
+  each moves redeemable and deposited by the same amount. A withdrawal and a
+  pool-wide loss also look alike: during the 2026-08-18 Maya exploit, one
+  pool's figures fell exactly as a withdrawal would. Swapsack has the
+  member's deposit and withdraw history (Midgard actions), so it can tell
+  them apart outright.
+- **Which position is which.** Two positions in one pool (from two addresses)
+  print identical labels. The script matches them by deposit size. Swapsack
+  knows the member address.
+- **Snapshots are irregular.** A multi-day gap looks like one sudden event.
+  With the action history and pool depth history, the yield can be computed
+  per period without depending on when someone happened to run `balance`.
+- **EUR P/L since the deposit** needs the EUR value at deposit time, which is
+  exactly what [EUR value at the time in `history`](#eur-value-at-the-time-in-history)
+  provides. Until then, the best available is "since the first snapshot with
+  a € column".
+
+Shape: an `lp` (or `balance --lp-yield`) report per position with fee yield
+(asset units, net of price), EUR P/L since deposit, deposits and withdrawals
+listed, and pool-wide events (repricing, exploit losses) flagged separately.
+Depends on the EUR-at-the-time work.
+
 ## Throttling: pacing a deep walk, and the single-endpoint case
 
 A 429 is handled since the `net.py` throttle work: the request fails over to
