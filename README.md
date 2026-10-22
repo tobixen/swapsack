@@ -225,6 +225,7 @@ swapsack bump  <txid>                                          # unstick a BTC t
 swapsack bump  <txid> --fee-rate 25 --confirm                  # …at an explicit sats/vB
 swapsack history                                               # every BTC tx the wallet touched
 swapsack history --asset DASH --json                           # …as JSON, for a spreadsheet
+swapsack history --asset TRX                                   # TRON, via TronGrid's index
 swapsack utxos                                                 # every output, spent ones included
 swapsack utxos --unspent                                       # …only the coins you still hold
 swapsack status <txid>                                         # what a transaction/swap did
@@ -239,10 +240,15 @@ path and either `unspent` or the txid that spent it. Both take `--json`.
 
 Two limits, both deliberate:
 
-* **UTXO chains only** (`--asset BTC|DASH|ZEC`, default BTC). ETH/ARB/BSC talk
-  plain JSON-RPC and TRON the java-tron HTTP API; none of those has an address
-  history index, so a listing there would mean depending on an indexer
-  (Etherscan, Blockscout, TronGrid) that this wallet does not use.
+* **UTXO chains plus TRX** (`--asset BTC|DASH|ZEC|TRX`, default BTC; `utxos`
+  is UTXO-only). TRX `history` reads TronGrid's keyless, rate-limited address
+  index (`--trongrid-api`, `$SWAPSACK_TRONGRID`), which therefore learns your
+  TRON address, so it asks first (`--yes` skips that); nothing else in the
+  wallet talks to it. Only native TRX is
+  counted: a TRC-20 transfer shows as the contract call that cost its fee, and
+  TRX a contract sends you is not listed. ETH/ARB/BSC talk plain JSON-RPC, which
+  has no address history index, so a listing there would mean depending on an
+  indexer (Etherscan, Blockscout) that this wallet does not use.
 * **ZEC has no `history`.** lightwalletd's address index returns raw
   transactions rather than txids, and a post-NU5 (v5) txid is a ZIP-244 tree
   hash this wallet does not compute. `utxos --asset ZEC` still lists the

@@ -8,6 +8,13 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **`history --asset TRX`.** TRON transactions are listed like the UTXO
+  chains' — net TRX per transaction, fee, counterparty and swap memo. The
+  data comes from TronGrid's address index (keyless, rate-limited, and it
+  sees your TRON address, so it asks first, or takes `--yes`); point
+  `--trongrid-api` elsewhere to avoid it. Only
+  native TRX is counted: TRC-20 token amounts are not.
+
 - **Avalanche.** Native `AVAX` and the two dollar tokens `USDC-AVAX` and
   `USDT-AVAX` can now be held, shown in `balance`, sent, swept and **spent as
   a swap source** — where `USDC-AVAX` could previously only be paid *to*. The

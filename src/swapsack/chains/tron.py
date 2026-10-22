@@ -22,7 +22,8 @@ import hashlib
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 
-from swapsack.chains.base import BalanceReport
+from swapsack.chains.base import BalanceReport, TxEntry, TxSummary
+from swapsack.chains.history import DEFAULT_TX_LIMIT, AddressTxs, collect_pages
 from swapsack.net import HttpClient
 from swapsack.swap import BroadcastError, Prepared, SwapRequest
 from swapsack.thorchain import Quote
@@ -41,6 +42,12 @@ DEFAULT_TRON_DERIVATION = "m/44'/195'/0'/0/0"
 # Keyless public node serving the standard java-tron HTTP API. TronGrid
 # (api.trongrid.io) works too but rate-limits without an API key.
 DEFAULT_TRON_API = "https://tron-rpc.publicnode.com"
+# Address history needs an index, which a plain java-tron node does not keep.
+# TronGrid's /v1/accounts/{a}/transactions is keyless but rate-limited, and it
+# sees which address is asking — so it is used for `history` only, never for
+# building or broadcasting.
+DEFAULT_TRONGRID = "https://api.trongrid.io"
+TRONGRID_PAGE_SIZE = 200  # the route's maximum
 TRON_MAINNET_PREFIX = 0x41
 TRX_DECIMALS = 6
 # THORChain represents every asset in 1e8 units; TRX is natively 1e6 (sun), so
@@ -97,6 +104,60 @@ def decode_trc20_transfer(call_data: str) -> tuple[str, int]:
     return to_base58, amount
 
 
+def parse_trongrid_tx(item: dict) -> TxSummary:
+    """A TronGrid transaction item as a :class:`TxSummary`.
+
+    The account model has no change outputs, so it is cast in the UTXO shape
+    :func:`swapsack.chains.history.wallet_history` nets: the sender's one
+    "input" is what left its balance (amount + fee), and the recipient's
+    "output" is what arrived. The tx ``data`` memo becomes an OP_RETURN-style
+    entry, since on TRON that is what marks a swap deposit.
+
+    Only native TRX counts as value. A failed transaction moved nothing but its
+    fee was still burnt; a contract call (a TRC-20 transfer) costs TRX in fee
+    while its token amount is not TRX, so the contract is shown with value 0.
+    TRX that a contract sends *to* us (an internal transaction) is not in this
+    route's listing at all.
+    """
+    from tronpy.keys import to_base58check_address
+
+    raw = item.get("raw_data", {})
+    contract = (raw.get("contract") or [{}])[0]
+    kind = contract.get("type", "")
+    value = contract.get("parameter", {}).get("value", {})
+    ret = (item.get("ret") or [{}])[0]
+    fee = int(ret.get("fee", 0))
+    ok = ret.get("contractRet", "SUCCESS") == "SUCCESS"
+    amount = int(value.get("amount", 0)) if ok and kind == "TransferContract" else 0
+    target = value.get("to_address") or value.get("contract_address")
+    outputs = []
+    if target:
+        outputs.append(TxEntry(value=amount, address=to_base58check_address(target)))
+    data = raw.get("data")
+    if data:
+        outputs.append(
+            TxEntry(value=0, op_return=True, op_return_data=bytes.fromhex(data))
+        )
+    owner = value.get("owner_address")
+    inputs = (
+        (TxEntry(value=amount + fee, address=to_base58check_address(owner)),)
+        if owner
+        else ()
+    )
+    height = item.get("blockNumber")
+    stamp = item.get("block_timestamp")
+    return TxSummary(
+        txid=item["txID"],
+        confirmed=height is not None,
+        block_height=height,
+        block_time=stamp // 1000 if stamp else None,
+        fee=fee,
+        vsize=0,
+        inputs=inputs,
+        outputs=tuple(outputs),
+    )
+
+
 Account.enable_unaudited_hdwallet_features()
 
 
@@ -147,9 +208,11 @@ class TronAdapter(HttpClient):
         api_url: str = DEFAULT_TRON_API,
         timeout: float = 20.0,
         bip39_passphrase: str = "",
+        history_url: str = DEFAULT_TRONGRID,
     ) -> None:
         super().__init__(timeout)
         self.api_url = api_url.rstrip("/")
+        self.history_url = history_url.rstrip("/")
         self.bip39_passphrase = bip39_passphrase
         # tronpy clients spawned for tx-building each hold their own HTTP session;
         # track them so close() can release the sockets (they must outlive build
@@ -202,6 +265,37 @@ class TronAdapter(HttpClient):
             note=f"({address})",
             addresses=(address,),
         )
+
+    def address_txs(self, address: str, *, limit: int = DEFAULT_TX_LIMIT) -> AddressTxs:
+        """Every native transaction ``address`` sent or received, newest first.
+
+        TronGrid pages by an opaque ``meta.fingerprint``; its absence ends the
+        walk. TRC-20 token transfers live on a separate route and are only
+        seen here as the contract call that paid their fee.
+        """
+        url = f"{self.history_url}/v1/accounts/{address}/transactions"
+
+        def page(cursor: object | None) -> tuple[list[TxSummary], object | None]:
+            # Internal transactions (TRX a contract paid us) come back by
+            # default, in a different shape with no txID: ask for them to be
+            # left out, and skip any that arrive anyway.
+            params: dict[str, object] = {
+                "limit": TRONGRID_PAGE_SIZE,
+                "search_internal": "false",
+            }
+            if cursor:
+                params["fingerprint"] = cursor
+            resp = self._get(url, params=params)
+            resp.raise_for_status()
+            body = resp.json()
+            txs = [
+                parse_trongrid_tx(item)
+                for item in body.get("data", [])
+                if "txID" in item
+            ]
+            return txs, body.get("meta", {}).get("fingerprint")
+
+        return collect_pages(page, limit=limit)
 
     def fetch_token_balance(self, contract: str, address: str) -> int:
         """TRC-20 ``balanceOf(address)`` in the token's native units (keyless call).

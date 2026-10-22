@@ -254,14 +254,19 @@ _EVM_ADAPTERS = {
 
 
 def _tron_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
-    from swapsack.chains.tron import DEFAULT_TRON_API, TronAdapter
+    from swapsack.chains.tron import DEFAULT_TRON_API, DEFAULT_TRONGRID, TronAdapter
 
     url = (
         getattr(args, "tron_api", None)
         or os.environ.get("SWAPSACK_TRON_API")
         or DEFAULT_TRON_API
     )
-    return TronAdapter(url, bip39_passphrase=passphrase)
+    history_url = (
+        getattr(args, "trongrid_api", None)
+        or os.environ.get("SWAPSACK_TRONGRID")
+        or DEFAULT_TRONGRID
+    )
+    return TronAdapter(url, bip39_passphrase=passphrase, history_url=history_url)
 
 
 def _bsc_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
@@ -307,6 +312,10 @@ _UTXO_ADAPTERS = {
     "DASH": _dash_adapter,
     "ZEC": _zec_adapter,
 }
+# `history` also reads these account chains, whose single address needs no gap
+# scan. Kept apart from `_UTXO_ADAPTERS` so a patch of that registry still
+# reaches every UTXO dispatch.
+_HISTORY_ADAPTERS = {"TRX": _tron_adapter}
 
 
 def _maya_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
@@ -3462,11 +3471,14 @@ NO_HISTORY_SOURCE = {
         "— it just cannot show the spent ones."
     ),
 }
-# The listings cover the UTXO chains only. ETH/ARB/AVAX/BSC talk plain JSON-RPC
-# and TRON the java-tron HTTP API; neither has an address history index, so a
-# listing there would need an indexer (Etherscan/Blockscout/TronGrid) that this
-# wallet deliberately does not depend on yet.
+# `utxos` covers the UTXO chains only; `history` adds TRON, read from TronGrid's
+# address index. ETH/ARB/AVAX/BSC talk plain JSON-RPC, which has no address
+# history index, so a listing there would need an indexer (Etherscan/Blockscout)
+# that this wallet does not depend on yet.
 LISTING_CHAINS = ("BTC", "DASH", "ZEC")
+HISTORY_CHAINS = (*LISTING_CHAINS, "TRX")
+# Base-unit decimals of a history chain, where they are not THORChain's 1e8.
+HISTORY_DECIMALS = {"TRX": 6}
 
 
 def _no_history_reason(chain: str) -> str:
@@ -3497,7 +3509,10 @@ def _wallet_history(adapter, mnemonic: str, limit: int):  # noqa: ANN001, ANN202
     address_txs = getattr(adapter, "address_txs", None)
     if address_txs is None:
         return None
-    records = _scan_records(adapter, mnemonic)
+    if hasattr(adapter, "address_info"):
+        records = _scan_records(adapter, mnemonic)
+    else:  # an account chain: one address, nothing to scan
+        records = [("", adapter.derive_address(mnemonic))]
     return wallet_history(
         records=records,
         address_txs=lambda address: address_txs(address, limit=limit),
@@ -3552,11 +3567,42 @@ def _output_json(out) -> dict:  # noqa: ANN001
     }
 
 
+def _indexer_consent(args: argparse.Namespace) -> bool:
+    """Ask before a history read hands the wallet's address to an indexer.
+
+    Asked before the passphrase prompt, so a "no" costs nothing. Everything
+    goes to stderr: `--json` output must stay parseable.
+    """
+    if args.asset != "TRX" or args.yes:
+        return True
+    from swapsack.chains.tron import DEFAULT_TRONGRID
+
+    url = args.trongrid_api or os.environ.get("SWAPSACK_TRONGRID") or DEFAULT_TRONGRID
+    _warn(
+        f"WARNING: TRX history is read from an address indexer ({url}).",
+        "it will see your TRON address and can link it to your IP address",
+        "nothing else in this wallet uses it; balance and sends do not",
+        "--trongrid-api points it at an indexer of your own",
+    )
+    print("Query it? type 'yes': ", end="", file=sys.stderr, flush=True)
+    try:
+        answer = input().strip()
+    except EOFError:  # no terminal (cron, a pipe): that is a "no"
+        answer = ""
+    if answer != "yes":
+        print("aborted, nothing was queried.", file=sys.stderr)
+        return False
+    return True
+
+
 def cmd_history(args: argparse.Namespace) -> int:
     from swapsack.report import render_history
 
+    if not _indexer_consent(args):
+        return 1
     mnemonic, passphrase = _load_mnemonic(args)
-    with _UTXO_ADAPTERS[args.asset](args, passphrase) as adapter:
+    factory = _UTXO_ADAPTERS.get(args.asset) or _HISTORY_ADAPTERS[args.asset]
+    with factory(args, passphrase) as adapter:
         history = _wallet_history(adapter, mnemonic, args.limit)
     if history is None:
         print(_no_history_reason(args.asset), file=sys.stderr)
@@ -3566,6 +3612,9 @@ def cmd_history(args: argparse.Namespace) -> int:
             json.dumps(
                 {
                     "chain": args.asset,
+                    # Amounts below are integers in this many decimals (TRX
+                    # counts in sun, 1e6; the UTXO chains in 1e8).
+                    "decimals": HISTORY_DECIMALS.get(args.asset, 8),
                     "transactions": [_tx_json(tx) for tx in history.transactions],
                     "truncated": list(history.truncated),
                 },
@@ -3573,7 +3622,11 @@ def cmd_history(args: argparse.Namespace) -> int:
             )
         )
     else:
-        for line in render_history(history.transactions, symbol=args.asset):
+        for line in render_history(
+            history.transactions,
+            symbol=args.asset,
+            decimals=HISTORY_DECIMALS.get(args.asset, 8),
+        ):
             print(line)
     _warn_truncated(history, args.limit)
     return 0
@@ -4388,9 +4441,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_price_check_args(s)
     s.set_defaults(func=cmd_balance)
 
-    for name, handler, extra_help in (
-        ("history", cmd_history, "list the transactions touching the wallet"),
-        ("utxos", cmd_utxos, "list the wallet's outputs, spent ones included"),
+    for name, handler, extra_help, chains, asset_help in (
+        (
+            "history",
+            cmd_history,
+            "list the transactions touching the wallet",
+            HISTORY_CHAINS,
+            "which chain to list (default BTC). TRX is read from TronGrid's "
+            "address index; the EVM chains are absent: their RPCs have no "
+            "address history index, so there is nothing to list them from",
+        ),
+        (
+            "utxos",
+            cmd_utxos,
+            "list the wallet's outputs, spent ones included",
+            LISTING_CHAINS,
+            "which UTXO chain to list (default BTC); an account-model chain "
+            "has no outputs to list",
+        ),
     ):
         s = sub.add_parser(name, help=extra_help)
         s.add_argument("--key")
@@ -4398,10 +4466,8 @@ def build_parser() -> argparse.ArgumentParser:
             "--asset",
             type=str.upper,
             default="BTC",
-            choices=list(LISTING_CHAINS),
-            help="which UTXO chain to list (default BTC). The account-model "
-            "chains are absent on purpose: their RPCs have no address history "
-            "index, so there is nothing to list them from",
+            choices=list(chains),
+            help=asset_help,
         )
         s.add_argument(
             "--limit",
@@ -4418,6 +4484,17 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument(
             "--zec-lwd", help="Zcash lightwalletd host:port ($SWAPSACK_ZEC_LWD)"
         )
+        if name == "history":
+            s.add_argument(
+                "--trongrid-api",
+                help="TronGrid-compatible API with the /v1/accounts index "
+                "($SWAPSACK_TRONGRID)",
+            )
+            s.add_argument(
+                "--yes",
+                action="store_true",
+                help="skip the confirm before TRX history queries the indexer",
+            )
         if name == "utxos":
             which = s.add_mutually_exclusive_group()
             which.add_argument(

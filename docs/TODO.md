@@ -489,7 +489,9 @@ So the work is a data source, and picking one is the decision:
   `docs/dash.md` already warns about, so it would want the same failover
   treatment `chains/btc.py` gives Esplora.
 - **TronGrid**'s `/v1/accounts/{address}/transactions` is keyless but
-  rate-limited, and is TRON-only.
+  rate-limited, and is TRON-only. **Done for native TRX** (`history --asset
+  TRX`). Still missing there: TRC-20 amounts (`/v1/accounts/{a}/transactions/trc20`)
+  and TRX received via internal transactions (contract → us).
 - A **self-hosted indexer** (Erigon/Blockscout of one's own) avoids the trust
   and rate-limit problems and has none of the convenience.
 

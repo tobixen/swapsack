@@ -5652,3 +5652,129 @@ def test_the_chainflip_swap_summary_points_at_swapsack_status(monkeypatch, capsy
     # Naming scan.chainflip.io as a second option is fine; leading with it,
     # having told the user only what this *isn't*, is what was not good enough.
     assert "this is not a THORChain swap" not in track[0]
+
+
+def test_history_lists_trx_in_six_decimals(monkeypatch, capsys):
+    """TRON is single-address (no gap scan) and counts in sun, not 1e8 units."""
+    from swapsack.chains.base import TxEntry, TxSummary
+    from swapsack.chains.history import AddressTxs
+    from swapsack.chains.tron import TronAdapter
+
+    send = TxSummary(
+        txid="ab" * 32,
+        confirmed=True,
+        block_height=87_000_000,
+        block_time=1_792_667_058,
+        fee=1_100_000,
+        vsize=0,
+        inputs=(TxEntry(value=11_100_000, address="OURS"),),
+        outputs=(TxEntry(value=10_000_000, address="TStranger"),),
+    )
+
+    class FakeTron(TronAdapter):
+        def derive_address(self, mnemonic, path=""):
+            return "OURS"
+
+        def address_txs(self, address, *, limit=500):
+            assert address == "OURS"
+            return AddressTxs(transactions=[send])
+
+    monkeypatch.setitem(
+        cli._HISTORY_ADAPTERS, "TRX", lambda args, passphrase="": FakeTron()
+    )
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (HISTORY_MNEMONIC, ""))
+    args = build_parser().parse_args(["history", "--asset", "TRX", "--yes"])
+    assert cli.cmd_history(args) == 0
+    out = capsys.readouterr().out
+    assert "-11.100000" in out
+    assert "-> TStranger" in out
+    assert "fee 1100000" in out
+
+
+def test_history_json_states_the_decimals(monkeypatch, capsys):
+    """TRX counts in sun (1e6) where the UTXO chains count in 1e8, so the raw
+    integers in --json are ambiguous unless the envelope says which."""
+    from swapsack.chains.history import AddressTxs
+    from swapsack.chains.tron import TronAdapter
+
+    class FakeTron(TronAdapter):
+        def derive_address(self, mnemonic, path=""):
+            return "OURS"
+
+        def address_txs(self, address, *, limit=500):
+            return AddressTxs(transactions=[])
+
+    monkeypatch.setitem(
+        cli._HISTORY_ADAPTERS, "TRX", lambda args, passphrase="": FakeTron()
+    )
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (HISTORY_MNEMONIC, ""))
+    args = build_parser().parse_args(["history", "--asset", "TRX", "--yes", "--json"])
+    assert cli.cmd_history(args) == 0
+    assert json.loads(capsys.readouterr().out)["decimals"] == 6
+
+
+def test_utxos_does_not_offer_trx():
+    """An account has no outputs to list: only `history` generalises."""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["utxos", "--asset", "TRX"])
+
+
+def _trx_history_must_not_run(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("reached the indexer / keystore without consent")
+
+    monkeypatch.setitem(cli._HISTORY_ADAPTERS, "TRX", boom)
+    monkeypatch.setattr(cli, "_load_mnemonic", boom)
+
+
+def test_trx_history_asks_before_handing_the_address_to_an_indexer(monkeypatch, capsys):
+    """TronGrid learns the address, so anything but a typed 'yes' stops before
+    the passphrase prompt and before any request."""
+    _trx_history_must_not_run(monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    args = build_parser().parse_args(["history", "--asset", "TRX"])
+    assert cli.cmd_history(args) == 1
+    captured = capsys.readouterr()
+    assert "api.trongrid.io" in captured.err
+    # The question goes to stderr, so `--json` output stays parseable.
+    assert captured.out == ""
+
+
+def test_trx_history_proceeds_on_a_typed_yes(monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "yes")
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (HISTORY_MNEMONIC, ""))
+
+    class Stop(Exception):
+        pass
+
+    def reached(args, passphrase=""):
+        raise Stop
+
+    monkeypatch.setitem(cli._HISTORY_ADAPTERS, "TRX", reached)
+    args = build_parser().parse_args(["history", "--asset", "TRX"])
+    with pytest.raises(Stop):
+        cli.cmd_history(args)
+
+
+def test_trx_history_consent_on_closed_stdin_aborts_cleanly(monkeypatch, capsys):
+    """Run from cron or a pipe without --yes: refuse with the usual message, not
+    an EOFError traceback."""
+    _trx_history_must_not_run(monkeypatch)
+
+    def eof(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    args = build_parser().parse_args(["history", "--asset", "TRX"])
+    assert cli.cmd_history(args) == 1
+    assert "aborted" in capsys.readouterr().err
+
+
+def test_btc_history_asks_nothing(monkeypatch, capsys):
+    _history_btc(monkeypatch)
+
+    def no_input(prompt=""):
+        raise AssertionError("BTC history needs no consent")
+
+    monkeypatch.setattr("builtins.input", no_input)
+    assert cli.cmd_history(build_parser().parse_args(["history"])) == 0

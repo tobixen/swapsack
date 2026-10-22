@@ -523,3 +523,192 @@ def test_tron_token_balance_live():
     assert [r.symbol for r in reports] == ["USDT-TRON"]
     assert reports[0].decimals == 6
     assert reports[0].confirmed >= 0
+
+
+# --- history (TronGrid) -------------------------------------------------------
+
+OURS = "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"  # the abandon-…-about vector above
+OURS_HEX = "41c8599111f29c1e1e061265b4af93ea1f274ad78a"
+VAULT = "TGSNahJvAdh86aR5pdcxiep1mBWSRK3HHL"
+VAULT_HEX = "4146f3fb8c14006268d153b18000495c8ee858e94b"
+USDT_HEX = "41a614f803b6fd780986a42c78ec9c7f77e6ded13c"
+
+
+def _tg_tx(txid, contract_type, value, *, ret="SUCCESS", fee=0, data=None, ts=None):
+    """One TronGrid ``/v1/accounts/{a}/transactions`` item, trimmed to the
+    fields the parser reads (shape recorded from api.trongrid.io 2026-10-22)."""
+    raw = {"contract": [{"parameter": {"value": value}, "type": contract_type}]}
+    if data is not None:
+        raw["data"] = data.encode().hex()
+    return {
+        "txID": txid,
+        "ret": [{"contractRet": ret, "fee": fee}],
+        "blockNumber": 87_331_318,
+        "block_timestamp": ts or 1_792_667_058_000,
+        "raw_data": raw,
+    }
+
+
+def test_parse_an_outgoing_transfer_charges_amount_and_fee_to_the_sender():
+    from swapsack.chains.tron import parse_trongrid_tx
+
+    item = _tg_tx(
+        "aa" * 32,
+        "TransferContract",
+        {"amount": 58_609_832, "owner_address": OURS_HEX, "to_address": VAULT_HEX},
+        fee=1_338_000,
+        data="=:ETH.ETH:0xdead",
+    )
+    tx = parse_trongrid_tx(item)
+    assert tx.txid == "aa" * 32
+    assert tx.confirmed and tx.block_height == 87_331_318
+    assert tx.block_time == 1_792_667_058  # TronGrid dates in ms
+    assert tx.fee == 1_338_000
+    # The account model has no change: the sender's "input" is amount + fee.
+    assert [(i.address, i.value) for i in tx.inputs] == [(OURS, 59_947_832)]
+    assert (tx.outputs[0].address, tx.outputs[0].value) == (VAULT, 58_609_832)
+    # The memo rides like an OP_RETURN does, which is what marks a deposit.
+    assert tx.has_op_return
+    assert tx.outputs[-1].op_return_data == b"=:ETH.ETH:0xdead"
+
+
+def test_parse_a_failed_transfer_moves_nothing_but_still_costs_the_fee():
+    from swapsack.chains.tron import parse_trongrid_tx
+
+    item = _tg_tx(
+        "bb" * 32,
+        "TransferContract",
+        {"amount": 5_000_000, "owner_address": OURS_HEX, "to_address": VAULT_HEX},
+        ret="OUT_OF_ENERGY",
+        fee=270_000,
+    )
+    tx = parse_trongrid_tx(item)
+    assert tx.inputs[0].value == 270_000
+    assert all(o.value == 0 for o in tx.outputs)
+
+
+def test_parse_a_contract_call_costs_trx_fee_but_moves_no_trx():
+    """A TRC-20 transfer is a TriggerSmartContract: the TRX it costs is the fee
+    (energy burnt), and the token amount is not TRX and must not be counted."""
+    from swapsack.chains.tron import parse_trongrid_tx
+
+    item = _tg_tx(
+        "cc" * 32,
+        "TriggerSmartContract",
+        {"owner_address": OURS_HEX, "contract_address": USDT_HEX, "data": "a9059cbb"},
+        fee=13_844_850,
+    )
+    tx = parse_trongrid_tx(item)
+    assert tx.inputs[0].value == 13_844_850
+    assert [(o.address, o.value) for o in tx.outputs] == [
+        ("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", 0)
+    ]
+
+
+def test_address_txs_walks_trongrid_pages_by_fingerprint(monkeypatch):
+    """History comes from TronGrid's indexed route, not the full node the rest
+    of the adapter talks to: a plain java-tron node has no address index."""
+    adapter = TronAdapter(
+        api_url="https://node.example.com", history_url="https://grid.example.com"
+    )
+    incoming = _tg_tx(
+        "dd" * 32,
+        "TransferContract",
+        {"amount": 7_000_000, "owner_address": VAULT_HEX, "to_address": OURS_HEX},
+    )
+    outgoing = _tg_tx(
+        "ee" * 32,
+        "TransferContract",
+        {"amount": 1_000_000, "owner_address": OURS_HEX, "to_address": VAULT_HEX},
+        fee=1_100_000,
+    )
+    pages = {
+        None: {"data": [outgoing], "meta": {"fingerprint": "FP1"}},
+        "FP1": {"data": [incoming], "meta": {}},
+    }
+    seen = []
+
+    def fake_get(url, **kwargs):
+        seen.append((url, kwargs.get("params", {})))
+        return _FakeResponse(pages[kwargs.get("params", {}).get("fingerprint")])
+
+    monkeypatch.setattr(adapter, "_get", fake_get)
+    result = adapter.address_txs(OURS)
+    assert [tx.txid for tx in result.transactions] == ["ee" * 32, "dd" * 32]
+    assert not result.truncated
+    assert all(
+        url == f"https://grid.example.com/v1/accounts/{OURS}/transactions"
+        for url, _ in seen
+    )
+    assert len(seen) == 2
+
+
+def test_address_txs_leaves_internal_transactions_out(monkeypatch):
+    """An internal transaction (TRX a contract paid us) has no txID/raw_data and
+    must not reach the parser: ask TronGrid to leave them out, and skip any that
+    still arrive rather than fail the whole listing."""
+    adapter = TronAdapter(
+        api_url="https://node.example.com", history_url="https://grid.example.com"
+    )
+    normal = _tg_tx(
+        "dd" * 32,
+        "TransferContract",
+        {"amount": 7_000_000, "owner_address": VAULT_HEX, "to_address": OURS_HEX},
+    )
+    internal = {
+        "internal_tx_id": "ff" * 32,
+        "tx_id": "cc" * 32,
+        "from_address": VAULT_HEX,
+        "to_address": OURS_HEX,
+        "data": {"call_value": {"_": 5_000_000}, "rejected": False},
+    }
+    seen = []
+
+    def fake_get(url, **kwargs):
+        seen.append(kwargs.get("params", {}))
+        return _FakeResponse({"data": [internal, normal], "meta": {}})
+
+    monkeypatch.setattr(adapter, "_get", fake_get)
+    result = adapter.address_txs(OURS)
+    assert [tx.txid for tx in result.transactions] == ["dd" * 32]
+    assert seen[0]["search_internal"] == "false"
+
+
+def test_wallet_history_nets_tron_transfers():
+    from swapsack.chains.history import AddressTxs, wallet_history
+    from swapsack.chains.tron import parse_trongrid_tx
+
+    txs = [
+        parse_trongrid_tx(
+            _tg_tx(
+                "ee" * 32,
+                "TransferContract",
+                {
+                    "amount": 1_000_000,
+                    "owner_address": OURS_HEX,
+                    "to_address": VAULT_HEX,
+                },
+                fee=1_100_000,
+            )
+        ),
+        parse_trongrid_tx(
+            _tg_tx(
+                "dd" * 32,
+                "TransferContract",
+                {
+                    "amount": 7_000_000,
+                    "owner_address": VAULT_HEX,
+                    "to_address": OURS_HEX,
+                },
+            )
+        ),
+    ]
+    history = wallet_history(
+        records=[("m/44'/195'/0'/0/0", OURS)],
+        address_txs=lambda a: AddressTxs(transactions=txs),
+    )
+    by_id = {tx.txid: tx for tx in history.transactions}
+    assert by_id["ee" * 32].net == -2_100_000
+    assert by_id["ee" * 32].counterparties == (VAULT,)
+    assert by_id["dd" * 32].net == 7_000_000
+    assert not by_id["dd" * 32].outgoing
