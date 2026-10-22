@@ -49,7 +49,8 @@ dedicated small-value seed over reusing a real wallet's.
 
 - **BTC signet:** https://signetfaucet.com/ (volunteer-run and unreliable:
   it has been offline for stretches, e.g. Cloudflare 522 in October 2026) ·
-  https://alt.signetfaucet.com/ (a mirror run by someone else).  Signet coins
+  `alt.signetfaucet.com` (a mirror run by someone else; down in October 2026,
+  redirecting to a 403).  Signet coins
   are stable, unlike testnet3.  Not https://faucet.mutinynet.com/: that pays
   out on Mutinynet, a separate signet, so the coins never reach the default
   signet the tests use.  If you

@@ -120,8 +120,8 @@ EIP-712 order fields do. This is the fact that moves the recommendation from
 - Chainflip SDK: <https://docs.chainflip.io/brokers/how-to-use-chainflip-sdk>
 - Broker API: <https://docs.chainflip.io/brokers/broker-api>
 - SwapKit broker/channel (third-party hosted broker example): the deep link read
-  on 2026-07-13 has since 404'd, so this points at the section instead —
-  <https://docs.swapkit.dev/swapkit-api>
+  on 2026-07-13 and then its section page have both 404'd since, so this
+  points at the docs root — <https://docs.swapkit.dev/>
 - Live probes (2026-07-13): `chainflip-swap.chainflip.io/v2/quote`,
   `mainnet-rpc.chainflip.io` (`cf_supported_assets`, `cf_environment`,
   `cf_all_open_deposit_channels`, `cf_get_open_deposit_channels`).
