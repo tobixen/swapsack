@@ -29,9 +29,23 @@ address against the *other* leg's observed sender. If only one lands the
 position sits pending (or is refunded after a timeout) — a real partial-failure
 hazard, so the caller must prepare + gate **both** legs before broadcasting
 **either**.
+
+Add (protocol side only): a native ``MsgDeposit`` of RUNE/CACAO alone with the
+plain ``+:POOL`` memo. The record is filed under the RUNE/CACAO address with no
+asset address, so a withdraw (the protocol-side trigger above) pays out
+*entirely* in RUNE/CACAO. It takes entry slip like a single-sided asset add.
+
+CACAO Pool (Maya) / RUNEPool (THORChain): not a pool of its own but a share of
+the protocol-owned liquidity spread across every pool. Both networks use the
+same memos: deposit is a ``MsgDeposit`` of CACAO/RUNE with memo ``pool+``;
+withdraw is a ``MsgDeposit`` of **zero** CACAO/RUNE with
+``pool-:<basis_points>``, refused until ``<TOKEN>POOLDEPOSITMATURITYBLOCKS``
+have passed since the last deposit. See ``docs/cacao.md``.
 """
 
 from __future__ import annotations
+
+import dataclasses
 
 MAX_BASIS_POINTS = 10000
 
@@ -58,11 +72,15 @@ def symmetric_add_memo(pool: str, paired_address: str) -> str:
 WITHDRAW_TRIGGER_AMOUNT = 1
 
 
-def withdraw_liquidity_memo(pool: str, basis_points: int) -> str:
+def _check_basis_points(basis_points: int) -> None:
     if not 1 <= basis_points <= MAX_BASIS_POINTS:
         raise ValueError(
             f"basis_points must be 1..{MAX_BASIS_POINTS}, got {basis_points}"
         )
+
+
+def withdraw_liquidity_memo(pool: str, basis_points: int) -> str:
+    _check_basis_points(basis_points)
     return f"-:{pool}:{basis_points}"
 
 
@@ -82,3 +100,32 @@ def pair_amount(asset_amount: int, balance_asset: int, balance_protocol: int) ->
     if asset_amount <= 0:
         raise ValueError(f"asset_amount must be positive, got {asset_amount}")
     return asset_amount * balance_protocol // balance_asset
+
+
+@dataclasses.dataclass(frozen=True)
+class ProtocolPool:
+    """A network's protocol pool: its token (which also prefixes its mimir
+    keys, e.g. ``RUNEPOOLENABLED``), the token's decimals, and its name."""
+
+    token: str
+    decimals: int
+    name: str
+
+
+# By client path prefix — the one table every pool lookup reads.
+PROTOCOL_POOLS = {
+    "mayachain": ProtocolPool("CACAO", 10, "CACAO Pool"),
+    "thorchain": ProtocolPool("RUNE", 8, "RUNEPool"),
+}
+
+# mayanode memo_cacao_pool.go and thornode memo_rune_pool.go. Both withdraw
+# handlers refuse any coin (Msg{Cacao,Rune}PoolWithdraw.ValidateBasic: "coins
+# must be empty"), while the deposit handler insists on exactly one — so the
+# trigger is one coin of amount 0.
+POOL_DEPOSIT_MEMO = "pool+"
+POOL_WITHDRAW_AMOUNT = 0
+
+
+def pool_withdraw_memo(basis_points: int) -> str:
+    _check_basis_points(basis_points)
+    return f"pool-:{basis_points}"

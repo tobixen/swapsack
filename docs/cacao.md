@@ -147,10 +147,44 @@ broadcast test gated on a funded secret, mirroring the Nile TRC-20 loop.
   quoting backend must be the home network). Amount scale (1e10) is
   the same bank denom as `MsgSend`, cross-checked against the quote's
   `recommended_min_amount_in`. Sweep is refused (fixed native fee).
-- **Liquidity for CACAO is not a single-sided operation.** CACAO is the
-  settlement asset (the base of every pool), so "adding CACAO liquidity" is the
-  RUNE-leg of a *symmetric* add — that's TODO #4, not a per-asset LP like BTC.
-  The `MsgDeposit` builder here is exactly what that will reuse.
+- **Liquidity with CACAO.** CACAO is the settlement asset (the base of every
+  pool), so it has no pool of its own. It goes in three ways, all through the
+  `MsgDeposit` builder here:
+  - as the protocol leg of a *symmetric* add (`add-liquidity --symmetric`,
+    see `docs/liquidity-symmetric.md`);
+  - **alone into one pool** (`add-liquidity --protocol-only`): memo `+:POOL`
+    with no paired address. `handler_add_liquidity.go` files it under the
+    `maya1` address with an empty asset address, and `assetToWithdrawV89` then
+    pays a withdraw out entirely as CACAO. The record is keyed by that address,
+    though: an existing symmetric record absorbs the CACAO (and withdraws
+    proportionally), and a pending one refuses the add, so both are looked up
+    first. It is refused while the pool is
+    Staged ("cannot add single sided liquidity while a pool is staged"),
+    which `prepare_protocol_only_liquidity` checks first;
+  - into the **CACAO Pool** (`cacao-pool-add` / `cacao-pool-withdraw`): memos
+    `pool+` and `pool-:<bps>` (`memo_cacao_pool.go`). The withdraw must carry
+    **zero** CACAO: `MsgCacaoPoolWithdraw.ValidateBasic` refuses any non-empty
+    coin, while the deposit handler (`validateV127`) insists on exactly one,
+    so it is one coin of
+    amount `0`, as in mayanode's own `handler_cacao_pool_test.go`. Both are
+    gated by mimir `CACAOPOOLENABLED`, and a withdraw is refused until
+    `CACAOPOOLDEPOSITMATURITYBLOCKS` have passed since `last_deposit_height`
+    (from `/mayachain/cacao_provider/<addr>`, compared to `/lastblock`).
+  THORChain's RUNEPool (`rune-pool-add` / `rune-pool-withdraw`) shares the
+  code: same memos, same zero-coin withdraw (`MsgRunePoolWithdraw`), endpoint
+  `/thorchain/rune_provider/<addr>`, and mimir keys prefixed `RUNE` instead of
+  `CACAO`, plus `RUNEPOOLHALTDEPOSIT` / `RUNEPOOLHALTWITHDRAW`, which Maya lacks
+  and which are block heights (halted once `height >= value > 0`), not on/off
+  switches (thornode `ebbfe62`, 2026-10-22). A missing maturity key falls back
+  to `/constants` (Maya 14400, THORChain 1296000), as the node does.
+  **A refused withdraw still looks accepted:** when the inner handler fails on
+  a zero-coin deposit, `handler_deposit.go` returns code 0 and keeps the fee.
+  So `*-pool-withdraw` polls the provider record for about ten blocks and
+  warns when the units did not drop. RUNEPool can refuse every withdraw at once
+  when its reserve backstop trips (`RUNEPOOLMAXRESERVEBACKSTOP`,
+  `handler_rune_pool_withdraw.go`); that is not checked beforehand.
+  Read off mayanode `cf97144` (2026-10-19). Neither of the last two has been
+  broadcast on mainnet yet.
 
 ## See also
 

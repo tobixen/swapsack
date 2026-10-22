@@ -162,6 +162,44 @@ What you get and what it costs:
 See [docs/liquidity-symmetric.md](docs/liquidity-symmetric.md) for the
 mechanics and the full safety protocol.
 
+### CACAO alone (no asset)
+
+There are two ways to put CACAO to work without adding anything else.  Both
+are **mainnet-unproven**, so start small.
+
+```sh
+# 1. CACAO into one pool: --amount is CACAO here, not the pool's asset
+swapsack add-liquidity --asset BTC --amount 100 --protocol-only --backend maya
+# 2. Maya's CACAO Pool: a share of the protocol-owned liquidity in every pool
+swapsack cacao-pool-add --amount 100
+swapsack cacao-pool-withdraw --bps 10000
+```
+
+* `--protocol-only` deposits CACAO with the plain `+:POOL` memo.  It takes
+  entry slip like a single-sided asset add, and the position **withdraws
+  entirely as CACAO**: you never hold the pool's asset.  The exception: if
+  your `maya1…` address already holds a symmetric position in that pool, the
+  CACAO joins it (the CLI says so).  `withdraw-liquidity`
+  finds it and triggers from the `maya1…` side, as for a symmetric position.
+  If you also hold a single-sided position of the asset in the same pool,
+  `withdraw-liquidity` will only reach the CACAO-side one.
+* The **CACAO Pool** has no pool of its own: the protocol spreads it across
+  every pool, so you carry impermanent loss against all of them in proportions
+  you do not choose.  A withdraw is refused for
+  `CACAOPOOLDEPOSITMATURITYBLOCKS` (302400 blocks, about 21 days) after your
+  *last* deposit, and a new deposit restarts that lock for the whole share;
+  the CLI checks this before broadcasting.  `balance` shows the share under
+  CACAO.
+* THORChain's **RUNEPool** is the same thing for RUNE: `rune-pool-add` and
+  `rune-pool-withdraw`, locked for `RUNEPOOLDEPOSITMATURITYBLOCKS` (432000
+  blocks, about 30 days), and also refused from the block height in
+  `RUNEPOOLHALTDEPOSIT` / `RUNEPOOLHALTWITHDRAW`.  RUNEPool providers have
+  spent long periods at a loss, a reserve backstop can block every withdraw at
+  once, and no RUNE transaction has been broadcast by swapsack yet.
+* A refused pool withdraw still gets a txid and costs the fee, so the
+  `*-pool-withdraw` commands watch the share for about a minute afterwards and
+  warn if it did not shrink.
+
 ## Currency roadmap
 
 It's on the roadmap to support the union of the currency sets
@@ -193,8 +231,8 @@ capability grid above for the per-feature detail.
 | ADA | Cardano | Cardano | partial | **Maya-only**; destination only (via `--dest`), Shelley `addr1…` bech32 (Byron `Ae2…`/`DdzFF…` not accepted — no verifiable checksum). Usually reachable **only from an account-model source** (ETH): the base address wallets normally hand out is 103 chars, which pushes the swap memo past the 80-byte OP_RETURN a BTC/DASH/ZEC source must fit it in — the CLI checks the actual address and refuses up front, so a shorter Shelley form (an enterprise address is 58 chars) does work from BTC |
 | DASH | Dash | UTXO | partial | **Maya-only** (`--backend maya`/`auto`). Every feature is wired: hold, balance, destination, send/sweep, swap-**from** and single-sided LP (Maya, pairs with CACAO) — but all spend paths ship **mainnet-unproven** (no Dash testnet; opt-in mainnet test in docs/testnet.md), hence partial. See [docs/dash.md](docs/dash.md) |
 | ZEC | Zcash | UTXO | partial | **Maya-only** (`--backend maya`/`auto`); transparent (`t1…`) addresses only. Every feature is wired: hold, balance, destination, send/sweep, swap-**from** and single-sided LP (Maya, pairs with CACAO) — the spend paths ride a bespoke v4/ZIP-243 signer with ZIP-317 fees (bitcoinlib can't sign Zcash), anchored to a real mainnet tx in the tests but shipping **mainnet-unproven** (no testnet; opt-in test in docs/testnet.md), hence partial. See [docs/zcash.md](docs/zcash.md) |
-| RUNE | THORChain native | THORChain | partial | Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`) done — reuses the shared Cosmos-SDK adapter (RUNE is 1e8). Spend paths ship unproven on mainnet (no testnet); see [docs/cacao.md](docs/cacao.md) |
-| CACAO | Maya native | Maya | partial | **Maya-only**; 1e10 decimals (not 1e8). Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`, no vault) done; single-sided liquidity n/a for the settlement asset — instead CACAO is the **protocol leg of `add-liquidity --symmetric`**, which is wired and **mainnet-proven** ([docs/live-session-2026-08-16.md](docs/live-session-2026-08-16.md)). The `MsgSend` path behind a plain `send` has still never broadcast; see [docs/cacao.md](docs/cacao.md) |
+| RUNE | THORChain native | THORChain | partial | Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`) done — reuses the shared Cosmos-SDK adapter (RUNE is 1e8). RUNEPool (`rune-pool-add`/`-withdraw`) and a RUNE-only add (`add-liquidity --protocol-only`) are wired. Spend paths ship unproven on mainnet (no testnet); see [docs/cacao.md](docs/cacao.md) |
+| CACAO | Maya native | Maya | partial | **Maya-only**; 1e10 decimals (not 1e8). Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`, no vault) done; CACAO is the **protocol leg of `add-liquidity --symmetric`**, which is wired and **mainnet-proven** ([docs/live-session-2026-08-16.md](docs/live-session-2026-08-16.md)); a CACAO-only add (`--protocol-only`) and the CACAO Pool (`cacao-pool-add`/`-withdraw`) are wired but **mainnet-unproven**. The `MsgSend` path behind a plain `send` has still never broadcast; see [docs/cacao.md](docs/cacao.md) |
 | ATOM | Cosmos Hub | Cosmos | partial | destination only. Without `--dest` the payout goes to your own `cosmos1…` address (`m/44'/118'/0'/0/0`, the path Keplr and other Cosmos wallets use) — but swapsack **cannot spend ATOM**, so the swap warns: to move the coins, import the seed into a Cosmos wallet — with your BIP-39 passphrase too, if you set one, which rules out wallets that cannot take one. `swapsack address` prints the `cosmos1…` address, so check it against the wallet first |
 | XRP | XRP Ledger | XRP | partial | destination only (via `--dest`). Classic `r…` addresses only — THORChain rejects X-addresses and `address:tag`, so a payout **cannot carry a destination tag**; never send to an exchange deposit address that needs one |
 | SOL | Solana | Solana | none | Blocked: `SOL.SOL` exists on THORChain but is **halted** (a live quote returns "trading is halted"), so there is nothing to swap against. Chainflip would be the other route — see [docs/chainflip.md](docs/chainflip.md) |

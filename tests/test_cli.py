@@ -5839,3 +5839,456 @@ def test_btc_history_asks_nothing(monkeypatch, capsys):
 
     monkeypatch.setattr("builtins.input", no_input)
     assert cli.cmd_history(build_parser().parse_args(["history"])) == 0
+
+
+# --- CACAO-only add and the CACAO Pool ---------------------------------------
+
+
+class _FakeNativeMaya(_FakeSymMaya):
+    """_FakeSymMaya that records what it was asked to build."""
+
+    def __init__(self, balance=10**20):
+        super().__init__(balance=balance)
+        self.deposits = []
+
+    def build_and_verify_native_deposit(self, **kwargs):
+        self.deposits.append(kwargs)
+        return super().build_and_verify_native_deposit(**kwargs)
+
+
+class _FakeMayaClient(_FakeSymThor):
+    def __init__(self, *, provider=None, mimir=None):
+        self._provider = provider
+        self._mimir = {"CACAOPOOLENABLED": 1, "CACAOPOOLDEPOSITMATURITYBLOCKS": 302400}
+        self._mimir.update(mimir or {})
+        self.path_prefix = "mayachain"
+
+    def mimir(self):
+        return self._mimir
+
+    def pool_provider(self, address):
+        return self._provider
+
+    def last_height(self):
+        return 20_000_000
+
+    def liquidity_provider(self, pool, address):
+        return None
+
+
+def _wire_native(monkeypatch, *, maya=None, client=None):
+    import swapsack.cli as cli
+
+    maya = maya or _FakeNativeMaya()
+    client = client or _FakeMayaClient()
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr(cli, "_maya_adapter", lambda args, passphrase="": maya)
+    monkeypatch.setattr(cli, "_liquidity_client", lambda args: client)
+    return maya
+
+
+def test_add_liquidity_protocol_only_dry_run(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    maya = _wire_native(monkeypatch)
+    args = build_parser().parse_args(
+        [
+            "add-liquidity",
+            "--asset",
+            "BTC",
+            "--amount",
+            "50",
+            "--protocol-only",
+            "--backend",
+            "maya",
+        ]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    (deposit,) = maya.deposits
+    assert deposit["memo"] == "+:BTC.BTC"
+    assert deposit["amount"] == 50 * 10**10  # --amount is CACAO, 1e10
+    out = capsys.readouterr().out
+    assert "50.00000000 CACAO" in out
+    assert "withdraws entirely as CACAO" in out
+    assert "DRY RUN" in out
+    assert not maya.broadcasted
+
+
+def test_add_liquidity_protocol_only_excludes_symmetric():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "add-liquidity",
+                "--asset",
+                "BTC",
+                "--amount",
+                "1",
+                "--protocol-only",
+                "--symmetric",
+            ]
+        )
+
+
+def test_add_liquidity_protocol_only_refuses_amount_max(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    maya = _wire_native(monkeypatch)
+    args = build_parser().parse_args(
+        [
+            "add-liquidity",
+            "--asset",
+            "BTC",
+            "--amount",
+            "max",
+            "--protocol-only",
+            "--backend",
+            "maya",
+        ]
+    )
+    assert cli.cmd_add_liquidity(args) == 2
+    assert "max" in capsys.readouterr().err
+    assert maya.deposits == []
+
+
+def test_add_liquidity_protocol_only_refuses_wrong_backend(monkeypatch, capsys):
+    """DASH has no THORChain pool: refused before the keystore is touched."""
+    import swapsack.cli as cli
+
+    def no_keystore(args):
+        raise AssertionError("keystore opened")
+
+    monkeypatch.setattr(cli, "_load_mnemonic", no_keystore)
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "DASH", "--amount", "1", "--protocol-only"]
+    )
+    assert cli.cmd_add_liquidity(args) == 2
+
+
+def test_withdraw_protocol_only_position_says_it_pays_out_in_cacao(monkeypatch, capsys):
+    import swapsack.cli as cli
+    from swapsack.thorchain import parse_liquidity_provider
+
+    position = parse_liquidity_provider(
+        {
+            "asset": "BTC.BTC",
+            "asset_address": "",
+            "cacao_address": PROTOCOL_ADDRESS,
+            "units": "1000",
+            "asset_redeem_value": "100",
+            "cacao_redeem_value": "100000",
+        }
+    )
+    seen, protocol = _wire_withdraw(monkeypatch, position=position)
+    args = build_parser().parse_args(
+        ["withdraw-liquidity", "--asset", "BTC", "--backend", "maya"]
+    )
+    assert cli.cmd_withdraw_liquidity(args) == 0
+    assert protocol.deposits[0]["memo"] == "-:BTC.BTC:10000"
+    out = capsys.readouterr().out
+    assert "SYMMETRIC" not in out
+    assert f"returns:  everything as CACAO to {PROTOCOL_ADDRESS}" in out
+
+
+def test_cacao_pool_add_dry_run(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    maya = _wire_native(monkeypatch)
+    args = build_parser().parse_args(["cacao-pool-add", "--amount", "12.5"])
+    assert cli.cmd_pool_add(args) == 0
+    (deposit,) = maya.deposits
+    assert deposit["memo"] == "pool+"
+    assert deposit["amount"] == 125 * 10**9
+    out = capsys.readouterr().out
+    assert "12.50000000 CACAO" in out
+    assert "302400 blocks" in out  # the lock-up, before the user confirms
+    assert "DRY RUN" in out
+    assert not maya.broadcasted
+
+
+def test_cacao_pool_add_reports_a_disabled_pool(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    maya = _wire_native(
+        monkeypatch, client=_FakeMayaClient(mimir={"CACAOPOOLENABLED": 0})
+    )
+    args = build_parser().parse_args(["cacao-pool-add", "--amount", "1"])
+    assert cli.cmd_pool_add(args) == 1
+    assert "CACAOPOOLENABLED" in capsys.readouterr().err
+    assert maya.deposits == []
+
+
+def test_cacao_pool_withdraw_dry_run(monkeypatch, capsys):
+    import swapsack.cli as cli
+    from swapsack.thorchain import PoolProviderPosition
+
+    provider = PoolProviderPosition(
+        address="maya1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+        units=10**12,
+        value=4 * 10**12,
+        pnl=10**11,
+        deposit_amount=39 * 10**11,
+        last_deposit_height=1,
+    )
+    maya = _wire_native(monkeypatch, client=_FakeMayaClient(provider=provider))
+    args = build_parser().parse_args(["cacao-pool-withdraw", "--bps", "5000"])
+    assert cli.cmd_pool_withdraw(args) == 0
+    (deposit,) = maya.deposits
+    assert deposit["memo"] == "pool-:5000"
+    assert deposit["amount"] == 0
+    out = capsys.readouterr().out
+    assert "~200.00000000 CACAO" in out  # half of a 400 CACAO position
+    assert "DRY RUN" in out
+
+
+def test_cacao_pool_withdraw_reports_an_immature_deposit(monkeypatch, capsys):
+    import swapsack.cli as cli
+    from swapsack.thorchain import PoolProviderPosition
+
+    provider = PoolProviderPosition(
+        address="maya1x",
+        units=1,
+        value=1,
+        pnl=0,
+        deposit_amount=1,
+        last_deposit_height=19_999_000,
+    )
+    maya = _wire_native(monkeypatch, client=_FakeMayaClient(provider=provider))
+    args = build_parser().parse_args(["cacao-pool-withdraw"])
+    assert cli.cmd_pool_withdraw(args) == 1
+    assert "301400 more blocks" in capsys.readouterr().err
+    assert maya.deposits == []
+
+
+def test_balance_shows_the_cacao_pool_position(monkeypatch, capsys):
+    import swapsack.cli as cli
+    from swapsack.thorchain import PoolProviderPosition
+
+    class Client:
+        def pool_provider(self, address):
+            assert address == PROTOCOL_ADDRESS
+            return PoolProviderPosition(
+                address=address,
+                units=1,
+                value=21232836938488,
+                pnl=342836938488,
+                deposit_amount=20890000000000,
+                last_deposit_height=1,
+            )
+
+    rows = []
+    cli._report_protocol_pool(
+        [_FakeLpBackend("thorchain", None), _FakeLpBackend("maya", Client())],
+        "maya",
+        {"maya": PROTOCOL_ADDRESS},
+        rows,
+    )
+    assert [r.label.strip() for r in rows] == ["+CACAO Pool"]
+    assert rows[0].amount == pytest.approx(2123.2836938488)
+
+
+def test_balance_shows_the_runepool_position():
+    import swapsack.cli as cli
+    from swapsack.thorchain import PoolProviderPosition
+
+    class Client:
+        def pool_provider(self, address):
+            assert address == "thor1abc"
+            return PoolProviderPosition(
+                address=address,
+                units=1,
+                value=2151132778,
+                pnl=-690095260,
+                deposit_amount=2941054744,
+                last_deposit_height=1,
+            )
+
+    rows = []
+    cli._report_protocol_pool(
+        [_FakeLpBackend("thorchain", Client()), _FakeLpBackend("maya", None)],
+        "thorchain",
+        {"thorchain": "thor1abc"},
+        rows,
+    )
+    assert [r.label.strip() for r in rows] == ["+RUNEPool"]
+    assert rows[0].amount == pytest.approx(21.51132778)
+
+
+class _FakeNativeThor(_FakeNativeMaya):
+    chain = "THOR"
+    asset = "THOR.RUNE"
+    symbol = "RUNE"
+    decimals = 8
+
+    def derive_address(self, mnemonic, path=None):
+        return "thor1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+
+
+class _FakeThorClient(_FakeMayaClient):
+    def __init__(self, *, provider=None, mimir=None):
+        super().__init__(provider=provider)
+        self._mimir = {"RUNEPOOLENABLED": 1, "RUNEPOOLDEPOSITMATURITYBLOCKS": 432000}
+        self._mimir.update(mimir or {})
+        self.path_prefix = "thorchain"
+
+
+def test_rune_pool_add_dry_run(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    thor = _FakeNativeThor()
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr(cli, "_thor_adapter", lambda args, passphrase="": thor)
+    monkeypatch.setattr(cli, "_liquidity_client", lambda args: _FakeThorClient())
+    args = build_parser().parse_args(["rune-pool-add", "--amount", "2.5"])
+    assert args.backend == "thorchain"
+    assert cli.cmd_pool_add(args) == 0
+    (deposit,) = thor.deposits
+    assert deposit["memo"] == "pool+"
+    assert deposit["amount"] == 250_000_000  # RUNE is 1e8
+    out = capsys.readouterr().out
+    assert "2.50000000 RUNE into the RUNEPool" in out
+    assert "432000 blocks" in out
+    assert not thor.broadcasted
+
+
+def test_rune_pool_withdraw_parses_to_thorchain():
+    args = build_parser().parse_args(["rune-pool-withdraw", "--bps", "100"])
+    assert args.backend == "thorchain" and args.bps == 100
+    assert build_parser().parse_args(["cacao-pool-withdraw"]).backend == "maya"
+
+
+class _SequencedPoolClient(_FakeMayaClient):
+    """A Maya client whose provider record changes after the broadcast."""
+
+    def __init__(self, positions):
+        super().__init__()
+        self._positions = list(positions)
+
+    def pool_provider(self, address):
+        return (
+            self._positions.pop(0) if len(self._positions) > 1 else self._positions[0]
+        )
+
+
+def _pool_position(units):
+    from swapsack.thorchain import PoolProviderPosition
+
+    return PoolProviderPosition(
+        address="maya1x",
+        units=units,
+        value=units * 4,
+        pnl=0,
+        deposit_amount=units * 4,
+        last_deposit_height=1,
+    )
+
+
+def test_cacao_pool_withdraw_confirms_the_units_dropped(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    client = _SequencedPoolClient(
+        [_pool_position(10**12), _pool_position(10**12), _pool_position(5 * 10**11)]
+    )
+    maya = _wire_native(monkeypatch, client=client)
+    args = build_parser().parse_args(
+        ["cacao-pool-withdraw", "--bps", "5000", "--confirm", "--yes"]
+    )
+    assert cli.cmd_pool_withdraw(args) == 0
+    assert maya.broadcasted
+    assert "withdrawn: units 1000000000000 -> 500000000000" in capsys.readouterr().out
+
+
+def test_cacao_pool_withdraw_says_when_the_network_refused_it(monkeypatch, capsys):
+    """A zero-coin deposit whose handler fails still returns code 0: the txid
+    proves nothing, only the provider record does."""
+    import swapsack.cli as cli
+
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    client = _SequencedPoolClient([_pool_position(10**12)])
+    _wire_native(monkeypatch, client=client)
+    args = build_parser().parse_args(["cacao-pool-withdraw", "--confirm", "--yes"])
+    assert cli.cmd_pool_withdraw(args) == 1
+    err = capsys.readouterr().err
+    assert "units unchanged" in err and "fee" in err
+
+
+def test_bps_out_of_range_is_refused_before_the_keystore(monkeypatch):
+    import swapsack.cli as cli
+
+    monkeypatch.setattr(
+        cli, "_load_mnemonic", lambda args: pytest.fail("keystore opened")
+    )
+    for command in ("cacao-pool-withdraw", "rune-pool-withdraw", "withdraw-liquidity"):
+        extra = ["--asset", "BTC"] if command == "withdraw-liquidity" else []
+        for bps in ("0", "10001"):
+            with pytest.raises(SystemExit):
+                build_parser().parse_args([command, *extra, "--bps", bps])
+
+
+def test_add_liquidity_protocol_only_reports_an_unknown_pool(monkeypatch, capsys):
+    import niquests
+
+    import swapsack.cli as cli
+
+    class NoPool(_FakeMayaClient):
+        def liquidity_provider(self, pool, address):
+            return None
+
+        def pool(self, asset):
+            raise niquests.exceptions.HTTPError("404 Client Error")
+
+    maya = _wire_native(monkeypatch, client=NoPool())
+    args = build_parser().parse_args(
+        [
+            "add-liquidity",
+            "--asset",
+            "BTC",
+            "--amount",
+            "1",
+            "--protocol-only",
+            "--backend",
+            "maya",
+        ]
+    )
+    assert cli.cmd_add_liquidity(args) == 1
+    assert "ABORTED" in capsys.readouterr().err
+    assert maya.deposits == []
+
+
+def test_add_liquidity_protocol_only_says_it_joins_a_symmetric_position(
+    monkeypatch, capsys
+):
+    import swapsack.cli as cli
+
+    class WithSymmetric(_FakeMayaClient):
+        def liquidity_provider(self, pool, address):
+            return _symmetric_position(pool)
+
+    _wire_native(monkeypatch, client=WithSymmetric())
+    args = build_parser().parse_args(
+        [
+            "add-liquidity",
+            "--asset",
+            "BTC",
+            "--amount",
+            "1",
+            "--protocol-only",
+            "--backend",
+            "maya",
+        ]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    out = capsys.readouterr().out
+    assert f"joins your symmetric BTC.BTC position (asset side {EVM_ADDRESS})" in out
+    assert "withdraws entirely as" not in out
+
+
+def test_confirm_prompt_does_not_call_everything_a_swap(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    asked = []
+    monkeypatch.setattr("builtins.input", lambda prompt: asked.append(prompt) or "no")
+    _wire_native(monkeypatch)
+    args = build_parser().parse_args(["cacao-pool-add", "--amount", "1", "--confirm"])
+    assert cli.cmd_pool_add(args) == 0
+    assert asked and "transaction shown above" in asked[0]

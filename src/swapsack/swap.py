@@ -18,10 +18,13 @@ from typing import Protocol
 
 # DEFAULT_TOLERANCE_BPS lives in thorchain (re-exported here for callers like
 # cli) so the client default and this protocol default can't drift apart.
+from swapsack.liquidity import ProtocolPool
 from swapsack.thorchain import (
     DEFAULT_TOLERANCE_BPS,
     ChainStatus,
+    LiquidityPosition,
     PoolDepth,
+    PoolProviderPosition,
     Quote,
     ThorchainError,
     effective_tolerance_bps,
@@ -42,6 +45,9 @@ _TOLERANCE_REJECTIONS = (
 )
 
 _NETWORK_NAMES = {"thorchain": "THORChain", "mayachain": "Maya"}
+# Maya's and THORChain's nominal block time (Maya measured ~5.9 s over 10k
+# blocks, 2026-10-22); only used to turn a block count into a rough wait.
+BLOCK_SECONDS = 6
 
 
 def _network_name(thorchain: object) -> str:
@@ -168,6 +174,29 @@ class ThorchainLike(Protocol):
     def mimir(self) -> dict: ...
 
     def pool(self, asset: str) -> PoolDepth: ...
+
+
+def _require_protocol_balance(
+    protocol_adapter,  # noqa: ANN001 (chains.cosmos.CosmosAdapter)
+    address: str,
+    amount: int,
+    *,
+    what: str,
+    why: str = "",
+) -> None:
+    """Abort unless ``address`` holds ``amount`` RUNE/CACAO (native base units).
+
+    A native deposit the chain will bounce still costs its fixed fee, so this
+    refuses up front rather than broadcasting a tx known to fail.
+    """
+    held = protocol_adapter.fetch_balance(address)
+    if held < amount:
+        unit = 10**protocol_adapter.decimals
+        raise SwapAborted(
+            f"{what} needs {amount / unit:.8f} {protocol_adapter.symbol}{why} "
+            f"but {address} holds {held / unit:.8f} "
+            f"(and the native tx fee comes out of that too)"
+        )
 
 
 def lp_deposit_pause_reason(mimir: dict, pool: str) -> str | None:
@@ -474,15 +503,13 @@ def prepare_symmetric_liquidity(
     protocol_amount = pair_amount(
         asset_amount, depth.balance_asset, depth.balance_protocol
     )
-    held = protocol_adapter.fetch_balance(protocol_address)
-    if held < protocol_amount:
-        unit = 10**protocol_adapter.decimals
-        raise SwapAborted(
-            f"the {protocol_adapter.symbol} leg needs "
-            f"{protocol_amount / unit:.8f} {protocol_adapter.symbol} at the "
-            f"current pool ratio but {protocol_address} holds {held / unit:.8f} "
-            f"(and the native tx fee comes out of that too)"
-        )
+    _require_protocol_balance(
+        protocol_adapter,
+        protocol_address,
+        protocol_amount,
+        what=f"the {protocol_adapter.symbol} leg",
+        why=" at the current pool ratio",
+    )
 
     asset_memo = symmetric_add_memo(pool, protocol_address)
     protocol_memo = symmetric_add_memo(pool, asset_address)
@@ -552,3 +579,181 @@ def execute_symmetric_liquidity(
         asset_txid=asset_txid,
         broadcast=True,
     )
+
+
+# --- protocol-side-only liquidity and Maya's CACAO Pool ---------------------
+
+
+def prepare_protocol_only_liquidity(
+    *,
+    thorchain: ThorchainLike,
+    protocol_adapter,  # noqa: ANN001 (chains.cosmos.CosmosAdapter)
+    pool: str,
+    amount: int,
+    protocol_address: str,
+    mnemonic: str,
+    now: int,
+) -> tuple[Prepared, LiquidityPosition | None]:
+    """Build + gate a RUNE/CACAO-only add to ``pool`` (no asset deposited).
+
+    A native ``MsgDeposit`` of ``amount`` (native base units) with the plain
+    ``+:POOL`` memo: no paired address, so the protocol files the position under
+    the signer with an empty asset address, and withdrawing it pays out entirely
+    in RUNE/CACAO. Like a single-sided asset add it takes entry slip.
+
+    The record is keyed by the signer, so an existing one changes that: a
+    symmetric position absorbs the deposit (and withdraws proportionally with
+    it), and a pending one refuses it. Returns the existing record, if any, so
+    the caller can say which.
+    """
+    from swapsack.liquidity import add_liquidity_memo
+
+    reason = lp_deposit_pause_reason(thorchain.mimir(), pool)
+    if reason:
+        raise SwapAborted(
+            f"{_network_name(thorchain)} has LP deposits paused (mimir {reason}); "
+            f"the add would be refunded minus the fee. Not broadcasting."
+        )
+    existing = thorchain.liquidity_provider(pool, protocol_address)
+    if existing is not None and not existing.units:
+        # handler_add_liquidity.go pins a pending record's asset address, and
+        # an add with none is refused (errAddLiquidityMismatchAddr).
+        raise SwapAborted(
+            f"{protocol_address} has a pending (unpaired) add in {pool}; a "
+            f"one-sided add would be refused and the fee spent. Let the pending "
+            f"leg pair or be refunded first"
+        )
+    status = thorchain.pool(pool).status
+    if status and status != "Available":
+        # handler_add_liquidity.go: "cannot add single sided liquidity while a
+        # pool is staged".
+        raise SwapAborted(
+            f"{pool} is {status} on {_network_name(thorchain)}; a one-sided add "
+            f"needs an Available pool and would be refunded minus the fee"
+        )
+    _require_protocol_balance(
+        protocol_adapter, protocol_address, amount, what="the add"
+    )
+    prepared = protocol_adapter.build_and_verify_native_deposit(
+        memo=add_liquidity_memo(pool), amount=amount, mnemonic=mnemonic, now=now
+    )
+    return prepared, existing
+
+
+def _protocol_pool(thorchain: ThorchainLike) -> ProtocolPool:
+    """The protocol pool ``thorchain``'s network runs, or abort."""
+    from swapsack.liquidity import PROTOCOL_POOLS
+
+    pool = PROTOCOL_POOLS.get(getattr(thorchain, "path_prefix", ""))
+    if pool is None:
+        raise SwapAborted(f"{_network_name(thorchain)} has no CACAO Pool or RUNEPool")
+    return pool
+
+
+def _require_protocol_pool(thorchain: ThorchainLike, op: str) -> ProtocolPool:
+    """Abort unless the network's protocol pool takes ``op`` (DEPOSIT/WITHDRAW).
+
+    Both networks gate on ``<TOKEN>POOLENABLED``. THORChain also halts each
+    direction from a block height (``RUNEPOOLHALTDEPOSIT`` / ``…WITHDRAW``:
+    halted once ``height >= value > 0``), which Maya lacks, so those keys are
+    simply absent there. Each refusal would cost the fee.
+    """
+    pool = _protocol_pool(thorchain)
+    network = _network_name(thorchain)
+    mimir = thorchain.mimir()
+    if int(mimir.get(f"{pool.token}POOLENABLED", 0) or 0) < 1:
+        raise SwapAborted(
+            f"{network} has the {pool.name} disabled (mimir {pool.token}POOLENABLED);"
+            f" the transaction would be refused and the fee spent. Not broadcasting."
+        )
+    halt_key = f"{pool.token}POOLHALT{op}"
+    halt = int(mimir.get(halt_key, 0) or 0)
+    if halt > 0 and thorchain.last_height() >= halt:
+        raise SwapAborted(
+            f"{network} has {pool.name} {op.lower()}s halted since block {halt} "
+            f"(mimir {halt_key}); the transaction would be refused and the fee "
+            f"spent. Not broadcasting."
+        )
+    return pool
+
+
+def pool_maturity_blocks(thorchain: ThorchainLike) -> int:
+    """Blocks a protocol-pool deposit stays locked: mimir, else the constant.
+
+    The node falls back to its constant when the mimir key is unset (Maya
+    14400, THORChain 1296000 ≈ 90 days), so reading a missing key as 0 would
+    pass withdraws the node refuses. Neither known → abort.
+    """
+    pool = _protocol_pool(thorchain)
+    key = f"{pool.token}POOLDEPOSITMATURITYBLOCKS"
+    mimir = thorchain.mimir()
+    if key in mimir:
+        return int(mimir[key])
+    constant = (
+        thorchain.constants()
+        .get("int_64_values", {})
+        .get(f"{pool.token}PoolDepositMaturityBlocks")
+    )
+    if constant is None:
+        raise SwapAborted(
+            f"cannot tell the {pool.name} maturity ({key} is in neither mimir "
+            f"nor constants); refusing rather than guessing"
+        )
+    return int(constant)
+
+
+def prepare_pool_deposit(
+    *,
+    thorchain: ThorchainLike,
+    protocol_adapter,  # noqa: ANN001 (chains.cosmos.CosmosAdapter)
+    amount: int,
+    address: str,
+    mnemonic: str,
+    now: int,
+) -> Prepared:
+    """Build + gate a ``pool+`` deposit of ``amount`` (native base units)."""
+    from swapsack.liquidity import POOL_DEPOSIT_MEMO
+
+    pool = _require_protocol_pool(thorchain, "DEPOSIT")
+    _require_protocol_balance(
+        protocol_adapter, address, amount, what=f"the {pool.name} deposit"
+    )
+    return protocol_adapter.build_and_verify_native_deposit(
+        memo=POOL_DEPOSIT_MEMO, amount=amount, mnemonic=mnemonic, now=now
+    )
+
+
+def prepare_pool_withdraw(
+    *,
+    thorchain: ThorchainLike,
+    protocol_adapter,  # noqa: ANN001 (chains.cosmos.CosmosAdapter)
+    basis_points: int,
+    address: str,
+    mnemonic: str,
+    now: int,
+) -> tuple[Prepared, PoolProviderPosition]:
+    """Build + gate a ``pool-:<bps>`` trigger (zero coin); return the position.
+
+    The handler refuses a withdraw before ``<TOKEN>POOLDEPOSITMATURITYBLOCKS``
+    have passed since the last deposit, and the fee is spent all the same, so
+    that is checked here against the current height.
+    """
+    from swapsack.liquidity import POOL_WITHDRAW_AMOUNT, pool_withdraw_memo
+
+    memo = pool_withdraw_memo(basis_points)
+    pool = _require_protocol_pool(thorchain, "WITHDRAW")
+    position = thorchain.pool_provider(address)
+    if position is None:
+        raise SwapAborted(f"{address} has no {pool.name} position to withdraw")
+    maturity = pool_maturity_blocks(thorchain)
+    left = position.last_deposit_height + maturity - thorchain.last_height()
+    if left > 0:
+        raise SwapAborted(
+            f"the last {pool.name} deposit matures in {left} more blocks "
+            f"(~{left * BLOCK_SECONDS / 86400:.1f} days); the withdraw "
+            f"would be refused and the fee spent"
+        )
+    prepared = protocol_adapter.build_and_verify_native_deposit(
+        memo=memo, amount=POOL_WITHDRAW_AMOUNT, mnemonic=mnemonic, now=now
+    )
+    return prepared, position

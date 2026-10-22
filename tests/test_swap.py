@@ -99,6 +99,12 @@ class FakeThor:
     def mimir(self):
         return self._mimir
 
+    def liquidity_provider(self, pool, address):
+        return getattr(self, "lp_record", None)
+
+    def constants(self):
+        return getattr(self, "constants_payload", {"int_64_values": {}})
+
     def pool(self, asset):
         return self._pool_depth or PoolDepth(
             asset=asset,
@@ -854,3 +860,336 @@ def test_symmetric_execute_leaves_nothing_out_when_the_first_leg_fails():
             confirm=True,
         )
     assert not isinstance(excinfo.value, PartialSymmetricAdd)
+
+
+# --- CACAO-only (protocol-side) liquidity and the CACAO Pool -----------------
+#
+# Both are a single native MsgDeposit, so the money-sensitive parts are the
+# checks that must refuse *before* it is built: a paused or staged pool, a
+# disabled CACAO Pool, a short balance, an immature deposit.
+
+
+def make_protocol_only(thor=None, protocol_adapter=None, amount=10**12):
+    from swapsack.swap import prepare_protocol_only_liquidity
+
+    return prepare_protocol_only_liquidity(
+        thorchain=thor or FakeThor(chain="ETH", path_prefix="mayachain"),
+        protocol_adapter=protocol_adapter or FakeCosmosAdapter(),
+        pool="BTC.BTC",
+        amount=amount,
+        protocol_address=MAYA_ADDR,
+        mnemonic="x " * 12,
+        now=0,
+    )
+
+
+def test_protocol_only_add_is_a_plain_add_memo_from_the_protocol_side():
+    # No paired address: the handler files it under the CACAO address with an
+    # empty asset address, and a withdraw then pays out entirely in CACAO.
+    protocol_adapter = FakeCosmosAdapter()
+    p, existing = make_protocol_only(
+        protocol_adapter=protocol_adapter, amount=5 * 10**10
+    )
+    assert existing is None
+    assert protocol_adapter.built.memo == "+:BTC.BTC"
+    assert protocol_adapter.built.amount == 5 * 10**10
+    assert p.safe
+
+
+def test_protocol_only_add_refuses_a_paused_pool():
+    protocol_adapter = FakeCosmosAdapter()
+    thor = FakeThor(chain="ETH", mimir={"PAUSELPBTC": 1}, path_prefix="mayachain")
+    with pytest.raises(SwapAborted, match="^Maya has LP deposits paused"):
+        make_protocol_only(thor=thor, protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+def test_protocol_only_add_refuses_a_staged_pool():
+    # handler_add_liquidity.go: "cannot add single sided liquidity while a pool
+    # is staged" — it would be refunded minus the fee.
+    protocol_adapter = FakeCosmosAdapter()
+    staged = PoolDepth(
+        asset="BTC.BTC", balance_asset=1, balance_protocol=1, status="Staged"
+    )
+    thor = FakeThor(chain="ETH", path_prefix="mayachain", pool_depth=staged)
+    with pytest.raises(SwapAborted, match="Staged"):
+        make_protocol_only(thor=thor, protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+def test_protocol_only_add_refuses_a_short_balance():
+    protocol_adapter = FakeCosmosAdapter(balance=10**10)
+    with pytest.raises(SwapAborted, match="holds 1.00000000"):
+        make_protocol_only(protocol_adapter=protocol_adapter, amount=2 * 10**10)
+    assert protocol_adapter.built is None
+
+
+class FakeMayaPool(FakeThor):
+    """A Maya client that also answers the CACAO Pool endpoints."""
+
+    def __init__(self, *, provider=None, height=20_000_000, enabled=1, **kw):
+        mimir = {"CACAOPOOLENABLED": enabled, "CACAOPOOLDEPOSITMATURITYBLOCKS": 302400}
+        mimir.update(kw.pop("mimir", {}))
+        super().__init__(path_prefix="mayachain", mimir=mimir, **kw)
+        self._provider = provider
+        self._height = height
+
+    def pool_provider(self, address):
+        return self._provider
+
+    def last_height(self):
+        return self._height
+
+
+def _provider(last_deposit_height=19_000_000, units=10**12):
+    from swapsack.thorchain import PoolProviderPosition
+
+    return PoolProviderPosition(
+        address=MAYA_ADDR,
+        units=units,
+        value=2 * 10**12,
+        pnl=10**11,
+        deposit_amount=19 * 10**11,
+        last_deposit_height=last_deposit_height,
+    )
+
+
+def make_pool_deposit(thor=None, protocol_adapter=None, amount=10**12):
+    from swapsack.swap import prepare_pool_deposit
+
+    return prepare_pool_deposit(
+        thorchain=thor or FakeMayaPool(),
+        protocol_adapter=protocol_adapter or FakeCosmosAdapter(),
+        amount=amount,
+        address=MAYA_ADDR,
+        mnemonic="x " * 12,
+        now=0,
+    )
+
+
+def make_pool_withdraw(thor=None, protocol_adapter=None, basis_points=10000):
+    from swapsack.swap import prepare_pool_withdraw
+
+    return prepare_pool_withdraw(
+        thorchain=thor or FakeMayaPool(provider=_provider()),
+        protocol_adapter=protocol_adapter or FakeCosmosAdapter(),
+        basis_points=basis_points,
+        address=MAYA_ADDR,
+        mnemonic="x " * 12,
+        now=0,
+    )
+
+
+def test_cacao_pool_deposit_builds_a_pool_plus_deposit():
+    protocol_adapter = FakeCosmosAdapter()
+    p = make_pool_deposit(protocol_adapter=protocol_adapter, amount=7 * 10**10)
+    assert protocol_adapter.built.memo == "pool+"
+    assert protocol_adapter.built.amount == 7 * 10**10
+    assert p.safe
+
+
+def test_cacao_pool_deposit_refuses_when_disabled():
+    protocol_adapter = FakeCosmosAdapter()
+    with pytest.raises(SwapAborted, match="CACAOPOOLENABLED"):
+        make_pool_deposit(
+            thor=FakeMayaPool(enabled=0), protocol_adapter=protocol_adapter
+        )
+    assert protocol_adapter.built is None
+
+
+def test_rune_pool_reads_its_own_mimir_keys():
+    # Each network has its own switch: a CACAO key says nothing about RUNEPool.
+    protocol_adapter = FakeCosmosAdapter()
+    thor = FakeThor(chain="ETH", path_prefix="thorchain", mimir={"CACAOPOOLENABLED": 1})
+    with pytest.raises(SwapAborted, match="RUNEPOOLENABLED"):
+        make_pool_deposit(thor=thor, protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+class FakeThorPool(FakeMayaPool):
+    """A THORChain client that answers the RUNEPool endpoints."""
+
+    def __init__(self, *, mimir=None, **kw):
+        super().__init__(**kw)
+        self.path_prefix = "thorchain"
+        self._mimir = {"RUNEPOOLENABLED": 1, "RUNEPOOLDEPOSITMATURITYBLOCKS": 432000}
+        self._mimir.update(mimir or {})
+
+
+def test_rune_pool_deposit_builds_a_pool_plus_deposit():
+    protocol_adapter = FakeCosmosAdapter(chain="THOR", asset="THOR.RUNE")
+    p = make_pool_deposit(
+        thor=FakeThorPool(), protocol_adapter=protocol_adapter, amount=10**8
+    )
+    assert protocol_adapter.built.memo == "pool+"
+    assert p.safe
+
+
+def test_rune_pool_deposit_refuses_while_deposits_are_halted():
+    # handler_rune_pool_deposit.go: "RUNEPool deposit paused".
+    protocol_adapter = FakeCosmosAdapter()
+    thor = FakeThorPool(mimir={"RUNEPOOLHALTDEPOSIT": 1})
+    with pytest.raises(SwapAborted, match="RUNEPOOLHALTDEPOSIT"):
+        make_pool_deposit(thor=thor, protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+def test_rune_pool_withdraw_refuses_while_withdrawals_are_halted():
+    protocol_adapter = FakeCosmosAdapter()
+    thor = FakeThorPool(provider=_provider(), mimir={"RUNEPOOLHALTWITHDRAW": 1})
+    with pytest.raises(SwapAborted, match="RUNEPOOLHALTWITHDRAW"):
+        make_pool_withdraw(thor=thor, protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+def test_rune_pool_withdraw_uses_the_runepool_maturity():
+    # 432000 blocks on THORChain, not Maya's 302400.
+    thor = FakeThorPool(
+        provider=_provider(last_deposit_height=20_000_000 - 400_000),
+        height=20_000_000,
+    )
+    with pytest.raises(SwapAborted, match="32000 more blocks"):
+        make_pool_withdraw(thor=thor)
+
+
+def test_cacao_pool_deposit_refuses_a_short_balance():
+    protocol_adapter = FakeCosmosAdapter(balance=10)
+    with pytest.raises(SwapAborted, match="holds"):
+        make_pool_deposit(protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+def test_cacao_pool_withdraw_deposits_zero_with_the_withdraw_memo():
+    protocol_adapter = FakeCosmosAdapter()
+    prepared, position = make_pool_withdraw(
+        protocol_adapter=protocol_adapter, basis_points=2500
+    )
+    assert protocol_adapter.built.memo == "pool-:2500"
+    assert protocol_adapter.built.amount == 0
+    assert position.units == 10**12
+    assert prepared.safe
+
+
+def test_cacao_pool_withdraw_refuses_without_a_position():
+    protocol_adapter = FakeCosmosAdapter()
+    with pytest.raises(SwapAborted, match="no CACAO Pool position"):
+        make_pool_withdraw(
+            thor=FakeMayaPool(provider=None), protocol_adapter=protocol_adapter
+        )
+    assert protocol_adapter.built is None
+
+
+def test_cacao_pool_withdraw_refuses_an_immature_deposit():
+    # The handler refuses until last_deposit_height + maturity, and the fee
+    # is spent anyway: say how long is left instead.
+    protocol_adapter = FakeCosmosAdapter()
+    thor = FakeMayaPool(
+        provider=_provider(last_deposit_height=19_900_000), height=20_000_000
+    )
+    with pytest.raises(SwapAborted, match="202400 more blocks"):
+        make_pool_withdraw(thor=thor, protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+def test_cacao_pool_withdraw_allows_a_deposit_exactly_at_maturity():
+    thor = FakeMayaPool(
+        provider=_provider(last_deposit_height=20_000_000 - 302400),
+        height=20_000_000,
+    )
+    prepared, _ = make_pool_withdraw(thor=thor)
+    assert prepared.safe
+
+
+def test_cacao_pool_withdraw_refuses_when_disabled():
+    # Unlike an LP pause, CACAOPOOLENABLED gates the withdraw handler too
+    # (validateV129): a disabled pool refuses both directions.
+    protocol_adapter = FakeCosmosAdapter()
+    with pytest.raises(SwapAborted, match="CACAOPOOLENABLED"):
+        make_pool_withdraw(
+            thor=FakeMayaPool(provider=_provider(), enabled=0),
+            protocol_adapter=protocol_adapter,
+        )
+    assert protocol_adapter.built is None
+
+
+def _lp_record(**over):
+    from swapsack.thorchain import LiquidityPosition
+
+    fields = dict(
+        pool="BTC.BTC",
+        asset_address="bc1qours",
+        units=1000,
+        asset_redeem_value=10,
+        pending_asset=0,
+        protocol_redeem_value=10,
+    )
+    fields.update(over)
+    return LiquidityPosition(**fields)
+
+
+def test_protocol_only_add_refuses_against_a_pending_record():
+    # handler_add_liquidity.go: a record with units 0 and a pending tx pins its
+    # asset address, so a CACAO-only add (empty asset address) is refused with
+    # errAddLiquidityMismatchAddr — refunded minus the fee.
+    protocol_adapter = FakeCosmosAdapter()
+    thor = FakeThor(chain="ETH", path_prefix="mayachain")
+    thor.lp_record = _lp_record(units=0, pending_protocol=5)
+    with pytest.raises(SwapAborted, match="pending"):
+        make_protocol_only(thor=thor, protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+def test_protocol_only_add_reports_the_symmetric_record_it_joins():
+    # The record is keyed by the CACAO address, so the CACAO merges into an
+    # existing symmetric position and withdraws proportionally with it.
+    thor = FakeThor(chain="ETH", path_prefix="mayachain")
+    thor.lp_record = _lp_record()
+    _, existing = make_protocol_only(thor=thor)
+    assert existing is not None and existing.asset_address == "bc1qours"
+
+
+def test_pool_maturity_falls_back_to_the_constant():
+    # No mimir override: the node uses its constant (Maya: 14400), not 0.
+    thor = FakeMayaPool(
+        provider=_provider(last_deposit_height=20_000_000 - 100), height=20_000_000
+    )
+    del thor._mimir["CACAOPOOLDEPOSITMATURITYBLOCKS"]
+    thor.constants_payload = {
+        "int_64_values": {"CACAOPoolDepositMaturityBlocks": 14400}
+    }
+    with pytest.raises(SwapAborted, match="14300 more blocks"):
+        make_pool_withdraw(thor=thor)
+
+
+def test_pool_maturity_unknown_refuses():
+    protocol_adapter = FakeCosmosAdapter()
+    thor = FakeMayaPool(provider=_provider())
+    del thor._mimir["CACAOPOOLDEPOSITMATURITYBLOCKS"]
+    with pytest.raises(SwapAborted, match="maturity"):
+        make_pool_withdraw(thor=thor, protocol_adapter=protocol_adapter)
+    assert protocol_adapter.built is None
+
+
+def test_pool_maturity_blocks_reads_mimir_then_constants():
+    from swapsack.swap import pool_maturity_blocks
+
+    assert pool_maturity_blocks(FakeMayaPool()) == 302400
+    thor = FakeThorPool()
+    del thor._mimir["RUNEPOOLDEPOSITMATURITYBLOCKS"]
+    thor.constants_payload = {
+        "int_64_values": {"RUNEPoolDepositMaturityBlocks": 1296000}
+    }
+    assert pool_maturity_blocks(thor) == 1296000
+
+
+def test_rune_pool_halt_scheduled_for_a_later_height_is_not_yet_a_halt():
+    # thornode: halted only when value > 0 and height >= value.
+    thor = FakeThorPool(mimir={"RUNEPOOLHALTDEPOSIT": 20_000_100}, height=20_000_000)
+    p = make_pool_deposit(thor=thor)
+    assert p.safe
+
+
+def test_rune_pool_halt_applies_from_its_height():
+    thor = FakeThorPool(mimir={"RUNEPOOLHALTDEPOSIT": 20_000_000}, height=20_000_000)
+    with pytest.raises(SwapAborted, match="halted since block 20000000"):
+        make_pool_deposit(thor=thor)

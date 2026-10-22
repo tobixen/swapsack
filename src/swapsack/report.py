@@ -35,7 +35,8 @@ if TYPE_CHECKING:  # imported for types only — report.py stays a leaf module
 
     from swapsack.chains.base import BalanceReport
     from swapsack.chains.history import Output, WalletTx
-    from swapsack.thorchain import LiquidityPosition
+    from swapsack.liquidity import ProtocolPool
+    from swapsack.thorchain import LiquidityPosition, PoolProviderPosition
 
 # Column gap. Two spaces reads as a column; one reads as a typo.
 GAP = "  "
@@ -125,6 +126,10 @@ def lp_row(
         extras.insert(0, f"deposited ~{deposited:.8f}")
     if position.pending_asset:
         extras.append(f"+{position.pending_asset / unit_scale:.8f} pending")
+    if not position.asset_address:
+        # A RUNE/CACAO-only add: valued in the pool's asset like the rest, but
+        # a withdraw never pays out in that asset.
+        extras.append(f"withdraws as {protocol}")
     return Row(
         label=f"  +LP {source} {short_pool(position.pool)}",
         amount=amount,
@@ -132,6 +137,21 @@ def lp_row(
         note="; ".join(extras),
         lp=True,
         approx=approx,
+    )
+
+
+def pool_provider_row(position: PoolProviderPosition, pool: ProtocolPool) -> Row:
+    """A CACAO Pool / RUNEPool share as a sheet row, indented under its token."""
+    unit = 10**pool.decimals
+    return Row(
+        label=f"  +{pool.name}",
+        amount=position.value / unit,
+        asset=pool.token,
+        note=(
+            f"deposited {position.deposit_amount / unit:.8f}; "
+            f"pnl {position.pnl / unit:+.8f}"
+        ),
+        lp=True,
     )
 
 

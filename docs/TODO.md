@@ -607,6 +607,14 @@ and released.
     swap-from/LP); proving the broadcasts is all that remains. See
     `docs/dash.md`, `docs/zcash.md`.
   - **ARB** — nothing has been broadcast on Arbitrum at all (*Next up* item 1).
+  - **CACAO-only LP and the CACAO Pool** — `add-liquidity --protocol-only`
+    and `cacao-pool-add`/`-withdraw` reuse the proven `MsgDeposit` signer, but
+    their memos (`+:POOL` with no pair, `pool+`, and the zero-coin `pool-`)
+    have never gone out. The pool withdraw can only be proven ~21 days after a
+    deposit (maturity lock). Also open: `withdraw-liquidity` routes to the
+    protocol-side record whenever one exists, so a wallet that holds *both* a
+    CACAO-only and a single-sided asset position in the same pool cannot reach
+    the asset-side one; it would need an explicit `--side`.
   - **AVAX** — likewise nothing on Avalanche, for native AVAX or its tokens.
     The read paths *are* covered against the live chain (balance decoding, the
     chain id asked of the node, both tracked contracts' `decimals()` read back),

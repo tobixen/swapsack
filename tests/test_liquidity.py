@@ -3,8 +3,11 @@
 import pytest
 
 from swapsack.liquidity import (
+    POOL_DEPOSIT_MEMO,
+    POOL_WITHDRAW_AMOUNT,
     add_liquidity_memo,
     pair_amount,
+    pool_withdraw_memo,
     symmetric_add_memo,
     withdraw_liquidity_memo,
 )
@@ -59,3 +62,32 @@ def test_withdraw_memo_rejects_out_of_range():
         withdraw_liquidity_memo("BTC.BTC", 0)
     with pytest.raises(ValueError):
         withdraw_liquidity_memo("BTC.BTC", 10001)
+
+
+def test_cacao_pool_memos_match_mayanode():
+    # mayanode x/mayachain/memo/memo_cacao_pool.go: "pool+" and
+    # "pool-:<basis-points>[:<affiliate>:<affiliate-bps>]".
+    assert POOL_DEPOSIT_MEMO == "pool+"
+    assert pool_withdraw_memo(10000) == "pool-:10000"
+    assert pool_withdraw_memo(2500) == "pool-:2500"
+
+
+def test_cacao_pool_withdraw_memo_rejects_out_of_range():
+    with pytest.raises(ValueError):
+        pool_withdraw_memo(0)
+    with pytest.raises(ValueError):
+        pool_withdraw_memo(10001)
+
+
+def test_cacao_pool_withdraw_carries_no_coins():
+    # MsgCacaoPoolWithdraw.ValidateBasic refuses any non-empty coin: unlike an LP
+    # withdraw trigger (dust), the pool withdraw must deposit exactly zero.
+    assert POOL_WITHDRAW_AMOUNT == 0
+
+
+def test_protocol_pools_table():
+    from swapsack.liquidity import PROTOCOL_POOLS
+
+    maya, thor = PROTOCOL_POOLS["mayachain"], PROTOCOL_POOLS["thorchain"]
+    assert (maya.token, maya.decimals, maya.name) == ("CACAO", 10, "CACAO Pool")
+    assert (thor.token, thor.decimals, thor.name) == ("RUNE", 8, "RUNEPool")

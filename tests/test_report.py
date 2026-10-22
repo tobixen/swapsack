@@ -10,6 +10,7 @@ import re
 
 import pytest
 
+from swapsack.liquidity import PROTOCOL_POOLS
 from swapsack.pricefeed import UNITS, unit_for
 from swapsack.report import Row, render
 
@@ -473,3 +474,57 @@ def test_outputs_of_nothing_says_so():
     lines = render_outputs([], symbol="BTC")
     assert len(lines) == 1
     assert "no outputs" in lines[0].lower()
+
+
+def test_lp_row_says_a_protocol_only_position_withdraws_as_the_protocol_asset():
+    """A CACAO-only add has no asset address: the row sits under the pool's
+    asset, but a withdraw pays out entirely in CACAO, never in that asset."""
+    from swapsack.report import lp_row
+
+    position = _position(asset_address="")
+    row = lp_row(position, source="maya", protocol="CACAO")
+    assert "withdraws as CACAO" in row.note
+    assert "withdraws as" not in lp_row(_position(), source="maya").note
+
+
+def test_cacao_pool_row_shows_value_and_yield():
+    from swapsack.report import pool_provider_row
+    from swapsack.thorchain import PoolProviderPosition
+
+    row = pool_provider_row(
+        PoolProviderPosition(
+            address="maya1abc",
+            units=1,
+            value=21232836938488,
+            pnl=342836938488,
+            deposit_amount=20890000000000,
+            last_deposit_height=18708498,
+        ),
+        PROTOCOL_POOLS["mayachain"],
+    )
+    assert row.lp and row.asset == "CACAO"
+    assert row.amount == pytest.approx(2123.2836938488)
+    assert "deposited 2089.00000000" in row.note
+    assert "pnl +34.28369385" in row.note
+    assert row.label.strip() == "+CACAO Pool"
+
+
+def test_pool_provider_row_for_the_runepool():
+    from swapsack.report import pool_provider_row
+    from swapsack.thorchain import PoolProviderPosition
+
+    row = pool_provider_row(
+        PoolProviderPosition(
+            address="thor1abc",
+            units=1,
+            value=2151132778,
+            pnl=-690095260,
+            deposit_amount=2941054744,
+            last_deposit_height=1,
+        ),
+        PROTOCOL_POOLS["thorchain"],
+    )
+    assert row.label.strip() == "+RUNEPool"
+    assert row.asset == "RUNE"
+    assert row.amount == pytest.approx(21.51132778)
+    assert "pnl -6.90095260" in row.note

@@ -588,6 +588,11 @@ def cmd_balance(args: argparse.Namespace) -> int:
                     )
                     continue
                 rows.append(balance_row(report))
+                pool_backend = _POOL_BACKENDS.get(adapter.chain)
+                if pool_backend is not None:
+                    _report_protocol_pool(
+                        backends, pool_backend, protocol_addresses, rows
+                    )
                 # Adapters flag where their pools live: () = pool-less (BSC: no
                 # pools anywhere; CACAO: the settlement asset has no pool of
                 # itself), a backend-name tuple = only there (DASH: Maya-only —
@@ -734,6 +739,37 @@ def _protocol_lp_addresses(mnemonic: str, passphrase: str) -> dict[str, str]:
         for chain, backend in NATIVE_HOME_BACKEND.items()
         if chain in _DESTINATION_DERIVERS
     }
+
+
+# The protocol pool share shown under each settlement chain's balance row.
+_POOL_BACKENDS = {"MAYA": "maya", "THOR": "thorchain"}
+
+
+def _report_protocol_pool(
+    backends: list,  # noqa: ANN401 (list[Backend]; lazy import avoids a cycle)
+    backend_name: str,
+    protocol_addresses: dict[str, str],
+    rows: list,
+) -> None:
+    """Append a row for the wallet's CACAO Pool / RUNEPool share, if any."""
+    from swapsack.liquidity import PROTOCOL_POOLS
+    from swapsack.report import pool_provider_row
+
+    address = protocol_addresses.get(backend_name)
+    backend = next((b for b in backends if b.name == backend_name), None)
+    if address is None or backend is None:
+        return
+    pool = PROTOCOL_POOLS["mayachain" if backend_name == "maya" else "thorchain"]
+    try:
+        position = backend.client.pool_provider(address)
+    except HTTP_ERRORS as exc:
+        print(
+            f"\n{backend_name}: {pool.name} lookup failed ({exc})",
+            file=sys.stderr,
+        )
+        return
+    if position is not None:
+        rows.append(pool_provider_row(position, pool))
 
 
 def _report_liquidity(
@@ -1897,7 +1933,15 @@ def _report_cpfp_surcharge(prepared) -> None:  # noqa: ANN001 (swap.Prepared)
     )
 
 
-def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  # noqa: ANN001
+def _confirm_and_execute(
+    prepared,  # noqa: ANN001
+    adapter,  # noqa: ANN001
+    args: argparse.Namespace,
+    *,
+    after_broadcast: Callable[[str], int] | None = None,
+) -> int:
+    """Gate, confirm, broadcast; ``after_broadcast(txid)`` decides the exit code
+    for an op whose acceptance does not prove it took effect."""
     _report_cpfp_surcharge(prepared)
     if prepared.problems:
         print("VERIFY GATE FAILED — not safe to broadcast:", file=sys.stderr)
@@ -1910,7 +1954,8 @@ def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  #
     # The summary the caller printed is freshly quoted THIS run, so confirm
     # against exactly what will be broadcast.
     if not args.yes:
-        if input("\nBroadcast the swap shown above? type 'yes': ").strip() != "yes":
+        prompt = "\nBroadcast the transaction shown above? type 'yes': "
+        if input(prompt).strip() != "yes":
             print("aborted, not broadcast.")
             return 0
     expiry = getattr(prepared.plan, "expiry", None)
@@ -1924,6 +1969,8 @@ def _confirm_and_execute(prepared, adapter, args: argparse.Namespace) -> int:  #
         return 1
     print(f"\nBROADCAST txid: {result.txid}")
     print(f"track: swapsack status {result.txid}")
+    if after_broadcast is not None:
+        return after_broadcast(result.txid)
     return 0
 
 
@@ -2822,6 +2869,8 @@ def cmd_add_liquidity(args: argparse.Namespace) -> int:
     pool = ASSET[args.asset]
     if getattr(args, "symmetric", False):
         return _liquidity_symmetric(args, pool)
+    if getattr(args, "protocol_only", False):
+        return _liquidity_protocol_only(args, pool)
     sweep = args.amount == "max"
     amount = None if sweep else _base_units(args.amount)
     return _liquidity(args, memo=add_liquidity_memo(pool), amount=amount, sweep=sweep)
@@ -2904,8 +2953,11 @@ def _withdraw_from_protocol_side(
             mnemonic=mnemonic,
             now=int(time.time()),
         )
+        # No asset address: a RUNE/CACAO-only add, which the protocol pays
+        # out wholly on its own side.
+        kind = "SYMMETRIC" if position.asset_address else f"{protocol.symbol}-ONLY"
         print(
-            f"withdraw: {args.bps / 100:.2f}% of a SYMMETRIC {position.pool} "
+            f"withdraw: {args.bps / 100:.2f}% of a {kind} {position.pool} "
             f"position ({protocol.symbol}-side, units {position.units})"
         )
         print(
@@ -2913,10 +2965,13 @@ def _withdraw_from_protocol_side(
             f"from {address}"
         )
         print(f"memo:     {memo}")
-        print(
-            f"returns:  the asset side to {position.asset_address}, "
-            f"the {protocol.symbol} side to {address}"
-        )
+        if position.asset_address:
+            print(
+                f"returns:  the asset side to {position.asset_address}, "
+                f"the {protocol.symbol} side to {address}"
+            )
+        else:
+            print(f"returns:  everything as {protocol.symbol} to {address}")
         print(f"max fee:  {protocol.chain}'s fixed native tx fee")
         return _confirm_and_execute(prepared, protocol, args)
 
@@ -3330,6 +3385,204 @@ def _liquidity_symmetric(args: argparse.Namespace, pool: str) -> int:
             adapter=adapter,
         )
         return _confirm_and_execute_symmetric(prepared, adapter, protocol, args)
+
+
+def _liquidity_protocol_only(args: argparse.Namespace, pool: str) -> int:
+    """Add RUNE/CACAO alone to ``pool`` — ``--amount`` is the protocol asset."""
+    from swapsack.swap import prepare_protocol_only_liquidity
+
+    # The same up-front backend refusal as the other add paths, before any
+    # keystore or network work: the pool has to exist on --backend.
+    factory = _lp_asset_factory(pool.split(".", 1)[0])
+    if factory is not None and _lp_backend_refused(args, factory(args)):
+        return 2
+    if args.amount == "max":
+        print(
+            "--protocol-only needs a definite --amount, not 'max': the chain "
+            "charges its fixed native fee on top of the deposit.",
+            file=sys.stderr,
+        )
+        return 2
+    _warn_liquidity_risks()
+    mnemonic, passphrase = _load_mnemonic(args)
+    with (
+        _protocol_adapter(args, passphrase) as protocol,
+        _liquidity_client(args) as thor,
+    ):
+        _warn(
+            f"{protocol.symbol}-only add:",
+            "the pool rebalances around a one-sided deposit, so it takes entry "
+            "slip like a single-sided asset add",
+            f"it withdraws entirely as {protocol.symbol} (you never hold the "
+            f"pool's asset), unless it joins a symmetric position you already "
+            f"hold in this pool",
+        )
+        address = protocol.derive_address(mnemonic)
+        unit = 10**protocol.decimals
+        amount = _base_units(args.amount, unit)
+        try:
+            prepared, existing = prepare_protocol_only_liquidity(
+                thorchain=thor,
+                protocol_adapter=protocol,
+                pool=pool,
+                amount=amount,
+                protocol_address=address,
+                mnemonic=mnemonic,
+                now=int(time.time()),
+            )
+        except SwapAborted as exc:
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
+        except HTTP_ERRORS as exc:
+            # e.g. a pool this backend does not run: nothing was built.
+            print(f"ABORTED: {args.backend} lookup failed: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"deposit: {amount / unit:.8f} {protocol.symbol} into {pool} "
+            f"(MsgDeposit on {protocol.chain}, no asset)"
+        )
+        print(f"from:    {address}")
+        print(f"memo:    {prepared.plan.memo}")
+        print(f"max fee: {protocol.chain}'s fixed native tx fee")
+        if existing is not None and existing.asset_address:
+            print(
+                f"position joins your symmetric {pool} position (asset side "
+                f"{existing.asset_address}) and withdraws proportionally with it"
+            )
+        else:
+            print(f"position withdraws entirely as {protocol.symbol} to {address}")
+        return _confirm_and_execute(prepared, protocol, args)
+
+
+def cmd_pool_add(args: argparse.Namespace) -> int:
+    """Deposit into the backend's protocol pool (``pool+``): Maya's CACAO Pool
+    or THORChain's RUNEPool."""
+    from swapsack.liquidity import PROTOCOL_POOLS
+    from swapsack.swap import (
+        BLOCK_SECONDS,
+        pool_maturity_blocks,
+        prepare_pool_deposit,
+    )
+
+    if args.amount == "max":
+        print(
+            f"{args.command} needs a definite --amount, not 'max': the chain "
+            "charges its fixed native fee on top of the deposit.",
+            file=sys.stderr,
+        )
+        return 2
+    mnemonic, passphrase = _load_mnemonic(args)
+    with (
+        _protocol_adapter(args, passphrase) as protocol,
+        _liquidity_client(args) as thor,
+    ):
+        symbol = protocol.symbol
+        name = PROTOCOL_POOLS[thor.path_prefix].name
+        _warn(
+            f"only deposit {symbol} you can afford to lose, risks include:",
+            "experimental feature - bugs may cause lost funds",
+            "the protocol spreads it across every pool: impermanent loss "
+            "against all of them, in proportions you do not choose",
+            "withdrawals are locked until the deposit matures; another deposit "
+            "restarts that lock for the whole position",
+        )
+        address = protocol.derive_address(mnemonic)
+        unit = 10**protocol.decimals
+        amount = _base_units(args.amount, unit)
+        try:
+            prepared = prepare_pool_deposit(
+                thorchain=thor,
+                protocol_adapter=protocol,
+                amount=amount,
+                address=address,
+                mnemonic=mnemonic,
+                now=int(time.time()),
+            )
+            maturity = pool_maturity_blocks(thor)
+        except SwapAborted as exc:
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
+        print(f"deposit: {amount / unit:.8f} {symbol} into the {name}")
+        print(f"from:    {address}")
+        print(f"memo:    {prepared.plan.memo}")
+        print(
+            f"locked:  {maturity} blocks "
+            f"(~{maturity * BLOCK_SECONDS / 86400:.0f} days) before any withdraw"
+        )
+        print(f"max fee: {protocol.chain}'s fixed native tx fee")
+        return _confirm_and_execute(prepared, protocol, args)
+
+
+def cmd_pool_withdraw(args: argparse.Namespace) -> int:
+    """Withdraw ``--bps`` of the protocol-pool share (``pool-:<bps>``, zero coin)."""
+    from swapsack.liquidity import PROTOCOL_POOLS
+    from swapsack.swap import prepare_pool_withdraw
+
+    mnemonic, passphrase = _load_mnemonic(args)
+    with (
+        _protocol_adapter(args, passphrase) as protocol,
+        _liquidity_client(args) as thor,
+    ):
+        symbol = protocol.symbol
+        address = protocol.derive_address(mnemonic)
+        try:
+            prepared, position = prepare_pool_withdraw(
+                thorchain=thor,
+                protocol_adapter=protocol,
+                basis_points=args.bps,
+                address=address,
+                mnemonic=mnemonic,
+                now=int(time.time()),
+            )
+        except (SwapAborted, ValueError) as exc:
+            print(f"ABORTED: {exc}", file=sys.stderr)
+            return 1
+        unit = 10**protocol.decimals
+        expect = position.value * args.bps // 10000
+        print(
+            f"withdraw: {args.bps / 100:.2f}% of the "
+            f"{PROTOCOL_POOLS[thor.path_prefix].name} share (units {position.units})"
+        )
+        print(f"expect:   ~{expect / unit:.8f} {symbol} to {address}")
+        print(f"memo:     {prepared.plan.memo} (deposits 0 {symbol})")
+        print(f"max fee:  {protocol.chain}'s fixed native tx fee")
+        return _confirm_and_execute(
+            prepared,
+            protocol,
+            args,
+            after_broadcast=lambda txid: _await_pool_withdraw(
+                thor, address, position.units
+            ),
+        )
+
+
+# A zero-coin deposit whose handler fails still returns code 0 (and the fee is
+# kept), so only the provider record shows whether a withdraw happened. Polled
+# for about ten blocks.
+_POOL_WITHDRAW_POLLS = 10
+
+
+def _await_pool_withdraw(thor, address: str, units_before: int) -> int:  # noqa: ANN001
+    """Poll the provider record until its units drop; 1 if they never do."""
+    from swapsack.swap import BLOCK_SECONDS
+
+    for _ in range(_POOL_WITHDRAW_POLLS):
+        time.sleep(BLOCK_SECONDS)
+        try:
+            position = thor.pool_provider(address)
+        except HTTP_ERRORS:
+            continue
+        units = position.units if position is not None else 0
+        if units < units_before:
+            print(f"withdrawn: units {units_before} -> {units}")
+            return 0
+    print(
+        f"WARNING: units unchanged after ~{_POOL_WITHDRAW_POLLS} blocks: the "
+        f"network most likely refused the withdraw and kept the fee (a refused "
+        f"zero-coin deposit still reports success). Check `swapsack balance`.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def _print_symmetric_legs(
@@ -4213,6 +4466,18 @@ def _nonneg_int(value: str) -> int:
     return n
 
 
+def _bps(value: str) -> int:
+    """argparse type for a withdraw's basis points (1..10000), checked before
+    the keystore prompt rather than after it."""
+    try:
+        bps = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an integer: {value!r}") from None
+    if not 1 <= bps <= 10000:
+        raise argparse.ArgumentTypeError(f"must be 1..10000, got {bps}")
+    return bps
+
+
 def _pos_float(value: str) -> float:
     """argparse type for a positive fee rate in sats/vB.
 
@@ -4561,25 +4826,66 @@ def build_parser() -> argparse.ArgumentParser:
         "--amount",
         type=_amount,
         required=True,
-        help="amount of --asset, or 'max' to add the whole balance (BTC/ETH)",
+        help="amount of --asset, or 'max' to add the whole balance (BTC/ETH); "
+        "with --protocol-only, the amount of RUNE/CACAO instead",
     )
-    s.add_argument(
+    sides = s.add_mutually_exclusive_group()
+    sides.add_argument(
         "--symmetric",
         action="store_true",
         help="EXPERIMENTAL: two-sided add — pairs --amount with the matching "
         "RUNE/CACAO from your own balance, in two linked txs. Takes no entry "
         "slip, but both legs must land or the position sits pending",
     )
+    sides.add_argument(
+        "--protocol-only",
+        action="store_true",
+        help="EXPERIMENTAL: add RUNE/CACAO alone to the --asset pool; --amount "
+        "is then RUNE (thorchain) or CACAO (maya). Takes entry slip, and "
+        "withdraws entirely as RUNE/CACAO",
+    )
     _add_liquidity_backend_arg(s)
     _add_broadcast_args(s)
     s.set_defaults(func=cmd_add_liquidity)
+
+    # One pair per network, so the token is in the command name rather than
+    # hidden behind a --backend default.
+    for token, pool_name, backend in (
+        ("cacao", "Maya's CACAO Pool", "maya"),
+        ("rune", "THORChain's RUNEPool", "thorchain"),
+    ):
+        s = sub.add_parser(
+            f"{token}-pool-add",
+            help=f"EXPERIMENTAL: deposit {token.upper()} into {pool_name}",
+        )
+        s.add_argument(
+            "--amount",
+            type=_amount,
+            required=True,
+            help=f"amount of {token.upper()} to deposit",
+        )
+        _add_broadcast_args(s)
+        s.set_defaults(func=cmd_pool_add, backend=backend)
+
+        s = sub.add_parser(
+            f"{token}-pool-withdraw",
+            help=f"EXPERIMENTAL: withdraw from {pool_name}",
+        )
+        s.add_argument(
+            "--bps",
+            type=_bps,
+            default=10000,
+            help="basis points to withdraw (1..10000)",
+        )
+        _add_broadcast_args(s)
+        s.set_defaults(func=cmd_pool_withdraw, backend=backend)
 
     s = sub.add_parser(
         "withdraw-liquidity", help="EXPERIMENTAL: withdraw liquidity from a pool"
     )
     s.add_argument("--asset", required=True, choices=list(ASSET))
     s.add_argument(
-        "--bps", type=int, default=10000, help="basis points to withdraw (1..10000)"
+        "--bps", type=_bps, default=10000, help="basis points to withdraw (1..10000)"
     )
     _add_liquidity_backend_arg(s)
     _add_broadcast_args(s)

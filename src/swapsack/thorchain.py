@@ -178,6 +178,9 @@ class PoolDepth:
     asset: str
     balance_asset: int
     balance_protocol: int
+    # "Available", "Staged", …; empty when the node did not say. A RUNE/CACAO-
+    # only add to a non-Available pool is refunded minus the fee.
+    status: str = ""
 
     @property
     def asset_per_protocol(self) -> float:
@@ -193,6 +196,7 @@ def parse_pool_depth(payload: dict[str, Any]) -> PoolDepth:
         asset=payload.get("asset", ""),
         balance_asset=_int(payload.get("balance_asset", "0")),
         balance_protocol=_int(protocol),
+        status=payload.get("status", ""),
     )
 
 
@@ -223,6 +227,8 @@ class LiquidityPosition:
     protocol_redeem_value: int
     asset_deposit_value: int = 0
     protocol_deposit_value: int = 0
+    # RUNE/CACAO waiting for its asset leg (a pending symmetric add).
+    pending_protocol: int = 0
 
 
 def parse_liquidity_provider(payload: dict[str, Any]) -> LiquidityPosition | None:
@@ -244,13 +250,75 @@ def parse_liquidity_provider(payload: dict[str, Any]) -> LiquidityPosition | Non
         units=_int(payload.get("units", "0")),
         asset_redeem_value=_int(payload.get("asset_redeem_value", "0")),
         pending_asset=_int(payload.get("pending_asset", "0")),
+        pending_protocol=_int(
+            payload.get("pending_rune", payload.get("pending_cacao", "0"))
+        ),
         protocol_redeem_value=_int(redeem),
         asset_deposit_value=_int(payload.get("asset_deposit_value", "0")),
         protocol_deposit_value=_int(deposit),
     )
-    if not (pos.asset_redeem_value or pos.pending_asset or pos.protocol_redeem_value):
+    if not (
+        pos.asset_redeem_value
+        or pos.pending_asset
+        or pos.pending_protocol
+        or pos.protocol_redeem_value
+    ):
         return None
     return pos
+
+
+@dataclasses.dataclass(frozen=True)
+class PoolProviderPosition:
+    """A wallet's share of Maya's CACAO Pool or THORChain's RUNEPool.
+
+    From ``cacao_provider/{addr}`` / ``rune_provider/{addr}``, which answer the
+    same shape. Amounts are the native base units (CACAO 1e10, RUNE 1e8).
+    ``value`` is what the units are worth now, ``pnl`` its gain over what was
+    deposited net of withdrawals, and ``last_deposit_height`` starts the
+    maturity lock a withdraw has to wait out.
+    """
+
+    address: str
+    units: int
+    value: int
+    pnl: int
+    deposit_amount: int
+    last_deposit_height: int
+
+
+def parse_pool_provider(payload: dict[str, Any]) -> PoolProviderPosition | None:
+    """Parse a ``pool_provider`` response; ``None`` when there is no position.
+
+    An address that never deposited answers HTTP 200 with zero units, like the
+    LP endpoint does.
+    """
+    if "error" in payload or not _int(payload.get("units", "0")):
+        return None
+    return PoolProviderPosition(
+        address=payload.get("cacao_address", payload.get("rune_address", "")),
+        units=_int(payload["units"]),
+        value=_int(payload.get("value", "0")),
+        pnl=_int(payload.get("pnl", "0")),
+        deposit_amount=_int(payload.get("deposit_amount", "0")),
+        last_deposit_height=_int(payload.get("last_deposit_height", 0)),
+    )
+
+
+def parse_last_height(payload: list[dict[str, Any]]) -> int:
+    """The protocol chain's own block height from a ``lastblock`` response.
+
+    Every entry carries it (``mayachain`` / ``thorchain``) next to that external
+    chain's observation heights, which are a different chain's blocks.
+    """
+    heights = [
+        _int(entry[key])
+        for entry in payload
+        for key in ("mayachain", "thorchain")
+        if key in entry
+    ]
+    if not heights:
+        raise ValueError("lastblock carried no protocol height")
+    return max(heights)
 
 
 def normalize_txid(txid: str) -> str:
@@ -377,6 +445,36 @@ class ThorchainClient(FailoverHttpClient):
             return None
         resp.raise_for_status()
         return parse_liquidity_provider(resp.json())
+
+    def pool_provider(self, address: str) -> PoolProviderPosition | None:
+        """``address``'s CACAO Pool / RUNEPool share, or ``None`` if none."""
+        from swapsack.liquidity import PROTOCOL_POOLS
+
+        token = PROTOCOL_POOLS[self.path_prefix].token.lower()
+        resp = self._get_with_fallback(
+            f"{self.path_prefix}/{token}_provider/{address}",
+            headers=self._headers,
+        )
+        resp.raise_for_status()
+        return parse_pool_provider(resp.json())
+
+    def constants(self) -> dict[str, Any]:
+        """The node's built-in defaults, which a missing mimir key falls back to."""
+        resp = self._get_with_fallback(
+            f"{self.path_prefix}/constants",
+            headers=self._headers,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def last_height(self) -> int:
+        """The protocol chain's current block height."""
+        resp = self._get_with_fallback(
+            f"{self.path_prefix}/lastblock",
+            headers=self._headers,
+        )
+        resp.raise_for_status()
+        return parse_last_height(resp.json())
 
     def pool(self, asset: str) -> PoolDepth:
         """Current depths for ``asset``'s pool (to value an LP's RUNE/CACAO side)."""

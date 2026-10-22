@@ -14,8 +14,10 @@ from swapsack.thorchain import (
     ThorchainError,
     normalize_txid,
     parse_inbound_addresses,
+    parse_last_height,
     parse_liquidity_provider,
     parse_pool_depth,
+    parse_pool_provider,
     parse_quote,
 )
 
@@ -459,6 +461,15 @@ def test_parse_pool_depth_maya_uses_cacao_balance():
     assert depth.balance_protocol == 100
 
 
+def test_parse_pool_depth_keeps_the_status():
+    # A CACAO-only add to a Staged pool is refused by the handler, so the
+    # status is what the caller checks before broadcasting one.
+    depth = parse_pool_depth(
+        {"balance_asset": "1", "balance_cacao": "1", "status": "Staged"}
+    )
+    assert depth.status == "Staged"
+
+
 def test_pool_depth_empty_pool_has_zero_price():
     depth = parse_pool_depth({"balance_asset": "0", "balance_rune": "0"})
     assert depth.asset_per_protocol == 0.0
@@ -477,3 +488,125 @@ def test_default_nodes_exclude_the_retired_ninerealms_hosts():
     assert "ninerealms.com" not in joined
     assert "thornode.thorchain.network" not in joined
     assert all(u.startswith("https://") for u in DEFAULT_BASE_URLS)
+
+
+# Live mayanode /mayachain/cacao_provider/<addr> responses, sampled 2026-10-22.
+CACAO_PROVIDER = {
+    "cacao_address": "maya1099eqjssupxhaaf9c3glsxvt2j8q4uaf72s3jn",
+    "units": "18442699994180",
+    "value": "21232836938488",
+    "pnl": "342836938488",
+    "deposit_amount": "20890000000000",
+    "withdraw_amount": "0",
+    "last_deposit_height": 18708498,
+    "last_withdraw_height": 0,
+}
+NO_CACAO_PROVIDER = {
+    "cacao_address": "maya10sy79jhw9hw9sqwdgu0k4mw4qawzl7czewzs47",
+    "units": "0",
+    "value": "0",
+    "pnl": "0",
+    "deposit_amount": "0",
+    "withdraw_amount": "0",
+    "last_deposit_height": 0,
+    "last_withdraw_height": 0,
+}
+
+
+def test_parse_cacao_provider():
+    position = parse_pool_provider(CACAO_PROVIDER)
+    assert position is not None
+    assert position.address == "maya1099eqjssupxhaaf9c3glsxvt2j8q4uaf72s3jn"
+    assert position.units == 18442699994180
+    assert position.value == 21232836938488  # CACAO 1e10 base units
+    assert position.pnl == 342836938488
+    assert position.deposit_amount == 20890000000000
+    assert position.last_deposit_height == 18708498
+
+
+def test_parse_cacao_provider_no_position_is_none():
+    # An address that never deposited answers 200 with a zeros record.
+    assert parse_pool_provider(NO_CACAO_PROVIDER) is None
+    assert parse_pool_provider({"error": "unable to decode address"}) is None
+
+
+def test_parse_last_height_takes_the_protocol_height():
+    payload = [
+        {"chain": "ADA", "last_observed_in": 14100549, "mayachain": 18945537},
+        {"chain": "BTC", "last_observed_in": 972654, "mayachain": 18945537},
+    ]
+    assert parse_last_height(payload) == 18945537
+    assert parse_last_height([{"chain": "BTC", "thorchain": 7}]) == 7
+
+
+def test_parse_last_height_refuses_an_empty_answer():
+    with pytest.raises(ValueError):
+        parse_last_height([])
+
+
+class _JsonResp:
+    status_code = 200
+
+    def __init__(self, payload: object) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None: ...
+
+    def json(self) -> object:
+        return self._payload
+
+
+def test_cacao_provider_client_builds_url():
+    client = ThorchainClient("https://node.example", path_prefix="mayachain")
+    session = FakeSession(_JsonResp(CACAO_PROVIDER))
+    client._session = session
+    position = client.pool_provider("maya1abc")
+    assert position is not None and position.units == 18442699994180
+    assert session.gets == ["https://node.example/mayachain/cacao_provider/maya1abc"]
+
+
+def test_pool_provider_on_thorchain_reads_the_runepool():
+    # THORChain's RUNEPool record has the same shape under rune_address.
+    payload = {
+        "rune_address": "thor1abc",
+        "units": "2797238329",
+        "value": "2151132778",
+        "pnl": "-690095260",
+        "deposit_amount": "2941054744",
+        "withdraw_amount": "99826706",
+        "last_deposit_height": 22199223,
+        "last_withdraw_height": 22886378,
+    }
+    client = ThorchainClient("https://node.example")
+    session = FakeSession(_JsonResp(payload))
+    client._session = session
+    position = client.pool_provider("thor1abc")
+    assert position is not None
+    assert position.address == "thor1abc"
+    assert position.pnl == -690095260
+    assert session.gets == ["https://node.example/thorchain/rune_provider/thor1abc"]
+
+
+def test_last_height_client_builds_url():
+    client = ThorchainClient("https://node.example", path_prefix="mayachain")
+    session = FakeSession(_JsonResp([{"chain": "BTC", "mayachain": 42}]))
+    client._session = session
+    assert client.last_height() == 42
+    assert session.gets == ["https://node.example/mayachain/lastblock"]
+
+
+def test_parse_liquidity_provider_keeps_a_protocol_only_pending_record():
+    # A pending symmetric record with only its CACAO leg in: nothing redeemable
+    # yet, but it still blocks a CACAO-only add, so it must not read as "none".
+    position = parse_liquidity_provider(
+        {"asset": "BTC.BTC", "units": "0", "pending_cacao": "500"}
+    )
+    assert position is not None and position.pending_protocol == 500
+
+
+def test_constants_client_builds_url():
+    client = ThorchainClient("https://node.example", path_prefix="mayachain")
+    session = FakeSession(_JsonResp({"int_64_values": {"X": 1}}))
+    client._session = session
+    assert client.constants() == {"int_64_values": {"X": 1}}
+    assert session.gets == ["https://node.example/mayachain/constants"]

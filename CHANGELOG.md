@@ -8,6 +8,17 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **CACAO liquidity without another asset.** `add-liquidity --protocol-only`
+  adds CACAO (or RUNE) alone to one pool; `--amount` is then CACAO (or RUNE),
+  and the position withdraws entirely in that token through the usual
+  `withdraw-liquidity`. `cacao-pool-add` and `cacao-pool-withdraw` use Maya's
+  CACAO Pool instead, which spreads the CACAO across every pool; a withdraw is
+  locked for about 21 days after your last deposit, which the CLI checks before
+  sending anything. `rune-pool-add` and `rune-pool-withdraw` do the same with
+  THORChain's RUNEPool (locked for about 30 days). `balance` shows either share
+  under its token. None of this has been tried with real funds yet, so start
+  small.
+
 - **`history --asset TRX`.** TRON transactions are listed like the UTXO
   chains' — net TRX per transaction, fee, counterparty and swap memo. The
   data comes from TronGrid's address index (keyless, rate-limited, and it
