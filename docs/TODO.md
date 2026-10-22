@@ -457,6 +457,38 @@ is a ZIP-244 tree hash the wallet does not compute.
 Related: the `status <txid>` generalization above needs the same per-chain
 transaction reads, so the two are worth doing together.
 
+## EUR value at the time in `history`
+
+A column with each transaction's value in EUR at the time it was mined — the
+figure a tax return wants. On by default; the opt-out is the existing
+`--no-price-check` (`_add_price_check_args`), not a flag of its own, so one
+switch still stops every CoinGecko request. `--unit` could pick the currency.
+
+The figure is always an estimate: what matters may be the rate when the deal
+was agreed, when the tx was signed or when the funds were confirmed received.
+So no `~` marker; an unconfirmed row simply shows today's rate.
+
+- **Batch by time span, not by transaction.** CoinGecko's keyless
+  `/coins/{id}/market_chart/range` returns hourly prices for a range of up to
+  90 days in one call (longer ranges degrade to daily), so a listing costs
+  about one request per priced asset per 90 days covered, whatever its
+  length (native coin only today; token rows would add their own). The
+  keyless tier's limit is low but this needs at most a handful of calls.
+- **A 429 must not throw away what was already fetched.** `PriceFeed` runs
+  with `retries=0`, so a throttled window fails at once. Only that window's
+  rows may go blank; the others keep their rates. Whether to wait out
+  `Retry-After` for a listing (unlike the swap path, nothing is waiting on
+  it) is still open.
+- **The keyless tier reaches back 365 days only.** Older rows show `n/a`,
+  never a guessed or nearest-available price.
+- **Advisory, like the rest of `pricefeed.py`.** A price failure leaves the
+  affected rows empty and says so; it never fails the listing.
+- **Privacy:** CoinGecko learns the coin and the time span queried, not the
+  addresses. Query only after the listing has been fetched, and not at all
+  under the opt-out.
+- `--json` gets the rate and the value as separate fields, so a spreadsheet
+  can recompute.
+
 ## Throttling: pacing a deep walk, and the single-endpoint case
 
 A 429 is handled since the `net.py` throttle work: the request fails over to
