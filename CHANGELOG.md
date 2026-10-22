@@ -21,9 +21,10 @@ automatically from git tags (PEP 440 / SemVer).
   Ethereum one, so `--to BNB` needs no `--dest`. `--bsc-rpc` now works on
   `send`, `swap` and the liquidity commands too. THORChain only, like Avalanche,
   and that includes liquidity: `add-liquidity --asset USDT-BSC` (or
-  `USDC-BSC`) works while THORChain accepts deposits there. **Nothing has
-  been broadcast on BSC yet**; start small, and keep some BNB at the address
-  for gas — a token can't be moved without it.
+  `USDC-BSC`) works while THORChain accepts deposits there. Swapping to BNB
+  and adding USDT-BSC liquidity have been done with real funds; sending and
+  swapping *from* BSC have not yet, so start small. Keep some BNB at the
+  address for gas — a token can't be moved without it.
 
 - **Avalanche.** Native `AVAX` and the two dollar tokens `USDC-AVAX` and
   `USDT-AVAX` can now be held, shown in `balance`, sent, swept and **spent as

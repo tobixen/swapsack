@@ -11,8 +11,8 @@ as the answer to "what is a short session worth of work", ranked by how much
 code it needs, with what each one is actually worth stated next to it.
 
 1. ~~**BSC as a swap source.**~~ Done 2026-10-22: BNB, USDT-BSC and USDC-BSC
-   are wired for send/sweep/swap-from and THORChain single-sided LP
-   (mainnet-unproven).
+   are wired for send/sweep/swap-from and THORChain single-sided LP. Proven
+   on mainnet: swap to BNB and a USDT-BSC LP add; the rest is unproven.
 2. **BASE, the same shape one step further out.** Its halt has lifted too, but
    there is no adapter yet — so it is a `chains/avax.py`-shaped subclass plus a
    `_RULES` line and an `_EVM_CHAINS` entry, on top of the same CLI wiring as
