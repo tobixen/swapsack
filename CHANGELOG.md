@@ -14,10 +14,11 @@ automatically from git tags (PEP 440 / SemVer).
   `withdraw-liquidity`. `cacao-pool-add` and `cacao-pool-withdraw` use Maya's
   CACAO Pool instead, which spreads the CACAO across every pool; a withdraw is
   locked for about 21 days after your last deposit, which the CLI checks before
-  sending anything. `rune-pool-add` and `rune-pool-withdraw` do the same with
-  THORChain's RUNEPool (locked for about 30 days). `balance` shows either share
-  under its token. None of this has been tried with real funds yet, so start
-  small.
+  sending anything. `balance` shows the CACAO Pool share under CACAO. A CACAO
+  Pool deposit has been done with real funds; the withdraw and `--protocol-only`
+  have not yet, so start small. `rune-pool-add` and `rune-pool-withdraw` do the
+  same with THORChain's RUNEPool (locked for about 30 days); not yet tried with
+  real funds.
 
 - **`history --asset TRX`.** TRON transactions are listed like the UTXO
   chains' — net TRX per transaction, fee, counterparty and swap memo. The

@@ -183,8 +183,10 @@ broadcast test gated on a funded secret, mirroring the Nile TRC-20 loop.
   warns when the units did not drop. RUNEPool can refuse every withdraw at once
   when its reserve backstop trips (`RUNEPOOLMAXRESERVEBACKSTOP`,
   `handler_rune_pool_withdraw.go`); that is not checked beforehand.
-  Read off mayanode `cf97144` (2026-10-19). Neither of the last two has been
-  broadcast on mainnet yet.
+  Read off mayanode `cf97144` (2026-10-19). A `pool+` deposit was proven on
+  mainnet on 2026-10-22 (accepted, and the provider record appeared with the
+  expected units). The zero-coin `pool-` withdraw and the CACAO-only add have
+  not been broadcast yet.
 
 ## See also
 

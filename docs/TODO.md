@@ -608,10 +608,11 @@ and released.
     `docs/dash.md`, `docs/zcash.md`.
   - **ARB** — nothing has been broadcast on Arbitrum at all (*Next up* item 1).
   - **CACAO-only LP and the CACAO Pool** — `add-liquidity --protocol-only`
-    and `cacao-pool-add`/`-withdraw` reuse the proven `MsgDeposit` signer, but
-    their memos (`+:POOL` with no pair, `pool+`, and the zero-coin `pool-`)
-    have never gone out. The pool withdraw can only be proven ~21 days after a
-    deposit (maturity lock). Also open: `withdraw-liquidity` routes to the
+    and `cacao-pool-withdraw` reuse the proven `MsgDeposit` signer, but their
+    memos (`+:POOL` with no pair, and the zero-coin `pool-`) have never gone
+    out; `cacao-pool-add` (`pool+`) was proven on 2026-10-22. The pool
+    withdraw matures ~21 days after that deposit, so it can be proven from
+    about 2026-11-12. Also open: `withdraw-liquidity` routes to the
     protocol-side record whenever one exists, so a wallet that holds *both* a
     CACAO-only and a single-sided asset position in the same pool cannot reach
     the asset-side one; it would need an explicit `--side`.
