@@ -387,8 +387,9 @@ labels, not lookups.
     against at any size worth the work; `BASE.USDC` held ~31k. Re-measure.
 - **BasicSwap backend** (trustless P2P / privacy / XMR): orchestrate its daemon
   via API; needs full nodes (heavy) and a different custody seam. Future.
-- **Monero (XMR) hold/balance/send**: blocked on a custody/architecture
-  decision — see `docs/monero.md` for the analysis and the open choices.
+- **Monero (XMR) hold/balance/send**: plan and effort estimate (~19–27 h)
+  in `docs/monero.md#plan-proposed-2026-10-22`; swapping *to* an XMR address
+  needs no holding and comes first.
 
 ## Extend `status <txid>` to every chain (not just BTC)
 
