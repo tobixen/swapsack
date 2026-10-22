@@ -21,13 +21,14 @@ if TYPE_CHECKING:
 
 
 THORCHAIN_UNIT = 100_000_000
-# thornode.thorchain.liquify.com's TLS cert expired 2024-02-07 (never renewed),
 # Public THORNode REST endpoints, tried in order (ThorchainClient pins the first
 # that answers). Nine Realms wound down: thornode.ninerealms.com and its
 # thornode.thorchain.network gateway were permanently retired (no A record since
 # 2026-07-12) and are removed — a dead node isn't free, the client pays its
-# DNS/connection-timeout before falling through. thornode.thorswap.net sits
-# behind a Cloudflare bot-challenge (403 to a CLI), so it's unusable here too.
+# DNS/connection-timeout before falling through. thornode.thorchain.liquify.com
+# is out too: its TLS cert expired 2024-02-07 and was never renewed.
+# thornode.thorswap.net sits behind a Cloudflare bot-challenge (403 to a CLI),
+# so it's unusable here too.
 # The Liquify gateway is the one reliably CLI-reachable public node; add more as
 # they appear, or override with SWAPSACK_THORNODE (a single URL) to point at your
 # own node.
