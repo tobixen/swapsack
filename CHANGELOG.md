@@ -15,6 +15,16 @@ automatically from git tags (PEP 440 / SemVer).
   `--trongrid-api` elsewhere to avoid it. Only
   native TRX is counted: TRC-20 token amounts are not.
 
+- **BNB Smart Chain.** Native `BNB` and the BEP-20 dollar tokens `USDT-BSC`
+  and `USDC-BSC`, which `balance` could already show, can now be sent, swept
+  and **spent as a swap source**, and paid *to* — the address is your
+  Ethereum one, so `--to BNB` needs no `--dest`. `--bsc-rpc` now works on
+  `send`, `swap` and the liquidity commands too. THORChain only, like Avalanche,
+  and that includes liquidity: `add-liquidity --asset USDT-BSC` (or
+  `USDC-BSC`) works while THORChain accepts deposits there. **Nothing has
+  been broadcast on BSC yet**; start small, and keep some BNB at the address
+  for gas — a token can't be moved without it.
+
 - **Avalanche.** Native `AVAX` and the two dollar tokens `USDC-AVAX` and
   `USDT-AVAX` can now be held, shown in `balance`, sent, swept and **spent as
   a swap source** — where `USDC-AVAX` could previously only be paid *to*. The

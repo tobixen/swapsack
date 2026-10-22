@@ -1,15 +1,14 @@
-"""BNB Smart Chain (BSC) adapter — address + balance only.
+"""BNB Smart Chain (BSC) adapter — native BNB plus the BEP-20 USDT and USDC.
 
-BSC is an EVM chain, so address derivation, JSON-RPC and balance mechanics are
-identical to Ethereum; this adapter is a thin :class:`EthAdapter` subclass that
-only overrides the chain-specific surface (native symbol, RPC, tracked tokens).
+BSC is an EVM chain, so derivation, JSON-RPC, tx building, signing and the
+verify gates are all Ethereum's; this adapter is a thin :class:`EthAdapter`
+subclass that only overrides the chain-specific surface (native symbol, RPC,
+chain id 56, tracked tokens).
 
-Swaps are deliberately NOT implemented here. THORChain has BSC trading halted
-(``HALTBSCTRADING=1``, a post-exploit governance halt) and Maya has no BSC
-pools, so there is nothing to swap against — the swap entry point is overridden
-to fail loudly. The inherited *send* paths work: the adapter passes BSC's chain
-id (56) so they sign for the right network. Revisit swaps when
-``inbound_addresses`` shows BSC ``chain_trading_paused: false``.
+THORChain-only: its BSC trading halt lifted 2026-09-02 (``BSC.BNB``,
+``BSC.USDT`` and ``BSC.USDC`` all ``Available``), and Maya has no BSC pools.
+Until then this adapter stubbed ``build_and_verify`` out by hand; the inherited
+one is used now.
 
 Gotcha: BSC's USDC/USDT are 18-decimal BEP-20 tokens, NOT 6-decimal like their
 Ethereum namesakes — hence a BSC-specific tracked-token table.
@@ -38,9 +37,8 @@ class BscAdapter(EthAdapter):
     chain = "BSC"
     asset = "BSC.BNB"
     native_symbol = "BNB"
-    # No BSC pools on either network (see module docstring): `balance` must not
-    # probe LP positions that cannot exist.
-    lp_backends = ()
+    # THORChain is the only network with BSC pools — Maya has none.
+    lp_backends = ("thorchain",)
     token_suffix = "BSC"
     tracked_tokens = BSC_TRACKED_TOKENS
     known_token_decimals = {  # noqa: RUF012 (mirrors EthAdapter's class attribute)
@@ -56,10 +54,4 @@ class BscAdapter(EthAdapter):
     ) -> None:
         super().__init__(
             rpc_url, timeout, bip39_passphrase=bip39_passphrase, chain_id=BSC_CHAIN_ID
-        )
-
-    def build_and_verify(self, **kwargs: object) -> None:
-        raise NotImplementedError(
-            "BSC swaps are not supported: THORChain has BSC trading halted and "
-            "Maya has no BSC pools. This adapter provides address + balance only."
         )

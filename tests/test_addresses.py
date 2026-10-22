@@ -45,6 +45,7 @@ VALID = {
     # address space and EIP-55 rule again. (X-/P-Chain addresses look nothing
     # like this; see the test below.)
     "AVAX": ["0x9858EfFD232B4033E47d90003D41EC34EcaEda94"],
+    "BSC": ["0x9858EfFD232B4033E47d90003D41EC34EcaEda94"],
     # Maya native chain (Cosmos-SDK bech32), for a CACAO destination.
     "MAYA": ["maya10sy79jhw9hw9sqwdgu0k4mw4qawzl7czewzs47"],
     # THORChain native chain (Cosmos-SDK bech32), for a RUNE destination.

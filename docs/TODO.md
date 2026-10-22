@@ -10,40 +10,14 @@ outlived the work that created them are kept below as open risk.
 as the answer to "what is a short session worth of work", ranked by how much
 code it needs, with what each one is actually worth stated next to it.
 
-1. **BSC as a swap source — the cheapest feature on the whole list.**
-   `chains/bsc.py` already exists and already signs for chain 56; the swap
-   entry point is stubbed out by hand because nothing traded BSC, **and that
-   halt has since lifted** (2026-09-02). No new adapter, no new chain family,
-   no new signer. It is also *less* work than Avalanche was, because BSC is
-   already half-wired — checked against the code on 2026-09-02:
-
-   | seam | BSC today |
-   |---|---|
-   | `_wallet_adapters` | **done** (`cli.py`, `_bsc_adapter` is in the list) |
-   | `cmd_address` | **done** (prints a BSC row) |
-   | `pricefeed` | **done** (`BNB`, `USDT-BSC`, `USDC-BSC`) |
-   | `ASSET` | missing — `BSC.BNB` and the two 18-decimal BEP-20s |
-   | `_EVM_ADAPTERS` | missing |
-   | `_DESTINATION_DERIVERS` | missing |
-   | `--bsc-rpc` | exists on `balance` only; needs adding to `_add_broadcast_args`, `send` and `swap` |
-   | `BscAdapter.build_and_verify` | stubbed by hand; unstub it |
-
-   So four seams plus the unstub, not the seven the AVAX wiring needed. The
-   one genuine trap is that **BSC's USDT/USDC are 18-decimal**, unlike their
-   6-decimal ETH/AVAX namesakes — `BSC_TRACKED_TOKENS` already has it right,
-   so do not "harmonise" it.
-
-   **Check the depth before you start, though.** On 2026-09-02 `BSC.USDC` and
-   `BSC.USDT` held ~5.4k each — thinner than the `ARB.USDC` pool that *Next
-   up* item 2 already calls too thin to be useful at size — against ~1945 BNB
-   for `BSC.BNB`. So the native leg may be the only one worth wiring, and that
-   is a measurement to redo rather than trust. Full entry: *Swap backends* →
-   the BSC bullet.
+1. ~~**BSC as a swap source.**~~ Done 2026-10-22: BNB, USDT-BSC and USDC-BSC
+   are wired for send/sweep/swap-from and THORChain single-sided LP
+   (mainnet-unproven).
 2. **BASE, the same shape one step further out.** Its halt has lifted too, but
    there is no adapter yet — so it is a `chains/avax.py`-shaped subclass plus a
    `_RULES` line and an `_EVM_CHAINS` entry, on top of the same CLI wiring as
    BSC. **`BASE.ETH` held ~2.6 ETH on 2026-09-02**, which is too thin to swap
-   against at any size; do BSC first and reuse whatever that teaches. Same
+   against at any size. Same
    bullet's neighbours in *Swap backends*.
 3. **The three address forms the *shape* rules refuse** (uppercase bech32,
    uppercase cashaddr, BCH CashTokens `z…`). A `.lower()` in the right place,
@@ -342,8 +316,8 @@ labels, not lookups.
   EVM transaction reader, and `verify.decode_evm_vault_call` already reads our
   own calldata back once it has one.
 
-  What is left on this path is **BASE and BSC**, and both are now purely a
-  missing adapter rather than a protocol block (see the halt entry below).
+  What is left on this path is **BASE**, now purely a missing adapter rather
+  than a protocol block (see the halt entry below).
   Also still missing: `AVAX` **LP**, which needs THORChain's global LP pause to
   lift and has no second network to fall back on — Maya has no AVAX pools at
   all. `add-liquidity --asset AVAX` refuses up front and names the mimir key,
@@ -411,29 +385,6 @@ labels, not lookups.
     `chains/avax.py`-shaped adapter. **Mind the depth before bothering**:
     `BASE.ETH` held ~2.6 ETH on 2026-09-02, which is far too thin to swap
     against at any size worth the work; `BASE.USDC` held ~31k. Re-measure.
-- **BSC's halt has lifted — the block is gone, the stub is not.**
-  (*This is item 1 of* Low-hanging fruit *at the top of this file.*) This entry
-  said "blocked, do not implement yet" on the strength of THORChain having BSC
-  `chain_trading_paused`/`halted`. Re-checked **2026-09-02** and that is no
-  longer true: `inbound_addresses` reports BSC `halted: false`,
-  `chain_trading_paused: false`, and `BSC.BNB`, `BSC.USDC`, `BSC.USDT`,
-  `BSC.ETH` and `BSC.BUSD` are all `Available` with `trading_halted: false`.
-  Maya still has no BSC pools, so it is THORChain-only, like AVAX.
-
-  So the trigger this entry named has fired, and its own prescription now
-  applies: `BscAdapter.build_and_verify` raises by design — because there was
-  nothing to swap against, **not** because of chain id (`BscAdapter` passes 56
-  to `super().__init__`, which is why its inherited *send* paths already sign
-  correctly) — so the swap source needs that entry point unstubbed and the CLI
-  wiring `chains/avax.py` just went through, not a refactor. That makes it the
-  cheapest remaining chain by some distance: the adapter already exists.
-
-  **Measure the depth first.** On 2026-09-02 `BSC.USDC` and `BSC.USDT` held
-  ~5.4k each and `BSC.BNB` ~1945 BNB. The stablecoin pools are thinner than
-  Maya's `ARB.USDC`, which the *Next up* notes already call too thin to be
-  useful at size — so the native `BSC.BNB` pool may be the only one worth
-  wiring, and 18-decimal BEP-20 tokens (see `chains/bsc.py`) are the trap
-  waiting either way.
 - **BasicSwap backend** (trustless P2P / privacy / XMR): orchestrate its daemon
   via API; needs full nodes (heavy) and a different custody seam. Future.
 - **Monero (XMR) hold/balance/send**: blocked on a custody/architecture

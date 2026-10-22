@@ -1037,6 +1037,8 @@ def test_asset_map():
     assert ASSET["USDC-ETH"].startswith("ETH.USDC-")
     assert ASSET["AVAX"] == "AVAX.AVAX"
     assert ASSET["USDT-AVAX"].startswith("AVAX.USDT-")
+    assert ASSET["BNB"] == "BSC.BNB"
+    assert ASSET["USDT-BSC"].startswith("BSC.USDT-")
     # Destination-only assets (item 3).
     assert ASSET["LTC"] == "LTC.LTC"
     assert ASSET["DOGE"] == "DOGE.DOGE"
@@ -1051,9 +1053,9 @@ def test_swap_to_ltc_parses():
 
 
 def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
-    # BSC has no pools on either network and the settlement assets (CACAO/RUNE)
-    # have no pool of themselves — probing them is guaranteed-404 HTTP round
-    # trips (up to the full timeout each) for zero information.
+    # The settlement assets (CACAO/RUNE) have no pool of themselves — probing
+    # them is guaranteed-404 HTTP round trips (up to the full timeout each) for
+    # zero information.
     import swapsack.backends as backends_mod
     import swapsack.cli as cli
 
@@ -1089,7 +1091,7 @@ def test_balance_skips_lp_probe_for_poolless_adapters(monkeypatch):
     monkeypatch.setattr(
         cli,
         "_wallet_adapters",
-        lambda args, p="": [FakeAdapter("BTC"), FakeAdapter("BSC", lp_backends=())],
+        lambda args, p="": [FakeAdapter("BTC"), FakeAdapter("MAYA", lp_backends=())],
     )
     monkeypatch.setattr(backends_mod, "default_backends", lambda: [])
     args = build_parser().parse_args(["balance"])
@@ -1168,7 +1170,8 @@ def test_poolless_adapters_are_flagged():
     from swapsack.chains.maya import MayaAdapter
     from swapsack.chains.thor import ThorAdapter
 
-    assert BscAdapter.lp_backends == ()  # no BSC pools anywhere (documented)
+    # BSC has THORChain pools since the 2026-09-02 halt lift, none on Maya.
+    assert BscAdapter.lp_backends == ("thorchain",)
     # CACAO is Maya's settlement asset — no MAYA.CACAO pool on Maya, and
     # THORChain doesn't trade Maya assets — so it is genuinely pool-less.
     assert MayaAdapter.lp_backends == ()
@@ -1435,6 +1438,8 @@ EVM_DEST = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
         ("USDC-AVAX", "AVAX.USDC-0XB97EF9EF8734C71904D8002F8B6BC66DD9C48A6E"),
         ("USDC-ARB", "ARB.USDC-0XAF88D065E77C8CC2239327C5EDB3A432268E5831"),
         ("USDT-AVAX", "AVAX.USDT-0X9702230A8EA53601F5CD2DC00FDBC13D4DF4A8C7"),
+        ("USDT-BSC", "BSC.USDT-0X55D398326F99059FF775485246999027B3197955"),
+        ("USDC-BSC", "BSC.USDC-0X8AC76A51CC950D9822D68B83FE1AD97B32CD580D"),
     ],
 )
 def test_usdc_on_a_cheaper_chain_names_that_chains_own_contract(key, asset):
@@ -1451,7 +1456,9 @@ def test_usdc_on_a_cheaper_chain_names_that_chains_own_contract(key, asset):
     assert _derivable_chain(key) == asset.split(".", 1)[0]
 
 
-@pytest.mark.parametrize("key", ["USDC-AVAX", "USDC-ARB", "ETH-ARB", "USDT-AVAX"])
+@pytest.mark.parametrize(
+    "key", ["USDC-AVAX", "USDC-ARB", "ETH-ARB", "USDT-AVAX", "USDT-BSC"]
+)
 def test_a_non_mainnet_evm_dest_warns_which_chain_it_pays_on(key, capsys):
     """Every EVM chain shares one address space, so the address cannot tell you
     which chain a payout lands on — and an exchange deposit address that only
@@ -3332,11 +3339,7 @@ def test_symmetric_fee_line_names_the_chains_own_native_coin(monkeypatch, capsys
 def test_evm_adapters_table_covers_every_spendable_evm_chain():
     import swapsack.cli as cli
 
-    # BSC is absent because it has no ASSET entry and no wiring in cli.py — NOT
-    # because the code is missing: its inherited send paths exist and sign for
-    # chain 56. See the comment on _EVM_ADAPTERS, and docs/TODO.md, which now
-    # ranks wiring BSC as the cheapest item on the list.
-    assert set(cli._EVM_ADAPTERS) == {"ETH", "ARB", "AVAX"}
+    assert set(cli._EVM_ADAPTERS) == {"ETH", "ARB", "AVAX", "BSC"}
 
 
 def test_arb_adapter_factory_honours_env_and_flag(monkeypatch):
@@ -3474,6 +3477,64 @@ def test_arb_is_a_derivable_destination():
     assert "ARB" in cli.DERIVABLE_CHAINS
     derived = cli._derive_destination_address("ARB", MNEMONIC)
     assert derived == cli._derive_destination_address("ETH", MNEMONIC)
+
+
+def test_bsc_liquidity_goes_through_thorchain_only(monkeypatch, capsys):
+    """THORChain runs the BSC pools and Maya has none: an LP op dispatches to
+    the shared EVM path on thorchain and is refused up front on maya."""
+    import swapsack.cli as cli
+
+    seen = []
+    monkeypatch.setattr(
+        cli, "_liquidity_evm", lambda args, factory, **kw: seen.append(factory) or 0
+    )
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "USDT-BSC", "--amount", "1"]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    assert seen == [cli._bsc_adapter]
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "BNB", "--amount", "1", "--backend", "maya"]
+    )
+    assert cli.cmd_add_liquidity(args) == 2
+    assert "thorchain" in capsys.readouterr().err
+
+
+def test_bsc_is_a_derivable_destination():
+    """Same as ARB/AVAX: the BSC address IS our ETH address, now spendable."""
+    import swapsack.cli as cli
+
+    assert "BSC" in cli.DERIVABLE_CHAINS
+    derived = cli._derive_destination_address("BSC", MNEMONIC)
+    assert derived == cli._derive_destination_address("ETH", MNEMONIC)
+    assert "BSC" not in cli.RECEIVE_ONLY_CHAINS
+
+
+def test_bsc_adapter_factory_honours_env_and_flag(monkeypatch):
+    import swapsack.cli as cli
+
+    monkeypatch.setenv("SWAPSACK_BSC_RPC", "https://from-env.example")
+    args = build_parser().parse_args(
+        ["send", "0x" + "11" * 20, "--asset", "BNB", "--amount", "1"]
+    )
+    with cli._bsc_adapter(args) as adapter:
+        assert adapter.rpc_url == "https://from-env.example"
+        assert adapter.chain_id == 56
+    args = build_parser().parse_args(
+        [
+            "swap",
+            "--from",
+            "USDT-BSC",
+            "--to",
+            "BTC",
+            "--amount",
+            "1",
+            "--bsc-rpc",
+            "https://from-flag.example",
+        ]
+    )
+    with cli._bsc_adapter(args) as adapter:
+        assert adapter.rpc_url == "https://from-flag.example"
 
 
 def test_avax_is_a_derivable_destination():

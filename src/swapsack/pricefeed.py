@@ -53,11 +53,6 @@ COINGECKO_IDS: dict[str, str] = {
     "USDC-AVAX": "usd-coin",
     "USDT-AVAX": "tether",
     "USDC-ARB": "usd-coin",
-    # BSC is hold+balance only, so these have no ASSET entry — but `balance`
-    # prints the rows, and an unpriceable row it cannot value is named in the
-    # sheet's footer every single run if they are missing here. (The reason
-    # used to be "nothing trades it"; THORChain's BSC halt lifted 2026-09-02,
-    # so what is missing now is the CLI wiring — see docs/TODO.md.)
     "USDT-BSC": "tether",
     "USDC-BSC": "usd-coin",
 }

@@ -50,6 +50,7 @@ _RULES: dict[str, re.Pattern[str]] = {
     # X-/P-Chain's own 'X-avax1…'/'P-avax1…' bech32 form is therefore excluded
     # deliberately: a valid Avalanche address that a payout could never credit.
     "AVAX": re.compile(r"^0x[0-9a-fA-F]{40}$"),
+    "BSC": re.compile(r"^0x[0-9a-fA-F]{40}$"),
     "TRON": re.compile(rf"^T{_B58}{{33}}$"),
     # Maya native chain (Cosmos-SDK bech32, 'maya' HRP) — for a CACAO payout.
     "MAYA": re.compile(rf"^maya1{_B32}{{37,58}}$"),
@@ -139,7 +140,7 @@ _PLAIN_BECH32_HRP: dict[str, str] = {
 # EVM chains: one address space, one EIP-55 casing rule. Which is also the
 # hazard — an address alone never says which of these it is meant for, so the
 # CLI warns when a payout lands anywhere but Ethereum mainnet.
-_EVM_CHAINS = frozenset({"ETH", "ARB", "AVAX"})
+_EVM_CHAINS = frozenset({"ETH", "ARB", "AVAX", "BSC"})
 
 # Chains whose addresses are base58check, mapped to the alphabet they use —
 # the XRPL permutes the same 58 characters, so only decoding tells them apart.
