@@ -17,7 +17,9 @@ automatically from git tags (PEP 440 / SemVer).
   address is too long for the swap memo, so swap from ETH instead. Outputs
   that hold Cardano tokens are left alone. ADA liquidity uses only the ADA
   on your first address (the one `address` shows). `--max-fee` now defaults
-  to 0.5 ADA for ADA. None of this has moved real ADA yet, so start small.
+  to 0.5 ADA for ADA. Receiving ADA and adding it as liquidity have been done
+  with real funds; sending, swapping from ADA and withdrawing have not yet, so
+  start small.
 
 - **CACAO liquidity without another asset.** `add-liquidity --protocol-only`
   adds CACAO (or RUNE) alone to one pool; `--amount` is then CACAO (or RUNE),

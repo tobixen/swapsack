@@ -11,7 +11,10 @@ built in the same three phases as ZEC (see [zcash.md](zcash.md)):
 All three are done, and single-sided liquidity (`add-liquidity --asset ADA
 --backend maya`) came with phase 3 for free: it is the same deposit with an
 `+:ADA.ADA:…` memo, and a withdraw trigger sends the vault's 1 ADA dust
-threshold. None of it has moved real ADA yet; there is no Maya testnet.
+threshold. Receiving ADA and a single-sided `add-liquidity` were proven on
+mainnet on 2026-10-23: Maya recorded the add, with LP units, from the CIP-20
+`+:ADA.ADA` memo, and the change came back to the same address. Send, sweep,
+swap-from and the withdraw are still unproven; there is no Maya testnet.
 
 ## Venue
 
