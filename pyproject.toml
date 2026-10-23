@@ -33,6 +33,7 @@ dependencies = [
   "base58>=2",
   "coincurve>=19",
   "pynacl>=1.5",
+  "cbor2>=5.6",
 ]
 
 [project.scripts]

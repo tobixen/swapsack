@@ -100,3 +100,24 @@ From Maya's bifrost (`bifrost/pkg/chainclients/cardano/client.go`) and its
 - The **sender** (refund address) is the address of the *first input's* UTXO.
 - The inbound is the first output paying a vault; at most 10 outputs; the memo
   must fit Maya's `MaxMayaMemoSize`. The vault's `dust_threshold` is 1 ADA.
+
+## Transactions
+
+`chains/cardano_tx.py` builds the slice of the ledger format a pure-ADA wallet
+needs, on `cbor2`: tag-258 input set, plain `[address, lovelace]` outputs, fee,
+TTL and, for a deposit, the CIP-20 memo bound by its hash (body key 7). No
+tokens, scripts or certificates.
+
+- **Fee** = `min_fee_a` × size + `min_fee_b` (44 and 155,381 lovelace on
+  mainnet), sized on placeholder witnesses and iterated, since the fee's own
+  CBOR length counts.
+- **Min-ADA**: every output must hold (160 + its serialized size) ×
+  `coins_per_utxo_byte`, about 0.97 ADA for a base-address output. A change
+  smaller than that cannot exist and is folded into the fee.
+- **Tests** pin two transactions: a real Maya deposit from mainnet (its txid is
+  the hash of the body as written, its witness verifies, its CIP-20 memo
+  decodes), and one built and signed here, which pycardano decodes to the same
+  id, accepts, and re-encodes byte for byte.
+- `parse` is the gate's neutral reader: it hashes the body bytes as written
+  rather than a re-encoding (cbor2 turns tag-258 sets into Python sets, whose
+  order is not stable), and refuses aux data the body does not commit to.
