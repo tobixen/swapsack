@@ -175,6 +175,7 @@ class ZecAdapter(GatedTxBuilder):
     # The ZEC.ZEC pool exists only on Maya — and THORChain answers an LP probe
     # for a pool it doesn't run with a 500, not a clean "no position" 404.
     lp_backends = ("maya",)
+    fee_basis = "(ZIP-317 conventional fee)"
 
     def __init__(
         self,

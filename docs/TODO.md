@@ -87,8 +87,10 @@ has never broadcast on Arbitrum, which is item 1.
    chain must name a checksum strategy or explicitly say it has none.
 
    A follow-up this work exposed, not blocking:
-   - **ADA is usually unreachable from a UTXO source.** The Shelley *base*
-     address wallets hand out is 103 chars, so the memo exceeds the 80-byte
+   - **ADA is usually unreachable from an OP_RETURN source** (BTC/DASH/ZEC;
+     ADA itself carries its memo in metadata, with a 250-byte cap, and is
+     fine). The Shelley *base* address wallets hand out — swapsack's own
+     included — is 103 chars, so the memo exceeds the 80-byte
      OP_RETURN — see *N5* below, which this made live. Not a blanket rule: the
      guard measures the actual address, and a shorter Shelley form (enterprise,
      58 chars) fits fine, so do not "simplify" it into a per-chain block. `--dest` now refuses it up front instead of letting

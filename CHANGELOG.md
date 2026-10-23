@@ -8,13 +8,16 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
-- **Cardano wallet.** `address` and `balance` now show ADA: the same base
-  addresses (`addr1q…`) Yoroi and Eternl show for your words and passphrase
-  (not those of a Ledger), read through the keyless Koios API (`--ada-api`
-  to use another instance). A swap to ADA now pays your own address unless
-  you give `--dest`; from BTC, DASH or ZEC that address is too long for the
-  swap memo, so swap from ETH instead. Sending ADA and swapping from it are
-  not there yet.
+- **Cardano (ADA) wallet.** `address` and `balance` show ADA, and it can
+  now be sent, swept, swapped from and added as liquidity, through Maya (the
+  only network with an ADA pool). The addresses are the ones Yoroi and Eternl
+  show for your words and passphrase (not a Ledger's), read through the
+  keyless Koios API (`--ada-api` to use another instance). A swap to ADA pays
+  your own address unless you give `--dest`; from BTC, DASH or ZEC that
+  address is too long for the swap memo, so swap from ETH instead. Outputs
+  that hold Cardano tokens are left alone. ADA liquidity uses only the ADA
+  on your first address (the one `address` shows). `--max-fee` now defaults
+  to 0.5 ADA for ADA. None of this has moved real ADA yet, so start small.
 
 - **CACAO liquidity without another asset.** `add-liquidity --protocol-only`
   adds CACAO (or RUNE) alone to one pool; `--amount` is then CACAO (or RUNE),

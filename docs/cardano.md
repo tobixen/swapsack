@@ -4,12 +4,14 @@ ADA used to be a destination only: a swap could pay an external `--dest`
 address, but swapsack had no key for one. This note covers the wallet side,
 built in the same three phases as ZEC (see [zcash.md](zcash.md)):
 
-1. **Hold + balance** — keys, addresses, a Koios-backed gap-limit scan. *Done.*
+1. **Hold + balance** — keys, addresses, a Koios-backed gap-limit scan.
 2. **Send + sweep** — CBOR transaction building, fees, min-ADA, signing.
 3. **Swap-from** — a Maya deposit carrying its memo in transaction metadata.
 
-Liquidity provision is not planned yet; it would ride the phase-3 deposit
-(an `+:ADA.ADA:…` memo) much as DASH/ZEC do.
+All three are done, and single-sided liquidity (`add-liquidity --asset ADA
+--backend maya`) came with phase 3 for free: it is the same deposit with an
+`+:ADA.ADA:…` memo, and a withdraw trigger sends the vault's 1 ADA dust
+threshold. None of it has moved real ADA yet; there is no Maya testnet.
 
 ## Venue
 
@@ -97,7 +99,10 @@ From Maya's bifrost (`bifrost/pkg/chainclients/cardano/client.go`) and its
   `6b714fd9e2fba152266987efa0419c0ff77a7d636f8a30fb160f850a33ef38f1` carried
   CIP-20 `{674: {msg: […]}}` in a bare map and was processed as a normal swap.
   swapsack will use CIP-20: the Cardano standard, shown by explorers and wallets.
-- The **sender** (refund address) is the address of the *first input's* UTXO.
+- The **sender** (refund address, and the address an LP position is filed
+  under) is the address of the *first input's* UTXO. Inputs are a set, sorted
+  by (txid, index) on the wire, so "first" means lowest txid — not the input
+  the builder picked first.
 - The inbound is the first output paying a vault; at most 10 outputs; the memo
   must fit Maya's `MaxMayaMemoSize`. The vault's `dust_threshold` is 1 ADA.
 
@@ -121,3 +126,53 @@ tokens, scripts or certificates.
 - `parse` is the gate's neutral reader: it hashes the body bytes as written
   rather than a re-encoding (cbor2 turns tag-258 sets into Python sets, whose
   order is not stable), and refuses aux data the body does not commit to.
+
+## Spending
+
+The adapter plugs into the shared gate wrappers (`GatedTxBuilder`) like ZEC:
+
+- **Selection** is largest-first over **token-free UTXOs only**; a UTXO
+  holding native tokens is never spent, so no token can be dropped. Inputs keep
+  being added while the leftover is too small to be a change output (under
+  min-ADA); only when they run out is such a leftover folded into the fee.
+- **Witnesses**: one per distinct input address, and each key is checked to
+  hash to its address's payment credential before anything is signed.
+- **TTL**: tip + 7200 slots (two hours), so a tx that never lands frees its
+  inputs.
+- **Sweep** sizes the fee before the recipient is known (longest address, one
+  witness per input, longest TTL), and the build refuses one that would pay
+  less than the minimum. Inputs share a witness per address, so with many
+  UTXOs on one address it overpays ~4,400 lovelace per extra input (30
+  UTXOs: ~0.13 ADA); a swap sweep also sizes for a 250-byte memo.
+- **Amounts** finer than a lovelace are refused, as is an output under
+  min-ADA.
+- **The gate** reads the memo back out of the serialized metadata as the tx's
+  single data entry, so `verify_btc_swap`'s "exactly one memo,
+  byte-identical to the quote" rule applies unchanged. Its 80-byte limit is
+  now per adapter (`memo_max_bytes`): ADA allows 250, Maya's
+  `MaxMayaMemoSizeV1` in mayanode's `constants/constants.go` (`MaxMayaMemoSize`
+  there is 512, but a node on the older rule would drop the deposit).
+- **The fee the gate checks** is read back from the serialized body, like the
+  outputs, and `sign` compares both against the signed bytes again. When a
+  sub-min-ADA leftover is folded into the fee, the confirm line says how much
+  of the fee is that change.
+- **Liquidity** (add and withdraw trigger) spends only the UTXOs of the
+  receive address `…/0/0` and returns change there. Maya files the position
+  under the first input's address (above), so funding a deposit from two
+  addresses would let an add and its withdraw land on different ones, and the
+  withdraw would be ignored.
+- **Skipped UTXOs**: those holding tokens, and those carrying a reference
+  script (Conway charges for its bytes, which the fee maths leaves out).
+- **Size**: a tx over `max_tx_size` (16 KB) is refused before signing.
+- **Broadcast**: a Koios rejection says nothing was sent; any other surprise
+  after submitting says the tx may be live and names its txid, so a retry
+  does not pay twice.
+- **`--max-fee`** has a per-adapter default (`default_max_fee`): 0.5 ADA for
+  ADA, the usual 50,000 base units elsewhere. A plain ADA payment costs about
+  0.17 ADA.
+- **Broadcast** posts the CBOR to Koios `submittx` (never retried) and checks
+  the txid it answers is the one the bytes hash to.
+
+A live dry run on 2026-10-23 (no broadcast) fetched the epoch parameters and
+tip from Koios, took a real Maya quote for 100 ADA → BTC, and built, gated and
+signed the deposit: no gate problems, a 366-byte tx paying 0.171 ADA.

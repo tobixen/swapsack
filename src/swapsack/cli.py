@@ -41,13 +41,14 @@ from swapsack.net import HTTP_ERRORS, HostUnreachable
 from swapsack.swap import (
     DEFAULT_TOLERANCE_BPS,
     BroadcastError,
+    Prepared,
     SwapAborted,
     SwapRequest,
     execute_swap,
     prepare_swap,
 )
 from swapsack.thorchain import THORCHAIN_UNIT, asset_unit
-from swapsack.verify import OP_RETURN_MAX_BYTES
+from swapsack.verify import DEFAULT_MAX_FEE, OP_RETURN_MAX_BYTES
 
 if TYPE_CHECKING:  # types only — the chain adapters stay lazily imported below
     from swapsack.chains.base import TxEntry, TxSummary
@@ -75,6 +76,10 @@ DEFAULT_FEE_BLOCKS = 2
 # never scan or send change on a path that drifts from the adapter's own.
 BTC_RECEIVE_PATH = "m/84'/0'/0'/0/0"
 ETH_MAX_FEE_WEI = 10**16  # 0.01 ETH sanity ceiling on inbound gas
+MAX_FEE_HELP = (
+    "max UTXO-chain fee in 1e-8 base units (BTC sats, DASH duffs; default "
+    f"{DEFAULT_MAX_FEE}, or 50000000 = 0.5 ADA for ADA)"
+)
 ASSET = {
     "BTC": "BTC.BTC",
     "ETH": "ETH.ETH",
@@ -90,8 +95,8 @@ ASSET = {
     "BCH": "BCH.BCH",
     "ATOM": "GAIA.ATOM",  # Cosmos Hub; THORChain names the chain GAIA
     "XRP": "XRP.XRP",  # classic r… addresses only — no destination tag, see below
-    # Maya-only; hold/bal; a base address is unreachable from a UTXO source
-    # (memo length) — see docs/cardano.md.
+    # Maya-only; hold/bal/send/sweep/from/LP. Our base address is too long for
+    # an OP_RETURN memo, so BTC/DASH/ZEC cannot pay it — see docs/cardano.md.
     "ADA": "ADA.ADA",
     "ETH-ARB": "ARB.ETH",  # Maya-only: native ETH on Arbitrum, not the ARB token
     # Avalanche C-Chain only (the X-/P-Chain address form is refused — a payout
@@ -325,6 +330,7 @@ _UTXO_ADAPTERS = {
     "BTC": _btc_adapter,
     "DASH": _dash_adapter,
     "ZEC": _zec_adapter,
+    "ADA": _ada_adapter,  # memo in CIP-20 metadata, not an OP_RETURN
 }
 # `history` also reads these account chains, whose single address needs no gap
 # scan. Kept apart from `_UTXO_ADAPTERS` so a patch of that registry still
@@ -962,12 +968,9 @@ _DESTINATION_DERIVERS: dict[str, Callable[[str, str], str]] = {
 DERIVABLE_CHAINS = tuple(_DESTINATION_DERIVERS)
 # Chains we can receive on but not spend from (Phase 1 in their design notes,
 # mapped here) — auto-deriving a swap destination there parks the funds, so
-# warn loudly. (DASH and ZEC graduated when their send paths landed.)
+# warn loudly. (DASH, ZEC and ADA graduated when their send paths landed.)
 # Value: where to read more.
-RECEIVE_ONLY_CHAINS: dict[str, str] = {
-    "GAIA": "README.md (the ATOM row)",
-    "ADA": "docs/cardano.md",
-}
+RECEIVE_ONLY_CHAINS: dict[str, str] = {"GAIA": "README.md (the ATOM row)"}
 
 
 def _derive_destination_address(
@@ -1014,21 +1017,25 @@ def _dest_chain_caveats(args: argparse.Namespace, dest: str) -> None:
             "exchange deposit address for Ethereum mainnet will not credit it",
         )
     from_chain = ASSET[args.from_].split(".", 1)[0]
-    if from_chain not in _UTXO_ADAPTERS:
+    factory = _UTXO_ADAPTERS.get(from_chain)
+    if factory is None:
         return
     # A UTXO source carries its memo in an OP_RETURN, which the backend caps at
-    # verify.OP_RETURN_MAX_BYTES. The backend builds the memo, so its exact
+    # verify.OP_RETURN_MAX_BYTES (ADA carries it in metadata, with a higher
+    # cap of its own). The backend builds the memo, so its exact
     # length is not knowable here — but the shortest one it could possibly
     # build is '=:<1-char asset>:<dest>', and if even that is over the cap the
     # swap can never be quoted, whatever the amount, backend or timing. Caught
     # here because the backend's own refusal arrives as "no quotes", which
     # reads as a missing pool rather than a permanent impossibility.
+    limit = getattr(factory(args), "memo_max_bytes", OP_RETURN_MAX_BYTES)
+    carrier = "OP_RETURN" if limit == OP_RETURN_MAX_BYTES else "memo"
     shortest_memo = len("=:x:") + len(dest)
-    if shortest_memo > OP_RETURN_MAX_BYTES:
+    if shortest_memo > limit:
         raise SystemExit(
             f"--dest: the {chain} address is {len(dest)} characters, so the "
             f"swap memo needs at least {shortest_memo} bytes — over the "
-            f"{OP_RETURN_MAX_BYTES}-byte OP_RETURN limit a {from_chain} source "
+            f"{limit}-byte {carrier} limit a {from_chain} source "
             f"has to fit it in. Swap from an account-model chain (ETH sends the "
             f"memo as calldata, with no such limit) to reach {args.to_}."
         )
@@ -1746,6 +1753,23 @@ def _price_unconfirmed(
     return adapter.cpfp_deficits(utxos, fee_rate)
 
 
+def _max_fee(args: argparse.Namespace, adapter) -> int:  # noqa: ANN001
+    """``--max-fee``, or the source chain's own default when none was given.
+
+    One number cannot fit every chain: 50,000 base units is a sane ceiling in
+    sats, but an ADA fee runs to ~20,000,000 of the same 1e-8 units.
+    """
+    if args.max_fee is not None:
+        return args.max_fee
+    return getattr(adapter, "default_max_fee", DEFAULT_MAX_FEE)
+
+
+def _fee_note(prepared: Prepared) -> str:
+    """What part of the fee is not fee (ADA's folded change), if any."""
+    note = getattr(prepared.built, "fee_note", "")
+    return f" {note}" if note else ""
+
+
 def _send_utxo(
     args: argparse.Namespace,
     adapter_factory,  # noqa: ANN001 (Callable[..., BtcAdapter | DashAdapter | ZecAdapter])
@@ -1781,7 +1805,7 @@ def _send_utxo(
                 scanned_utxos=utxos,
                 fee_rate=fee_rate,
                 change_address=change_address,
-                max_fee=args.max_fee,
+                max_fee=_max_fee(args, adapter),
                 sweep=sweep,
             )
         except InsufficientFunds as exc:
@@ -1790,13 +1814,13 @@ def _send_utxo(
 
         label = adapter.chain.lower()
         print(f"send:    {amount} base units (1e-8 {adapter.chain}) to {recipient}")
-        rate = f"@ {fee_rate}/vB" if fee_rate else "(ZIP-317 conventional fee)"
+        rate = f"@ {fee_rate}/vB" if fee_rate else getattr(adapter, "fee_basis", "")
         eur = _eur_suffix(
             prepared.built.fee / THORCHAIN_UNIT,
             adapter.chain,
             price_check=args.price_check,
         )
-        print(f"{label} fee: {prepared.built.fee} {rate}{eur}")
+        print(f"{label} fee: {prepared.built.fee} {rate}{eur}{_fee_note(prepared)}")
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -2024,8 +2048,6 @@ def _swap_from_utxo(
         fee_rate = adapter.fetch_fee_rate(_fee_blocks(args))
         utxos = _price_unconfirmed(adapter, utxos, fee_rate)
         if sweep:
-            from swapsack.chains.coins import OP_RETURN_MAX_BYTES
-
             total = sum(u.value for u in utxos)
             try:
                 # The memo isn't known until the quote; size for the maximum
@@ -2034,7 +2056,7 @@ def _swap_from_utxo(
                     total,
                     len(utxos),
                     fee_rate,
-                    memo_len=OP_RETURN_MAX_BYTES,
+                    memo_len=getattr(adapter, "memo_max_bytes", OP_RETURN_MAX_BYTES),
                     extra_fee=cpfp_surcharge(utxos),
                 )
             except InsufficientFunds as exc:
@@ -2088,7 +2110,7 @@ def _swap_from_utxo(
                     scanned_utxos=utxos,
                     fee_rate=fee_rate,
                     change_address=change_address,
-                    max_fee=args.max_fee,
+                    max_fee=_max_fee(args, adapter),
                     sweep=sweep,
                 )
             except (SwapAborted, InsufficientFunds) as exc:
@@ -2113,13 +2135,16 @@ def _swap_from_utxo(
                 amount,
                 price_check=args.price_check,
             )
-            rate = f"@ {fee_rate}/vB" if fee_rate else "(ZIP-317 conventional fee)"
+            rate = f"@ {fee_rate}/vB" if fee_rate else getattr(adapter, "fee_basis", "")
             eur = _eur_suffix(
                 prepared.built.fee / THORCHAIN_UNIT,
                 adapter.chain,
                 price_check=args.price_check,
             )
-            print(f"inbound: {prepared.built.fee} on {adapter.chain} {rate}{eur}")
+            print(
+                f"inbound: {prepared.built.fee} on {adapter.chain} {rate}{eur}"
+                f"{_fee_note(prepared)}"
+            )
             return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -2222,7 +2247,7 @@ def _swap_via_chainflip(
             scanned_utxos=utxos,
             fee_rate=fee_rate,
             change_address=change_address,
-            max_fee=args.max_fee,
+            max_fee=_max_fee(args, adapter),
         )
     except InsufficientFunds as exc:
         print(f"ABORTED: {exc}", file=sys.stderr)
@@ -3159,7 +3184,7 @@ def _liquidity_utxo(
                 scanned_utxos=utxos,
                 fee_rate=fee_rate,
                 change_address=change_address,
-                max_fee=args.max_fee,
+                max_fee=_max_fee(args, adapter),
                 sweep=sweep,
             )
         except (SwapAborted, InsufficientFunds) as exc:
@@ -3175,13 +3200,13 @@ def _liquidity_utxo(
         )
         print(f"memo:    {memo}")
         label = adapter.chain.lower()
-        rate = f"@ {fee_rate}/vB" if fee_rate else "(ZIP-317 conventional fee)"
+        rate = f"@ {fee_rate}/vB" if fee_rate else getattr(adapter, "fee_basis", "")
         eur = _eur_suffix(
             prepared.built.fee / THORCHAIN_UNIT,
             adapter.chain,
             price_check=args.price_check,
         )
-        print(f"{label} fee: {prepared.built.fee} {rate}{eur}")
+        print(f"{label} fee: {prepared.built.fee} {rate}{eur}{_fee_note(prepared)}")
         return _confirm_and_execute(prepared, adapter, args)
 
 
@@ -4636,7 +4661,8 @@ def _add_broadcast_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument(
         "--yes", action="store_true", help="skip the interactive confirm (automation)"
     )
-    sub.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
+    sub.add_argument("--max-fee", type=int, help=MAX_FEE_HELP)
+    sub.add_argument("--ada-api", help="Cardano Koios API URL ($SWAPSACK_ADA_API)")
     sub.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     sub.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
     sub.add_argument("--avax-rpc", help="Avalanche JSON-RPC URL ($SWAPSACK_AVAX_RPC)")
@@ -4820,7 +4846,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--yes", action="store_true", help="skip the interactive confirm (automation)"
     )
-    s.add_argument("--max-fee", type=int, default=50_000, help="max BTC fee in sats")
+    s.add_argument("--max-fee", type=int, help=MAX_FEE_HELP)
+    s.add_argument("--ada-api", help="Cardano Koios API URL ($SWAPSACK_ADA_API)")
     s.add_argument("--eth-rpc", help="Ethereum JSON-RPC URL ($SWAPSACK_ETH_RPC)")
     s.add_argument("--arb-rpc", help="Arbitrum JSON-RPC URL ($SWAPSACK_ARB_RPC)")
     s.add_argument("--avax-rpc", help="Avalanche JSON-RPC URL ($SWAPSACK_AVAX_RPC)")
@@ -4940,12 +4967,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--yes", action="store_true", help="skip the interactive confirm (automation)"
     )
-    s.add_argument(
-        "--max-fee",
-        type=int,
-        default=50_000,
-        help="max UTXO-chain fee in base units (BTC sats / DASH duffs)",
-    )
+    s.add_argument("--max-fee", type=int, help=MAX_FEE_HELP)
+    s.add_argument("--ada-api", help="Cardano Koios API URL ($SWAPSACK_ADA_API)")
     s.add_argument(
         "--fee-blocks",
         type=int,

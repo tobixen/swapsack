@@ -21,6 +21,8 @@ from swapsack.chains.coins import Utxo
 from swapsack.swap import Prepared, SwapRequest
 from swapsack.thorchain import Quote
 from swapsack.verify import (
+    DEFAULT_MAX_FEE,
+    OP_RETURN_MAX_BYTES,
     ChainflipVaultPlan,
     SendPlan,
     SwapPlan,
@@ -45,6 +47,13 @@ class GatedTxBuilder:
     # ZEC, whose lightwalletd address index holds mined outputs only — the CLI
     # says so rather than letting the flag look like it took effect.
     unconfirmed_spendable = True
+    # The longest memo a deposit can carry: an OP_RETURN's, unless the chain
+    # carries it elsewhere (ADA: transaction metadata).
+    memo_max_bytes = OP_RETURN_MAX_BYTES
+    # --max-fee when the user gives none; ADA, whose fees run ~0.2, overrides it.
+    default_max_fee = DEFAULT_MAX_FEE
+    # How the fee was priced, for a chain with no fee rate to print.
+    fee_basis = ""
 
     def cpfp_deficits(
         self,
@@ -120,6 +129,7 @@ class GatedTxBuilder:
             owned_addresses=owned,
             now=now,
             max_fee=max_fee,
+            memo_max_bytes=self.memo_max_bytes,
         )
         return Prepared(quote=quote, built=built, plan=plan, problems=problems)
 
@@ -158,6 +168,7 @@ class GatedTxBuilder:
             owned_addresses=owned,
             now=now,
             max_fee=max_fee,
+            memo_max_bytes=self.memo_max_bytes,
         )
         return Prepared(quote=None, built=built, plan=plan, problems=problems)
 

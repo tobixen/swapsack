@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 pytest.importorskip("bitcoinlib")
@@ -178,3 +180,384 @@ def test_address_info_posts_to_koios():
 def test_live_koios_sees_golden_address_history():
     with AdaAdapter() as adapter:
         assert adapter.address_info(GOLDEN["m/1852'/1815'/0'/0/0"][1]).has_history
+
+
+# --- send / sweep / deposit ----------------------------------------------------
+
+from swapsack.chains.cardano_tx import (  # noqa: E402
+    ProtocolParams,
+    min_fee,
+    parse,
+)
+from swapsack.chains.coins import InsufficientFunds, Utxo  # noqa: E402
+from swapsack.swap import SwapAborted  # noqa: E402
+
+PARAMS = ProtocolParams(min_fee_a=44, min_fee_b=155381, coins_per_utxo_byte=4310)
+VAULT = "addr1vyqnx906342cukj8ukfvps5vr24emnam7nrz0hr9cjc807say5nlw"
+RECIPIENT = GOLDEN["m/1852'/1815'/0'/0/1"][1]
+OURS = GOLDEN["m/1852'/1815'/0'/0/0"][1]
+CHANGE = GOLDEN["m/1852'/1815'/0'/1/0"][1]
+ADA = 100_000_000  # one ADA in the adapter's 1e-8 units
+
+
+def _utxo(ada: float, index: int = 0, path: str = "m/1852'/1815'/0'/0/0") -> Utxo:
+    return Utxo(
+        txid=f"{index:064x}",
+        vout=index,
+        value=int(ada * ADA),
+        address=OURS if path.endswith("/0/0") else CHANGE,
+        path=path,
+    )
+
+
+@pytest.fixture
+def adapter(monkeypatch):
+    a = AdaAdapter("https://koios.example.com/api/v1")
+    monkeypatch.setattr(a, "protocol_params", lambda: PARAMS)
+    monkeypatch.setattr(a, "tip_slot", lambda: 200_000_000)
+    return a
+
+
+def _build(adapter, utxos, amount, *, memo=None, sweep=False, to=RECIPIENT):
+    return adapter.build_unsigned_swap(
+        mnemonic=TEST_MNEMONIC,
+        utxos=utxos,
+        vault_address=to,
+        amount=amount,
+        memo=memo,
+        change_address=CHANGE,
+        sweep=sweep,
+    )
+
+
+def test_fetch_utxos_scales_and_skips_token_bearing_outputs(monkeypatch):
+    adapter = AdaAdapter("https://koios.example.com/api/v1")
+    plain = {"tx_hash": "aa" * 32, "tx_index": 1, "value": "3000000", "asset_list": []}
+    tokens = {
+        "tx_hash": "bb" * 32,
+        "tx_index": 0,
+        "value": "1500000",
+        "asset_list": [{"policy_id": "cc" * 28, "quantity": "1"}],
+    }
+    adapter._session = FakeSession(  # type: ignore[assignment]
+        FakeJson([{"address": OURS, "balance": "4500000", "utxo_set": [plain, tokens]}])
+    )
+    [utxo] = adapter.fetch_utxos(OURS)
+    assert (utxo.txid, utxo.vout, utxo.value, utxo.address) == (
+        "aa" * 32,
+        1,
+        3_000_000 * 100,
+        OURS,
+    )
+
+
+def test_send_pays_recipient_returns_change_and_pays_the_minimum_fee(adapter):
+    built = _build(adapter, [_utxo(10)], 3 * ADA)
+    raw = bytes.fromhex(adapter.sign(built)[0])
+    parsed = parse(raw)
+    assert parsed.outputs[0] == (RECIPIENT, 3_000_000)
+    assert parsed.outputs[1][0] == CHANGE
+    assert parsed.fee == min_fee(len(raw), PARAMS)
+    assert built.fee == parsed.fee * 100
+    assert parsed.outputs[1][1] == 10_000_000 - 3_000_000 - parsed.fee
+    [(vkey, signature)] = parsed.witnesses
+    VerifyKey(vkey).verify(parsed.txid, signature)
+
+
+def test_neutral_outputs_are_read_back_from_the_serialized_bytes(adapter):
+    built = _build(adapter, [_utxo(10)], 3 * ADA)
+    assert built.outputs[0].address == RECIPIENT
+    assert built.outputs[0].value == 3 * ADA
+    assert built.outputs[1].address == CHANGE
+    assert all(o.op_return_data is None for o in built.outputs)
+
+
+def test_send_passes_the_verify_gate(adapter):
+    prepared = adapter.build_and_verify_send(
+        recipient=RECIPIENT,
+        amount=3 * ADA,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=[_utxo(10)],
+        fee_rate=0.0,
+        change_address=CHANGE,
+        max_fee=adapter.default_max_fee,
+    )
+    assert prepared.problems == []
+
+
+def test_change_below_min_ada_is_folded_into_the_fee(adapter):
+    # 3.5 ADA in, 3 ADA out: ~0.33 ADA left after the fee, under the ~0.97 ADA
+    # an output must hold, so it cannot be returned and goes to the fee.
+    built = _build(adapter, [_utxo(3.5)], 3 * ADA)
+    parsed = parse(bytes.fromhex(adapter.sign(built)[0]))
+    assert parsed.outputs == ((RECIPIENT, 3_000_000),)
+    assert parsed.fee == 500_000
+
+
+def test_more_inputs_are_taken_rather_than_folding_change(adapter):
+    built = _build(adapter, [_utxo(3.5, 0), _utxo(5, 1)], 3 * ADA)
+    parsed = parse(bytes.fromhex(adapter.sign(built)[0]))
+    assert len(parsed.outputs) == 2  # change kept: 5 ADA covered it alone
+    assert len(parsed.inputs) == 1
+
+
+def test_amount_finer_than_a_lovelace_is_refused(adapter):
+    with pytest.raises(SwapAborted, match="lovelace"):
+        _build(adapter, [_utxo(10)], 3 * ADA + 1)
+
+
+def test_output_below_min_ada_is_refused(adapter):
+    with pytest.raises(SwapAborted, match="at least"):
+        _build(adapter, [_utxo(10)], ADA // 2)
+
+
+def test_insufficient_funds(adapter):
+    with pytest.raises(InsufficientFunds):
+        _build(adapter, [_utxo(2)], 3 * ADA)
+
+
+def test_inputs_on_several_addresses_get_one_witness_each(adapter):
+    utxos = [_utxo(2, 0), _utxo(2, 1, path="m/1852'/1815'/0'/1/0")]
+    built = _build(adapter, utxos, 3 * ADA)
+    parsed = parse(bytes.fromhex(adapter.sign(built)[0]))
+    assert len(parsed.inputs) == 2
+    assert len(parsed.witnesses) == 2
+    for vkey, signature in parsed.witnesses:
+        VerifyKey(vkey).verify(parsed.txid, signature)
+
+
+def test_a_utxo_whose_path_does_not_own_its_address_is_refused(adapter):
+    wrong = dataclasses.replace(_utxo(10), path="m/1852'/1815'/0'/0/7")
+    with pytest.raises(SwapAborted, match="payment key"):
+        _build(adapter, [wrong], 3 * ADA)
+
+
+def test_sweep_spends_everything_into_one_output(adapter):
+    utxos = [_utxo(2, 0), _utxo(3, 1)]
+    amount, fee = adapter.sweep_send_amount(5 * ADA, len(utxos), 0.0)
+    assert amount + fee == 5 * ADA
+    built = _build(adapter, utxos, amount, sweep=True)
+    raw = bytes.fromhex(adapter.sign(built)[0])
+    parsed = parse(raw)
+    assert parsed.outputs == ((RECIPIENT, amount // 100),)
+    # Sized for the worst case before the recipient was known; never short.
+    assert min_fee(len(raw), PARAMS) <= parsed.fee <= min_fee(len(raw), PARAMS) + 5000
+
+
+def test_sweep_that_cannot_pay_its_fee_is_refused(adapter):
+    with pytest.raises(InsufficientFunds):
+        _build(adapter, [_utxo(2)], 2 * ADA, sweep=True)
+
+
+def test_deposit_carries_the_memo_as_cip20_metadata(adapter):
+    memo = "=:ETH.ETH:0x" + "ab" * 20 + ":0/1/0"
+    built = _build(adapter, [_utxo(10)], 5 * ADA, memo=memo, to=VAULT)
+    parsed = parse(bytes.fromhex(adapter.sign(built)[0]))
+    assert parsed.memo == memo.encode()
+    assert parsed.outputs[0] == (VAULT, 5_000_000)
+    assert [o.op_return_data for o in built.outputs if o.address is None] == [
+        memo.encode()
+    ]
+
+
+def test_a_memo_longer_than_an_op_return_passes_the_ada_gate(adapter):
+    # Cardano metadata has no 80-byte cap; Maya takes far longer memos.
+    memo = "=:BTC.BTC:bc1p" + "q" * 100 + ":0/1/0"
+    prepared = adapter.build_and_verify_deposit(
+        vault=VAULT,
+        memo=memo,
+        amount=5 * ADA,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=[_utxo(10)],
+        fee_rate=0.0,
+        change_address=CHANGE,
+        max_fee=adapter.default_max_fee,
+    )
+    assert prepared.problems == []
+
+
+def test_protocol_params_come_from_the_current_epoch(monkeypatch):
+    adapter = AdaAdapter("https://koios.example.com/api/v1")
+    session = FakeSession(
+        FakeJson([{"epoch_no": 663, "abs_slot": 201_219_907}]),
+        FakeJson(
+            [
+                {
+                    "epoch_no": 663,
+                    "min_fee_a": 44,
+                    "min_fee_b": 155381,
+                    "coins_per_utxo_size": "4310",
+                    "max_tx_size": 16384,
+                }
+            ]
+        ),
+    )
+    adapter._session = session  # type: ignore[assignment]
+    assert adapter.protocol_params() == PARAMS
+    assert session.gets == [
+        "https://koios.example.com/api/v1/tip",
+        "https://koios.example.com/api/v1/epoch_params",
+    ]
+    assert session.kwargs[1] == {"params": {"_epoch_no": 663}}
+
+
+def test_broadcast_submits_the_cbor_and_returns_its_txid(adapter):
+    built = _build(adapter, [_utxo(10)], 3 * ADA)
+    [raw] = adapter.sign(built)
+    txid = parse(bytes.fromhex(raw)).txid.hex()
+    session = FakeSession(FakeSubmit(202, f'"{txid}"'))
+    adapter._session = session  # type: ignore[assignment]
+    assert adapter.broadcast([raw]) == txid
+    assert session.posts == ["https://koios.example.com/api/v1/submittx"]
+    assert session.kwargs == [
+        {
+            "data": bytes.fromhex(raw),
+            "headers": {"Content-Type": "application/cbor"},
+        }
+    ]
+
+
+# --- review fixes ----------------------------------------------------------------
+
+
+def _deposit(adapter, utxos, *, memo="+:ADA.ADA:maya1xyz", amount=5 * ADA):
+    return adapter.build_and_verify_deposit(
+        vault=VAULT,
+        memo=memo,
+        amount=amount,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=0.0,
+        change_address=CHANGE,
+        max_fee=adapter.default_max_fee,
+    )
+
+
+def test_lp_deposit_spends_from_and_returns_change_to_the_receive_address(adapter):
+    # Maya files the position under (and authorises its withdraw from) the
+    # first input's address, and inputs are sorted by txid on the wire: only
+    # one address may fund an LP deposit, or add and withdraw can diverge.
+    utxos = [_utxo(50, 0, path="m/1852'/1815'/0'/1/0"), _utxo(10, 1)]
+    prepared = _deposit(adapter, utxos)
+    assert prepared.problems == []
+    assert {u.address for u in prepared.built.inputs} == {OURS}
+    assert [o.address for o in prepared.built.outputs if o.address] == [VAULT, OURS]
+
+
+def test_lp_deposit_with_nothing_on_the_receive_address_is_refused(adapter):
+    with pytest.raises(InsufficientFunds, match=OURS):
+        _deposit(adapter, [_utxo(50, 0, path="m/1852'/1815'/0'/1/0")])
+
+
+def test_folded_change_is_named_on_the_fee(adapter):
+    assert _build(adapter, [_utxo(10)], 3 * ADA).fee_note == ""
+    note = _build(adapter, [_utxo(3.5)], 3 * ADA).fee_note
+    assert "change" in note and "min" in note
+
+
+def test_the_gate_fee_is_read_from_the_serialized_body(adapter):
+    built = _build(adapter, [_utxo(3.5)], 3 * ADA)
+    raw = bytes.fromhex(adapter.sign(built)[0])
+    assert built.fee == parse(raw).fee * 100
+
+
+def test_sign_refuses_when_the_outputs_differ_from_what_the_gate_passed(adapter):
+    built = _build(adapter, [_utxo(10)], 3 * ADA)
+    built.outputs[0] = dataclasses.replace(built.outputs[0], value=1)
+    with pytest.raises(RuntimeError, match="read-back"):
+        adapter.sign(built)
+
+
+def test_an_ada_memo_over_maya_s_cap_is_refused_by_the_gate(adapter):
+    prepared = _deposit(adapter, [_utxo(10)], memo="x" * 251)
+    assert any("memo limit of 250" in p for p in prepared.problems)
+
+
+def test_op_return_chains_keep_the_80_byte_cap_and_old_max_fee():
+    from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.dash import DashAdapter
+    from swapsack.chains.zcash import ZecAdapter
+
+    for cls in (BtcAdapter, DashAdapter, ZecAdapter):
+        assert (cls.memo_max_bytes, cls.default_max_fee) == (80, 50_000)
+
+
+def test_fetch_utxos_skips_outputs_carrying_a_reference_script():
+    # Conway charges per byte of reference script in the inputs; the fee
+    # maths here does not, so such an output would make the tx underpay.
+    adapter = AdaAdapter("https://koios.example.com/api/v1")
+    script = {
+        "tx_hash": "aa" * 32,
+        "tx_index": 0,
+        "value": "3000000",
+        "asset_list": [],
+        "reference_script": {"hash": "cc" * 28},
+    }
+    adapter._session = FakeSession(  # type: ignore[assignment]
+        FakeJson([{"address": OURS, "balance": "3000000", "utxo_set": [script]}])
+    )
+    assert adapter.fetch_utxos(OURS) == []
+
+
+def test_a_tx_over_the_max_size_is_refused(adapter, monkeypatch):
+    small = dataclasses.replace(PARAMS, max_tx_size=200)
+    monkeypatch.setattr(adapter, "protocol_params", lambda: small)
+    with pytest.raises(SwapAborted, match="bytes"):
+        _build(adapter, [_utxo(10)], 3 * ADA)
+
+
+def test_protocol_params_fall_back_to_the_last_epoch_koios_has():
+    # Right after an epoch boundary Koios can know the tip's epoch before it
+    # has that epoch's parameters row.
+    adapter = AdaAdapter("https://koios.example.com/api/v1")
+    row = {
+        "epoch_no": 663,
+        "min_fee_a": 44,
+        "min_fee_b": 155381,
+        "coins_per_utxo_size": "4310",
+        "max_tx_size": 16384,
+    }
+    session = FakeSession(
+        FakeJson([{"epoch_no": 664, "abs_slot": 1}]), FakeJson([]), FakeJson([row])
+    )
+    adapter._session = session  # type: ignore[assignment]
+    assert adapter.protocol_params() == PARAMS
+    assert [k.get("params") for k in session.kwargs[1:]] == [
+        {"_epoch_no": 664},
+        {"_epoch_no": 663},
+    ]
+
+
+class FakeSubmit(FakeJson):
+    def __init__(self, status: int, text: str) -> None:
+        super().__init__(None)
+        self.status_code = status
+        self.text = text
+
+
+def _signed(adapter):
+    [raw] = adapter.sign(_build(adapter, [_utxo(10)], 3 * ADA))
+    return raw, parse(bytes.fromhex(raw)).txid.hex()
+
+
+def test_broadcast_accepts_a_plain_text_txid(adapter):
+    raw, txid = _signed(adapter)
+    adapter._session = FakeSession(FakeSubmit(202, f'"{txid}"\n'))  # type: ignore[assignment]
+    assert adapter.broadcast([raw]) == txid
+
+
+def test_broadcast_rejection_says_nothing_was_sent(adapter):
+    raw, _ = _signed(adapter)
+    adapter._session = FakeSession(FakeSubmit(400, "BadInputsUTxO"))  # type: ignore[assignment]
+    with pytest.raises(RuntimeError, match="rejected.*BadInputsUTxO"):
+        adapter.broadcast([raw])
+
+
+def test_an_odd_answer_after_submit_warns_the_tx_may_be_live(adapter):
+    raw, txid = _signed(adapter)
+    adapter._session = FakeSession(FakeSubmit(202, "ok"))  # type: ignore[assignment]
+    with pytest.raises(RuntimeError, match=f"may have been broadcast.*{txid}"):
+        adapter.broadcast([raw])

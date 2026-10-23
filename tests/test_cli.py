@@ -1825,14 +1825,17 @@ def test_utxo_registry_carries_the_exact_derivation_paths():
     # change to — or scanning — the wrong address.
     import swapsack.cli as cli
     from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.cardano import AdaAdapter
     from swapsack.chains.dash import DashAdapter
     from swapsack.chains.zcash import ZecAdapter
 
-    assert set(cli._UTXO_ADAPTERS) == {"BTC", "DASH", "ZEC"}
+    assert set(cli._UTXO_ADAPTERS) == {"BTC", "DASH", "ZEC", "ADA"}
     expected = {
         BtcAdapter: ("m/84'/0'/0'", "m/84'/0'/0'/1/0"),
         DashAdapter: ("m/44'/5'/0'", "m/44'/5'/0'/1/0"),
         ZecAdapter: ("m/44'/133'/0'", "m/44'/133'/0'/1/0"),
+        # CIP-1852, as Yoroi/Eternl derive it (role 1 = change).
+        AdaAdapter: ("m/1852'/1815'/0'", "m/1852'/1815'/0'/1/0"),
     }
     for cls, (account, change_path) in expected.items():
         assert cls.account == account
@@ -2093,6 +2096,93 @@ def test_add_liquidity_zec_requires_maya_backend(monkeypatch, capsys):
     )
     assert cli.cmd_add_liquidity(args) == 0
     assert called
+
+
+def test_swap_and_send_route_ada_to_the_utxo_handlers(monkeypatch):
+    import swapsack.cli as cli
+
+    routed = {}
+    monkeypatch.setattr(
+        cli, "_swap_from_utxo", lambda args, f: routed.update(swap=f) or 0
+    )
+    monkeypatch.setattr(cli, "_send_utxo", lambda args, f: routed.update(send=f) or 0)
+    swap = ["swap", "--from", "ADA", "--to", "BTC", "--amount", "50"]
+    assert cli.cmd_swap(build_parser().parse_args(swap)) == 0
+    send = ["send", "--asset", "ADA", "--amount", "5", GOLDEN_ADA_ADDRESS]
+    assert cli.cmd_send(build_parser().parse_args(send)) == 0
+    assert routed == {"swap": cli._ada_adapter, "send": cli._ada_adapter}
+
+
+def test_add_liquidity_ada_requires_maya_backend(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    called = []
+    monkeypatch.setattr(cli, "_liquidity_utxo", lambda *a, **kw: called.append(1) or 0)
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "ADA", "--amount", "100"]
+    )
+    assert cli.cmd_add_liquidity(args) == 2
+    assert not called
+    args = build_parser().parse_args(
+        ["add-liquidity", "--asset", "ADA", "--amount", "100", "--backend", "maya"]
+    )
+    assert cli.cmd_add_liquidity(args) == 0
+    assert called
+
+
+def test_max_fee_defaults_per_chain_and_the_flag_wins():
+    import swapsack.cli as cli
+    from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.cardano import AdaAdapter
+
+    args = build_parser().parse_args(["send", "--asset", "ADA", "--amount", "5", "x"])
+    assert cli._max_fee(args, BtcAdapter()) == 50_000  # 0.0005 BTC, as before
+    assert cli._max_fee(args, AdaAdapter()) == 50_000_000  # 0.5 ADA
+    args.max_fee = 123
+    assert cli._max_fee(args, AdaAdapter()) == 123
+
+
+def test_the_memo_precheck_uses_the_source_adapter_s_own_limit(monkeypatch):
+    # ADA carries its memo in metadata (250 bytes), not an 80-byte OP_RETURN.
+    # No real pair needs more than 80 from an ADA source today (the longest
+    # destination, ADA itself, is not a swap from ADA), so pin the mechanism
+    # on a BTC source that pretends to have ADA's limit.
+    import swapsack.cli as cli
+    from swapsack.chains.cardano import AdaAdapter
+
+    assert AdaAdapter.memo_max_bytes == 250
+    with pytest.raises(SystemExit, match="80-byte OP_RETURN"):
+        cli._resolve_destination(_swap_args("BTC", "ADA", ADA_DEST), mnemonic=None)
+
+    class Roomy:
+        memo_max_bytes = AdaAdapter.memo_max_bytes
+
+    monkeypatch.setitem(cli._UTXO_ADAPTERS, "BTC", lambda args: Roomy())
+    args = _swap_args("BTC", "ADA", ADA_DEST)  # 107-byte memo: over 80, under 250
+    assert cli._resolve_destination(args, mnemonic=None) == ADA_DEST
+
+
+def test_spend_commands_take_ada_api():
+    import swapsack.cli as cli
+
+    for argv in (
+        ["send", "--asset", "ADA", "--amount", "5", GOLDEN_ADA_ADDRESS],
+        ["swap", "--from", "ADA", "--to", "BTC", "--amount", "50"],
+        ["add-liquidity", "--asset", "ADA", "--amount", "100"],
+    ):
+        args = build_parser().parse_args([*argv, "--ada-api", "https://k.invalid"])
+        assert cli._ada_adapter(args).api_url == "https://k.invalid"
+
+
+def test_derived_ada_destination_is_not_receive_only(capsys):
+    import swapsack.cli as cli
+
+    assert "ADA" not in cli.RECEIVE_ONLY_CHAINS
+    args = build_parser().parse_args(
+        ["swap", "--from", "ETH", "--to", "ADA", "--amount", "0.1"]
+    )
+    assert cli._resolve_destination(args, MNEMONIC) == GOLDEN_ADA_ADDRESS
+    assert "receive-only" not in capsys.readouterr().err
 
 
 def test_backend_cow_parses_for_swap_and_quote():
@@ -2600,6 +2690,57 @@ def test_eur_suffix_is_best_effort(monkeypatch):
     cli._eur_price.cache_clear()
     # An asset with no CoinGecko mapping (e.g. a synth) simply gets no estimate.
     assert cli._eur_suffix(1.0, "NOSUCH", price_check=True) == ""
+
+
+def test_btc_send_without_max_fee_still_gates_at_50000_sats(monkeypatch):
+    # --max-fee now defaults per chain; BTC must keep the old 50,000.
+    import swapsack.cli as cli
+    from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.coins import Utxo
+
+    seen = {}
+
+    class FakeBtc:
+        chain = "BTC"
+        account = "m/84'/0'/0'"
+        change_path = "m/84'/0'/0'/1/0"
+        default_max_fee = BtcAdapter.default_max_fee
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def derive_address(self, mnemonic, path=None):
+            return "bc1qchange"
+
+        def address_info(self, address):
+            return None
+
+        def fetch_utxos(self, address, *, include_unconfirmed=False):
+            return [Utxo(txid="aa" * 32, vout=0, value=1_000_000, address=address)]
+
+        def fetch_fee_rate(self, target_blocks=2):
+            return 2.0
+
+        def build_and_verify_send(self, **kwargs):
+            seen.update(kwargs)
+            raise SystemExit(0)
+
+    def fake_scan(*, derive_address, probe, account):
+        from types import SimpleNamespace
+
+        return [("m/84'/0'/0'/0/0", "bc1qowned", SimpleNamespace(confirmed=1_000_000))]
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: ("mnemonic", ""))
+    monkeypatch.setattr("swapsack.chains.scan.scan_account", fake_scan)
+    args = build_parser().parse_args(
+        ["send", "--asset", "BTC", "--amount", "0.001", "bc1qrecipient"]
+    )
+    with pytest.raises(SystemExit):
+        cli._send_utxo(args, lambda args, passphrase="": FakeBtc())
+    assert seen["max_fee"] == 50_000
 
 
 def test_btc_send_fee_line_shows_eur(monkeypatch, capsys, fake_feed):

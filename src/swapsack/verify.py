@@ -17,6 +17,9 @@ import dataclasses
 from swapsack.chains.coins import P2WPKH
 
 OP_RETURN_MAX_BYTES = 80
+# The --max-fee a UTXO spend gets when none is given, in 1e-8 base units
+# (0.0005 BTC/DASH/ZEC); a chain whose fees run higher overrides it.
+DEFAULT_MAX_FEE = 50_000
 # wei (1e18) per THORChain base unit (1e8)
 WEI_PER_THORCHAIN_UNIT = 10**10
 
@@ -77,11 +80,13 @@ def verify_btc_swap(
     now: int,
     *,
     max_fee: int,
+    memo_max_bytes: int = OP_RETURN_MAX_BYTES,
 ) -> list[str]:
     """Return reasons the tx does not match ``plan``; empty means safe.
 
     ``now`` and ``plan.expiry`` are unix timestamps. ``fee`` and ``max_fee`` are
-    in satoshis.
+    in satoshis. ``memo_max_bytes`` is what the source chain can carry: an
+    OP_RETURN's 80 bytes by default, more for ADA's metadata memo.
     """
     problems: list[str] = []
 
@@ -109,10 +114,9 @@ def verify_btc_swap(
     else:
         data = op_returns[0].op_return_data
         assert data is not None  # narrowed by the op_return_data filter above
-        if len(data) > OP_RETURN_MAX_BYTES:
+        if len(data) > memo_max_bytes:
             problems.append(
-                f"memo is {len(data)} bytes, exceeds OP_RETURN limit of "
-                f"{OP_RETURN_MAX_BYTES}"
+                f"memo is {len(data)} bytes, exceeds the memo limit of {memo_max_bytes}"
             )
         if isinstance(plan.memo, bytes):
             # A binary payload is compared verbatim: decoding it as text would
