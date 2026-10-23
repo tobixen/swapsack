@@ -582,6 +582,15 @@ and released.
 
 ## Other known gaps
 
+- **A deposit below the inbound's dust threshold is not refused.** An
+  `add-liquidity` amount above the chain's own dust floor but under Maya's or
+  THORChain's `dust_threshold` is a valid transaction that the protocol never
+  observes, so the funds are lost: ADA between min-ADA (~0.97) and 1 ADA, BTC
+  between 546 sats and 10,000. `prepare_liquidity` (`swap.py`) uses the
+  threshold only for the withdraw trigger. Fix: refuse a user-given amount
+  under `status.dust_threshold` there, for every chain (found in the review
+  of the Cardano work).
+
 - **The Cloudflare error-code match is tested only against a reconstructed
   page.** `net.py` finds the code in `<span class="cf-error-code">`, but the
   fixture in `tests/test_net.py`
