@@ -90,6 +90,17 @@ def test_post_is_never_retried(no_sleep):
     assert no_sleep == []
 
 
+def test_post_query_is_retried_like_a_get(no_sleep):
+    # A query that happens to take a POST body (Koios) is as replayable as a
+    # GET, unlike the broadcast above, and its body goes out on every attempt.
+    timeout = niquests.exceptions.ReadTimeout("read timed out")
+    client, session = _client(timeout, "body")
+    query = {"_addresses": ["addr1x"]}
+    assert client._post_query("https://koios.example.com/q", json=query) == "body"
+    assert len(session.posts) == 2
+    assert session.kwargs == [{"json": query}, {"json": query}]
+
+
 def test_retry_note_names_the_host_but_not_the_path(no_sleep, capsys):
     # The note goes to a terminal the user pastes into issues; an address in a
     # URL path is personal data, the host alone is not.

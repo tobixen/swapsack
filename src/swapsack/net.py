@@ -240,10 +240,19 @@ class HttpClient:
         """
         return self._attempt([url], **kwargs)[0]
 
+    def _post_query(self, url: str, **kwargs: object) -> niquests.Response:
+        """POST a read-only query to ``url``, with :meth:`_get`'s retries.
+
+        For APIs that take their query as a POST body (Koios). Only for
+        queries: replaying one is harmless, while a retried broadcast is a
+        question :meth:`_post` deliberately leaves to its caller.
+        """
+        return self._attempt([url], method="post", **kwargs)[0]
+
     def _attempt(
-        self, urls: Sequence[str], **kwargs: object
+        self, urls: Sequence[str], *, method: str = "get", **kwargs: object
     ) -> tuple[niquests.Response, int]:
-        """GET the equivalent ``urls`` in turn until one answers.
+        """GET (or ``method``) the equivalent ``urls`` in turn until one answers.
 
         ``urls`` are the *same request* against interchangeable endpoints (one
         entry when there is nothing to fall back to). Each lap tries them all,
@@ -273,7 +282,9 @@ class HttpClient:
             wait = self._backoff * 2**lap
             for index, url in enumerate(urls):
                 try:
-                    resp = self._http.get(url, timeout=self._read_timeout, **kwargs)
+                    resp = getattr(self._http, method)(
+                        url, timeout=self._read_timeout, **kwargs
+                    )
                 except TRANSIENT_ERRORS as exc:
                     last = exc
                     self._report(hosts, index, lap, type(exc).__name__)

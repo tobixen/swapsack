@@ -8,6 +8,14 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Added
 
+- **Cardano wallet.** `address` and `balance` now show ADA: the same base
+  addresses (`addr1q…`) Yoroi and Eternl show for your words and passphrase
+  (not those of a Ledger), read through the keyless Koios API (`--ada-api`
+  to use another instance). A swap to ADA now pays your own address unless
+  you give `--dest`; from BTC, DASH or ZEC that address is too long for the
+  swap memo, so swap from ETH instead. Sending ADA and swapping from it are
+  not there yet.
+
 - **CACAO liquidity without another asset.** `add-liquidity --protocol-only`
   adds CACAO (or RUNE) alone to one pool; `--amount` is then CACAO (or RUNE),
   and the position withdraws entirely in that token through the usual

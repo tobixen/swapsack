@@ -41,7 +41,7 @@ The wallet is still under rapid development as of 2026-07-10.  Missing features 
 | BCH       |      |     |  ✅ |      |      |      |     |
 | ATOM      |      |     |  ✅ |      |      |      |     |
 | XRP       |      |     |  ✅ |      |      |      |     |
-| ADA       |      |     |  ◑  |      |      |      |     |
+| ADA       |  ✅  |  ✅ |  ◑  |      |      |      |     |
 | ETH-ARB   |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
 | USDC-ARB  |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |  ◑  |
 | AVAX      |  ✅  |  ✅ |  ✅ |  ◑   |  ◑   |  ◑   |     |
@@ -229,7 +229,7 @@ capability grid above for the per-feature detail.
 | LTC | Litecoin | UTXO | partial | destination only (via `--dest`) |
 | DOGE | Dogecoin | UTXO | partial | destination only (via `--dest`) |
 | BCH | Bitcoin Cash | UTXO | partial | destination only (via `--dest`) |
-| ADA | Cardano | Cardano | partial | **Maya-only**; destination only (via `--dest`), Shelley `addr1…` bech32 (Byron `Ae2…`/`DdzFF…` not accepted — no verifiable checksum). Usually reachable **only from an account-model source** (ETH): the base address wallets normally hand out is 103 chars, which pushes the swap memo past the 80-byte OP_RETURN a BTC/DASH/ZEC source must fit it in — the CLI checks the actual address and refuses up front, so a shorter Shelley form (an enterprise address is 58 chars) does work from BTC |
+| ADA | Cardano | Cardano | partial | **Maya-only**. Hold and balance done: CIP-1852 base addresses (`addr1q…`), the same ones Yoroi/Eternl show for your words, scanned through Koios (`--ada-api`). As a destination it is auto-derived, or any Shelley `addr1…` via `--dest` (Byron `Ae2…`/`DdzFF…` not accepted — no verifiable checksum). Usually reachable **only from an account-model source** (ETH): a base address is 103 chars, which pushes the swap memo past the 80-byte OP_RETURN a BTC/DASH/ZEC source must fit it in — the CLI checks the actual address and refuses up front, so a shorter Shelley form (an enterprise address is 58 chars) does work from BTC. Send and swap-**from** are in progress; see [docs/cardano.md](docs/cardano.md) |
 | DASH | Dash | UTXO | partial | **Maya-only** (`--backend maya`/`auto`). Every feature is wired: hold, balance, destination, send/sweep, swap-**from** and single-sided LP (Maya, pairs with CACAO) — but all spend paths ship **mainnet-unproven** (no Dash testnet; opt-in mainnet test in docs/testnet.md), hence partial. See [docs/dash.md](docs/dash.md) |
 | ZEC | Zcash | UTXO | partial | **Maya-only** (`--backend maya`/`auto`); transparent (`t1…`) addresses only. Every feature is wired: hold, balance, destination, send/sweep, swap-**from** and single-sided LP (Maya, pairs with CACAO) — the spend paths ride a bespoke v4/ZIP-243 signer with ZIP-317 fees (bitcoinlib can't sign Zcash), anchored to a real mainnet tx in the tests but shipping **mainnet-unproven** (no testnet; opt-in test in docs/testnet.md), hence partial. See [docs/zcash.md](docs/zcash.md) |
 | RUNE | THORChain native | THORChain | partial | Hold + balance + destination + `send` (`MsgSend`) + swap-**from** (`MsgDeposit`) done — reuses the shared Cosmos-SDK adapter (RUNE is 1e8). RUNEPool (`rune-pool-add`/`-withdraw`) and a RUNE-only add (`add-liquidity --protocol-only`) are wired. Spend paths ship unproven on mainnet (no testnet); see [docs/cacao.md](docs/cacao.md) |

@@ -90,7 +90,9 @@ ASSET = {
     "BCH": "BCH.BCH",
     "ATOM": "GAIA.ATOM",  # Cosmos Hub; THORChain names the chain GAIA
     "XRP": "XRP.XRP",  # classic r… addresses only — no destination tag, see below
-    "ADA": "ADA.ADA",  # Maya-only; unreachable from a UTXO source (memo length)
+    # Maya-only; hold/bal; a base address is unreachable from a UTXO source
+    # (memo length) — see docs/cardano.md.
+    "ADA": "ADA.ADA",
     "ETH-ARB": "ARB.ETH",  # Maya-only: native ETH on Arbitrum, not the ARB token
     # Avalanche C-Chain only (the X-/P-Chain address form is refused — a payout
     # could never credit it). THORChain-only: Maya has no AVAX pools.
@@ -303,6 +305,17 @@ def _zec_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN20
     return ZecAdapter(url, bip39_passphrase=passphrase)
 
 
+def _ada_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
+    from swapsack.chains.cardano import DEFAULT_ADA_API, AdaAdapter
+
+    url = (
+        getattr(args, "ada_api", None)
+        or os.environ.get("SWAPSACK_ADA_API")
+        or DEFAULT_ADA_API
+    )
+    return AdaAdapter(url, bip39_passphrase=passphrase)
+
+
 # The UTXO chains dispatch identically (scan -> build -> gate -> broadcast),
 # differing only in their adapter; this one registry replaces what used to be
 # parallel BTC/DASH/ZEC if/elif chains in cmd_swap, cmd_send and _liquidity.
@@ -352,6 +365,7 @@ def _wallet_adapters(args: argparse.Namespace, passphrase: str = "") -> list:  #
         _bsc_adapter(args, passphrase),
         _dash_adapter(args, passphrase),
         _zec_adapter(args, passphrase),
+        _ada_adapter(args, passphrase),
         _maya_adapter(args, passphrase),
         _thor_adapter(args, passphrase),
     ]
@@ -489,6 +503,7 @@ def cmd_address(args: argparse.Namespace) -> int:
     from swapsack.chains.avax import AvaxAdapter
     from swapsack.chains.bsc import BscAdapter
     from swapsack.chains.btc import BtcAdapter
+    from swapsack.chains.cardano import AdaAdapter
     from swapsack.chains.dash import DashAdapter
     from swapsack.chains.eth import EthAdapter
     from swapsack.chains.maya import MayaAdapter
@@ -525,6 +540,7 @@ def cmd_address(args: argparse.Namespace) -> int:
     print("TRON:", TronAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("DASH:", DashAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("ZEC: ", ZecAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
+    print("ADA: ", AdaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("MAYA:", MayaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print("THOR:", ThorAdapter(bip39_passphrase=passphrase).derive_address(mnemonic))
     print(
@@ -877,6 +893,12 @@ def _derive_zec(mnemonic: str, passphrase: str) -> str:
     return ZecAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
 
 
+def _derive_ada(mnemonic: str, passphrase: str) -> str:
+    from swapsack.chains.cardano import AdaAdapter
+
+    return AdaAdapter(bip39_passphrase=passphrase).derive_address(mnemonic)
+
+
 def _derive_arb(mnemonic: str, passphrase: str) -> str:
     from swapsack.chains.arb import ArbAdapter
 
@@ -931,6 +953,7 @@ _DESTINATION_DERIVERS: dict[str, Callable[[str, str], str]] = {
     "TRON": _derive_tron,
     "DASH": _derive_dash,
     "ZEC": _derive_zec,
+    "ADA": _derive_ada,
     "MAYA": _derive_maya,
     "THOR": _derive_thor,
     # Cosmos Hub: no adapter, receive-only (see RECEIVE_ONLY_CHAINS).
@@ -941,7 +964,10 @@ DERIVABLE_CHAINS = tuple(_DESTINATION_DERIVERS)
 # mapped here) — auto-deriving a swap destination there parks the funds, so
 # warn loudly. (DASH and ZEC graduated when their send paths landed.)
 # Value: where to read more.
-RECEIVE_ONLY_CHAINS: dict[str, str] = {"GAIA": "README.md (the ATOM row)"}
+RECEIVE_ONLY_CHAINS: dict[str, str] = {
+    "GAIA": "README.md (the ATOM row)",
+    "ADA": "docs/cardano.md",
+}
 
 
 def _derive_destination_address(
@@ -4681,8 +4707,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser(
         "address",
-        help="show derived BTC, ETH, ARB, AVAX, BSC, TRON, DASH, ZEC, MAYA "
-        "and THOR addresses",
+        help="show derived BTC, ETH, ARB, AVAX, BSC, TRON, DASH, ZEC, ADA, "
+        "MAYA and THOR addresses",
     )
     s.add_argument("--key")
     s.set_defaults(func=cmd_address)
@@ -4696,6 +4722,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($SWAPSACK_BSC_RPC)")
     s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
     s.add_argument("--zec-lwd", help="Zcash lightwalletd host:port ($SWAPSACK_ZEC_LWD)")
+    s.add_argument("--ada-api", help="Cardano Koios API URL ($SWAPSACK_ADA_API)")
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
     s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
     s.add_argument(

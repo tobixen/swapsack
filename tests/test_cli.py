@@ -3627,6 +3627,40 @@ def test_address_command_lists_arb(monkeypatch, capsys):
     assert "ARB:" in out
 
 
+# The standard BIP39 test mnemonic's first CIP-1852 base address — what
+# Yoroi/Eternl show for it (pinned in detail in test_cardano.py).
+GOLDEN_ADA_ADDRESS = (
+    "addr1qy8ac7qqy0vtulyl7wntmsxc6wex80gvcyjy33qffrhm7sh927ysx5sftuw0dlft"
+    "05dz3c7revpf7jx0xnlcjz3g69mq4afdhv"
+)
+
+
+def test_ada_destination_is_derived_as_the_cip1852_base_address():
+    import swapsack.cli as cli
+
+    assert "ADA" in cli.DERIVABLE_CHAINS
+    assert cli._derive_destination_address("ADA", MNEMONIC) == GOLDEN_ADA_ADDRESS
+
+
+def test_address_command_lists_ada(monkeypatch, capsys):
+    import swapsack.cli as cli
+
+    monkeypatch.setattr(cli, "_load_mnemonic", lambda args: (MNEMONIC, ""))
+    assert cli.cmd_address(build_parser().parse_args(["address"])) == 0
+    line = next(
+        row for row in capsys.readouterr().out.splitlines() if row.startswith("ADA")
+    )
+    assert GOLDEN_ADA_ADDRESS in line
+
+
+def test_balance_reports_ada():
+    import swapsack.cli as cli
+
+    args = build_parser().parse_args(["balance", "--ada-api", "https://k.invalid"])
+    ada = [a for a in cli._wallet_adapters(args) if a.chain == "ADA"]
+    assert [a.api_url for a in ada] == ["https://k.invalid"]
+
+
 # --- `balance` must show a SYMMETRIC LP position ---------------------------
 # Maya files a symmetric position under the *protocol* (CACAO) address, not the
 # asset address: the same pool queried by our maya1… returns non-zero units,

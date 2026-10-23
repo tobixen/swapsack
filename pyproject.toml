@@ -32,6 +32,7 @@ dependencies = [
   "grpcio>=1.60",
   "base58>=2",
   "coincurve>=19",
+  "pynacl>=1.5",
 ]
 
 [project.scripts]
