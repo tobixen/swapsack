@@ -305,10 +305,10 @@ def test_gate_wrappers_are_shared_not_duplicated():
     assert UtxoTxBuilder.build_unsigned_swap is not GatedTxBuilder.build_unsigned_swap
 
 
-def test_lp_backends_is_maya_only():
-    # ZEC.ZEC exists only on Maya; THORChain answers unknown-pool LP probes
-    # with a 500, so `balance` must not probe it (same as DASH).
-    assert ZecAdapter.lp_backends == ("maya",)
+def test_lp_backends_are_thorchain_and_maya():
+    # ZEC.ZEC was Maya-only until THORChain 3.21 opened its own pool; both now
+    # run one, so LP (and the `balance` LP probe) covers both networks.
+    assert ZecAdapter.lp_backends == ("thorchain", "maya")
 
 
 @pytest.mark.network
@@ -602,3 +602,195 @@ def test_zec_says_allow_unconfirmed_cannot_apply(monkeypatch, capsys):
     args = argparse.Namespace(allow_unconfirmed=True)
     assert cli._spendable_utxos(a, "mnemonic", args) == []
     assert "no effect on ZEC" in capsys.readouterr().err
+
+
+# --- ZIP-320 TEX addresses (THORChain's ZEC vault is a `tex1…`) ---------------
+
+# ZIP-320's own example: the TEX encoding of a t1 address' P2PKH hash.
+ZIP320_T1 = "t1VmmGiyjVNeCjxDZzg7vZmd99WyzVby9yC"
+ZIP320_TEX = "tex1s2rt77ggv6q989lr49rkgzmh5slsksa9khdgte"
+# THORChain's live ZEC inbound vault (inbound_addresses, 2026-10). The same
+# vault key's BTC address is bc1qrqrefwzvtv50r539hn7umufj84gm2xx9vz7ykw — a
+# P2WPKH over the very same 20-byte hash, which anchors the decode
+# independently of our own bech32m reading.
+THOR_ZEC_VAULT = "tex1rqrefwzvtv50r539hn7umufj84gm2xx9cav0nq"
+THOR_BTC_VAULT = "bc1qrqrefwzvtv50r539hn7umufj84gm2xx9vz7ykw"
+
+
+def test_tex_decodes_to_the_zip320_vector():
+    from swapsack.chains.zcash_tx import address_to_script, t1_to_tex, tex_to_t1
+
+    assert tex_to_t1(ZIP320_TEX) == ZIP320_T1
+    assert t1_to_tex(ZIP320_T1) == ZIP320_TEX
+    # A TEX output is a plain P2PKH output to the same hash.
+    assert address_to_script(ZIP320_TEX) == address_to_script(ZIP320_T1)
+
+
+def test_thor_zec_vault_decodes_to_the_btc_vault_hash():
+    from swapsack.bech32 import convertbits, split
+    from swapsack.chains.zcash_tx import address_to_script, t1_to_tex, tex_to_t1
+
+    _, values, _ = split(THOR_BTC_VAULT)
+    btc_hash = bytes(convertbits(values[1:-6], 5, 8, pad=False))
+    script = address_to_script(THOR_ZEC_VAULT)
+    assert script == b"\x76\xa9\x14" + btc_hash + b"\x88\xac"
+    assert t1_to_tex(tex_to_t1(THOR_ZEC_VAULT)) == THOR_ZEC_VAULT
+
+
+def _wrong_hrp_tex() -> str:
+    from swapsack.bech32 import bech32m_encode
+    from swapsack.chains.zcash_tx import address_to_script
+
+    return bech32m_encode("tex1abc", address_to_script(ZIP320_T1)[3:23])
+
+
+_TEX_WRONG_HRP = _wrong_hrp_tex()
+
+
+def test_zec_display_address_adds_the_tex_form_of_a_t1_vault():
+    # The LP confirm prompt gets the canonical t1 vault; it must also show the
+    # tex1 string THORNode publishes, so the two can be compared.
+    from swapsack.chains.zcash import ZecAdapter
+
+    shown = ZecAdapter.display_address(ZecAdapter, ZIP320_T1)
+    assert ZIP320_T1 in shown and ZIP320_TEX in shown
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ZIP320_TEX[:-1] + ("q" if ZIP320_TEX[-1] != "q" else "p"),  # checksum
+        "tmtex1qqqqqq",  # not tex1…: refused by the base58 path
+        _TEX_WRONG_HRP,  # valid bech32m over a 20-byte hash, but HRP "tex1abc"
+    ],
+)
+def test_malformed_tex_is_refused(bad):
+    from swapsack.chains.zcash_tx import ZcashTxError, address_to_script
+
+    with pytest.raises(ZcashTxError):
+        address_to_script(bad)
+
+
+def test_tex_with_a_plain_bech32_checksum_is_refused():
+    # The right hash under the wrong checksum constant: ZIP-320 mandates
+    # bech32m, and accepting either would defeat the point of the variant.
+    from swapsack.bech32 import bech32_encode
+    from swapsack.chains.zcash_tx import ZcashTxError, address_to_script
+
+    h = address_to_script(ZIP320_T1)[3:23]
+    with pytest.raises(ZcashTxError):
+        address_to_script(bech32_encode("tex", h))
+
+
+def test_tex_with_a_non_20_byte_payload_is_refused():
+    from swapsack.bech32 import bech32m_encode
+    from swapsack.chains.zcash_tx import ZcashTxError, address_to_script
+
+    with pytest.raises(ZcashTxError):
+        address_to_script(bech32m_encode("tex", b"\x01" * 32))
+
+
+def _tex_fixture(monkeypatch):
+    from swapsack.chains.coins import Utxo
+
+    a = ZecAdapter()
+    monkeypatch.setattr(a, "latest_height", lambda: 3_407_167)
+    monkeypatch.setattr(a, "branch_id", lambda: REAL_BRANCH_ID)
+    path0 = "m/44'/133'/0'/0/0"
+    addr0 = GOLDEN[path0]
+    utxos = [Utxo(txid="cc" * 32, vout=1, value=500_000, address=addr0, path=path0)]
+    return a, addr0, utxos
+
+
+def test_lp_deposit_to_a_tex_vault_passes_the_gate_and_pays_p2pkh(monkeypatch):
+    # THORChain's inbound_addresses hands out a tex1… vault: the deposit must
+    # build, pass the gate (which compares the address decoded back out of the
+    # serialized bytes) and pay a P2PKH output to the vault's hash.
+    from swapsack.chains.zcash_tx import address_to_script, tex_to_t1
+
+    a, addr0, utxos = _tex_fixture(monkeypatch)
+    prepared = a.build_and_verify_deposit(
+        vault=THOR_ZEC_VAULT,
+        memo="+:ZEC.ZEC",
+        amount=200_000,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=0.0,
+        change_address=addr0,
+        max_fee=50_000,
+    )
+    assert prepared.problems == []
+    vault_t1 = tex_to_t1(THOR_ZEC_VAULT)
+    assert prepared.plan.inbound_address == vault_t1
+    vault_outs = [o for o in prepared.built.tx.outputs if o.value == 200_000]
+    assert [o.script for o in vault_outs] == [address_to_script(THOR_ZEC_VAULT)]
+    # Spends stay transparent P2PKH-only, as ZIP-320 requires for a TEX payee.
+    for script, _ in prepared.built.spent:
+        assert script[:3] == b"\x76\xa9\x14"
+    a.sign(prepared.built)  # signs (and self-verifies) like any deposit
+
+
+def test_swap_to_a_tex_quote_vault_passes_the_gate(monkeypatch):
+    from swapsack.swap import SwapRequest
+    from swapsack.thorchain import Quote, SwapFees
+
+    a, addr0, utxos = _tex_fixture(monkeypatch)
+    dest = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+    quote = Quote(
+        inbound_address=THOR_ZEC_VAULT,
+        expected_amount_out=100_000,
+        memo=f"=:BTC.BTC:{dest}",
+        fees=SwapFees("BTC.BTC", 1092, 0, 324, 1416, 21, 92),
+        recommended_min_amount_in=20_000,
+        expiry=10**12,
+        dust_threshold=15_000,
+        recommended_gas_rate=67501,
+        gas_rate_units="satsperbyte",
+        router=None,
+        max_streaming_quantity=1,
+        streaming_swap_blocks=1,
+        total_swap_seconds=75,
+        raw={},
+    )
+    prepared = a.build_and_verify(
+        quote=quote,
+        request=SwapRequest("ZEC.ZEC", "BTC.BTC", 200_000, dest),
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=0.0,
+        change_address=addr0,
+        max_fee=50_000,
+    )
+    assert prepared.problems == []
+
+
+def test_gate_still_catches_a_tex_vault_paid_to_the_wrong_hash(monkeypatch):
+    # Normalising tex1 -> t1 for the gate must not make it lenient: a build
+    # that pays some other hash still fails the vault check.
+    from swapsack.chains.zcash_tx import address_to_script
+
+    a, addr0, utxos = _tex_fixture(monkeypatch)
+    real = a.build_unsigned_swap
+
+    def misdirected(**kw):
+        kw["vault_address"] = "t1evBud5G5F4HFUPRBpt7sz5s66PeVUYBur"
+        return real(**kw)
+
+    monkeypatch.setattr(a, "build_unsigned_swap", misdirected)
+    prepared = a.build_and_verify_deposit(
+        vault=THOR_ZEC_VAULT,
+        memo="+:ZEC.ZEC",
+        amount=200_000,
+        now=0,
+        mnemonic=TEST_MNEMONIC,
+        scanned_utxos=utxos,
+        fee_rate=0.0,
+        change_address=addr0,
+        max_fee=50_000,
+    )
+    assert any("vault" in p for p in prepared.problems)
+    assert address_to_script(THOR_ZEC_VAULT) not in [
+        o.script for o in prepared.built.tx.outputs
+    ]

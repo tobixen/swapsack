@@ -8,7 +8,11 @@ the active network upgrade, over a BIP143-like-but-different preimage. This
 module implements exactly the transparent-only subset the wallet needs: v4
 transactions with P2PKH inputs, P2PKH/P2SH (t1/t3) outputs and empty shielded
 sections. The wallet only ever *spends* its own P2PKH inputs; P2SH support is
-for paying t3 recipients (exchange/multisig deposit addresses).
+for paying t3 recipients (exchange/multisig deposit addresses). ZIP-320 TEX
+addresses (``tex1…``, bech32m over a P2PKH hash — THORChain's ZEC vault uses
+one, and only as a vault: ``addresses.py`` still refuses ``tex1…`` as a send
+recipient) pay an ordinary P2PKH output; ZIP-320's only extra demand, that the
+spend have transparent inputs only, is the only kind of spend built here.
 
 Correctness anchors (test_zcash.py): a real mainnet v4 transaction round-trips
 byte-identically through ``parse_v4``/``serialize_v4``, and its embedded ECDSA
@@ -32,11 +36,14 @@ import struct
 import base58
 from coincurve import PrivateKey, PublicKey
 
+from swapsack.bech32 import bech32m_decode, bech32m_encode
+
 V4_HEADER = 0x80000004  # fOverwintered | version 4
 V4_VERSION_GROUP = 0x892F2085  # Sapling
 SIGHASH_ALL = 1
 PREFIX_T1 = b"\x1c\xb8"  # transparent P2PKH ("t1…")
 PREFIX_T3 = b"\x1c\xbd"  # transparent P2SH ("t3…")
+TEX_HRP = "tex"  # ZIP-320 transparent-source-only P2PKH ("tex1…"), mainnet
 
 
 class ZcashTxError(ValueError):
@@ -46,13 +53,54 @@ class ZcashTxError(ValueError):
 # --- script / address helpers -------------------------------------------------
 
 
-def address_to_script(address: str) -> bytes:
-    """The scriptPubKey for a transparent ``t1…`` (P2PKH) or ``t3…`` (P2SH) address.
+def _tex_hash160(address: str) -> bytes:
+    """The 20-byte P2PKH hash a ZIP-320 ``tex1…`` address encodes."""
+    try:
+        hrp, payload = bech32m_decode(address)
+    except ValueError as exc:
+        raise ZcashTxError(f"not a valid TEX address: {address}: {exc}") from None
+    if hrp != TEX_HRP or len(payload) != 20:
+        raise ZcashTxError(f"not a valid mainnet TEX address: {address}")
+    return payload
 
-    t1 pays to ``76 a9 14 <hash160> 88 ac``; t3 (exchange/multisig deposit
-    addresses) pays to ``a9 14 <hash160> 87``.
+
+def tex_to_t1(address: str) -> str:
+    """The ``t1…`` address paying the same P2PKH hash as a ``tex1…`` (ZIP-320)."""
+    return base58.b58encode_check(PREFIX_T1 + _tex_hash160(address)).decode()
+
+
+def t1_to_tex(address: str) -> str:
+    """The ZIP-320 ``tex1…`` form of a ``t1…`` (P2PKH) address."""
+    script = address_to_script(address)
+    h = _p2pkh_hash160(script)
+    if h is None:
+        raise ZcashTxError(f"only a P2PKH (t1) address has a TEX form: {address}")
+    return bech32m_encode(TEX_HRP, h)
+
+
+def canonical_address(address: str) -> str:
+    """``address`` as :func:`script_to_address` would decode its output back.
+
+    A ``tex1…`` and its ``t1…`` pay the identical scriptPubKey, so a gate that
+    compares the address decoded out of the serialized bytes against the
+    intended one must compare against the ``t1…`` form. Everything else is
+    returned unchanged.
     """
-    payload = base58.b58decode_check(address)
+    return tex_to_t1(address) if address.startswith(TEX_HRP + "1") else address
+
+
+def address_to_script(address: str) -> bytes:
+    """The scriptPubKey for a ``t1…``/``tex1…`` (P2PKH) or ``t3…`` (P2SH) address.
+
+    t1 and ZIP-320 tex1 pay to ``76 a9 14 <hash160> 88 ac``; t3
+    (exchange/multisig deposit addresses) pays to ``a9 14 <hash160> 87``.
+    """
+    if address.startswith(TEX_HRP + "1"):
+        return b"\x76\xa9\x14" + _tex_hash160(address) + b"\x88\xac"
+    try:
+        payload = base58.b58decode_check(address)
+    except ValueError:
+        raise ZcashTxError(f"not a transparent t1/t3/tex address: {address}") from None
     prefix, hash160 = payload[:2], payload[2:]
     if len(payload) != 22:
         raise ZcashTxError(f"not a transparent t1/t3 address: {address}")

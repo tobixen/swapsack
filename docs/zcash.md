@@ -1,8 +1,8 @@
 # Zcash (ZEC) support — design notes
 
 Status: **all phases (0–3) are DONE** (2026-07-11): destination, Hold +
-Balance, send/sweep, swap-**from** and single-sided LP (Maya, pairs with
-CACAO) — the spend side via a bespoke v4/ZIP-243 signer (`chains/zcash_tx.py`,
+Balance, send/sweep, swap-**from** and single-sided LP (THORChain or Maya,
+pairing with RUNE or CACAO) — the spend side via a bespoke v4/ZIP-243 signer (`chains/zcash_tx.py`,
 see below; bitcoinlib cannot sign Zcash). Everything network rides
 **lightwalletd** (gRPC, default `zec.rocks`, override `--zec-lwd` /
 `$SWAPSACK_ZEC_LWD`). Every spend path ships **unproven on mainnet** (no
@@ -14,15 +14,29 @@ legacy-UTXO issues.
 
 ## TL;DR
 
-- **Swaps are feasible — via Maya only.** Zcash is **not on THORChain**. Maya
-  runs a live `ZEC.ZEC` pool (checked 2026-07-03: `Available`, depth ~3,623
-  ZEC). Every Zcash swap therefore routes through the Maya backend
-  (`--backend maya`, or `auto`).
+- **Swaps and LP run on THORChain and Maya.** Maya runs a live `ZEC.ZEC`
+  pool (checked 2026-07-03: `Available`, depth ~3,623 ZEC). THORChain added
+  its own in 3.21 (checked 2026-10-25: `Available`, ~22 ZEC deep — shallow,
+  so mind the slip). `--backend auto` quotes both and takes the better swap
+  price; LP defaults to `--backend thorchain`, `--backend maya` pairs with
+  CACAO instead. **The THORChain path is mainnet-unproven**: no ZEC has been
+  swapped or added there by this wallet yet.
+- **THORChain's ZEC vault is a ZIP-320 TEX address** (`tex1…`: bech32m over
+  a P2PKH hash, "accept funds from transparent inputs only"). The builder
+  decodes it to the 20-byte hash and pays an ordinary P2PKH output, which is
+  all a TEX address is on-chain; every spend this wallet builds already has
+  transparent inputs only, which is ZIP-320's one extra demand. The verify
+  gate compares the output it decodes back from the serialized bytes (a
+  `t1…`) with the `t1…` form of the vault. The decode is pinned to ZIP-320's
+  own example and to the live vault, whose hash is the same vault key's BTC
+  P2WPKH address. Dust (THORChain: 15,000 zat, the withdraw-trigger amount)
+  and the ZIP-317 fee are unchanged: a TEX output is the same size as a t1
+  one.
 - **Destination (`--to ZEC`) is done** — it mirrors LTC/DOGE/BCH/DASH: a
   `ZEC.ZEC` `ASSET` entry, a `--dest` sanity rule (transparent `t1`/`t3`
   base58, charset + length, plus the base58check checksum since the
   checksum-aware validator landed), and a CoinGecko id (`zcash`) for the market
-  line. Maya's pool is
+  line. Both pools are
   transparent-only, so **only t-addresses** are accepted; shielded `zs1…`
   (Sapling) and unified `u1…` addresses are intentionally rejected.
 - **The full wallet side is a bigger, riskier job than Dash** for two reasons:
@@ -68,8 +82,8 @@ sighash wrong yields a tx that is either rejected or — worse — malleable.
   unioning a second source stays a TODO for the spend side.
 - **Fees.** Zcash uses **ZIP-317** (conventional fee ≈ `5000 * max(2,
   n_logical_actions)` zatoshis; for a small transparent spend this is ~10,000
-  zat = 0.0001 ZEC). For a **swap**, prefer Maya's quote
-  `recommended_gas_rate` / `gas_rate_units`.
+  zat = 0.0001 ZEC). The quote's `recommended_gas_rate` is not used: the
+  builder always pays the ZIP-317 fee.
 - **Testability.** No easy funded-testnet faucet + broadcast path comparable to
   BTC signet / ETH Sepolia. The spend side would ship **unexercised on
   mainnet** — the exact "irreversible loss of funds" the README warns about.
@@ -123,15 +137,16 @@ sighash wrong yields a tx that is either rejected or — worse — malleable.
   the shared 80-byte cap matches zcashd's relay default), and the ZIP-317 fee
   now counts the memo's bytes as logical actions (an 80-byte memo ≈ 3 extra
   actions — undercounting would drop the tx below the conventional-fee floor).
-  `swap --from ZEC` and `add-liquidity --asset ZEC --backend maya` route
-  through the same generalized `_swap_from_utxo`/`_liquidity_utxo` CLI paths
-  as BTC/DASH; a THORChain LP request is refused up front (Maya-only, pairs
-  with CACAO). Gated by the same chain-agnostic swap gate (vault + memo +
+  `swap --from ZEC` and `add-liquidity --asset ZEC` route through the same
+  generalized `_swap_from_utxo`/`_liquidity_utxo` CLI paths as BTC/DASH. (Until
+  THORChain 3.21 a THORChain LP request was refused up front; both networks
+  are allowed now, see the TL;DR.) `--symmetric` is refused for ZEC like any
+  UTXO chain: the pairing needs a single sender, and a UTXO tx has none. Gated by the same chain-agnostic swap gate (vault + memo +
   change binding) as the other UTXO chains.
 
 ## See also
 
-- `docs/dash.md` — the sibling Maya-only legacy-UTXO chain; shares the
+- `docs/dash.md` — the sibling legacy-UTXO chain (Maya-only); shares the
   data-source and testnet issues (but not the tx-format one).
 - `docs/monero.md` — the other "doesn't fit the model yet" chain.
 - `README.md` — currency roadmap row for ZEC.

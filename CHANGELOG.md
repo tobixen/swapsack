@@ -149,6 +149,15 @@ automatically from git tags (PEP 440 / SemVer).
   (with your BIP-39 passphrase, if you use one — not every wallet takes
   one). `swapsack address` shows the address, so you can check it first.
 
+- **ZEC on THORChain.** THORChain now runs a ZEC pool too (since 3.21), so
+  `add-liquidity --asset ZEC` no longer needs `--backend maya`: the default
+  THORChain backend pairs your ZEC with RUNE, and `--backend auto` swaps
+  compare THORChain's price with Maya's. THORChain's ZEC deposit address is a
+  `tex1…` (ZIP-320) address, which swapsack now pays (as a vault only: `send`
+  and `--dest` still take `t1…`/`t3…`). Nothing has been sent
+  to THORChain's ZEC vault from swapsack yet, so start small. Two-sided
+  (`--symmetric`) ZEC liquidity stays unsupported, as for every UTXO coin.
+
 ### Fixed
 
 - **A BTC swap whose memo is exactly 62 bytes is no longer refused.**

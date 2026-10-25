@@ -147,6 +147,7 @@ gated on a funded account/secret, mirroring the Nile TRC-20 loop.
 
 ## See also
 
-- `docs/TODO.md` — "Swap backends" → Maya-only assets (DASH/ZEC/ADA/ARB).
+- `docs/TODO.md` — "Swap backends" → Maya-only assets (DASH/ADA/ARB; ZEC was
+  one until THORChain 3.21 opened a pool).
 - `docs/monero.md` — the other "doesn't fit the model yet" chain, same note style.
 - `README.md` — currency roadmap row for DASH.

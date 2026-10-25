@@ -55,6 +55,21 @@ class GatedTxBuilder:
     # How the fee was priced, for a chain with no fee rate to print.
     fee_basis = ""
 
+    def canonical_address(self, address: str) -> str:
+        """The form of ``address`` the neutral output extraction decodes back.
+
+        The gate compares the address re-extracted from the serialized bytes
+        with the one it was asked to pay, so two spellings of one script (ZEC's
+        ZIP-320 ``tex1…`` vs its ``t1…``) must be reduced to the extracted one
+        first. Identity unless a chain has such aliases.
+        """
+        return address
+
+    def display_address(self, address: str) -> str:
+        """``address`` as the confirm prompt shows it: the canonical form plus
+        any alias the operator may compare it against. Identity by default."""
+        return address
+
     def cpfp_deficits(
         self,
         utxos: list[Utxo],
@@ -116,7 +131,7 @@ class GatedTxBuilder:
         )
         owned = {change_address} | {u.address for u in scanned_utxos}
         plan = SwapPlan(
-            inbound_address=quote.inbound_address,
+            inbound_address=self.canonical_address(quote.inbound_address),
             amount=request.amount,
             memo=quote.memo or "",
             expiry=quote.expiry,
@@ -159,7 +174,10 @@ class GatedTxBuilder:
         )
         owned = {change_address} | {u.address for u in scanned_utxos}
         plan = SwapPlan(
-            inbound_address=vault, amount=amount, memo=memo, expiry=now + 3600
+            inbound_address=self.canonical_address(vault),
+            amount=amount,
+            memo=memo,
+            expiry=now + 3600,
         )
         problems = verify_btc_swap(
             built.outputs,
@@ -240,7 +258,7 @@ class GatedTxBuilder:
             sweep=sweep,
         )
         owned = {change_address} | {u.address for u in scanned_utxos}
-        plan = SendPlan(recipient=recipient, amount=amount)
+        plan = SendPlan(recipient=self.canonical_address(recipient), amount=amount)
         # The gate is chain-agnostic (pure output/value/dust checks) despite
         # the historical btc name.
         problems = verify_btc_send(

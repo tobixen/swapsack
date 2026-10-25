@@ -1,10 +1,12 @@
 """bech32 and bech32m (BIP-173 / BIP-350) — a minimal, self-contained codec.
 
-Two callers with different needs share this: Cosmos-SDK account addresses
+Three callers with different needs share this: Cosmos-SDK account addresses
 (``maya1…`` / ``thor1…``, always plain bech32) in :mod:`swapsack.chains.cosmos`,
-and the destination-address checksum check in :mod:`swapsack.addresses`, which
+the destination-address checksum check in :mod:`swapsack.addresses`, which
 additionally has to accept segwit — where the checksum constant depends on the
-witness version (v0 uses bech32, v1+ / taproot uses bech32m).
+witness version (v0 uses bech32, v1+ / taproot uses bech32m) — and Zcash's
+ZIP-320 ``tex1…`` addresses (always bech32m, no witness version) in
+:mod:`swapsack.chains.zcash_tx`.
 
 Deliberately dependency-free: the address validator runs before any chain
 library is needed, and importing one there would pull in bitcoinlib (and
@@ -78,13 +80,25 @@ def split(address: str) -> tuple[str, list[int], int]:
     return hrp, values, variant
 
 
-def bech32_encode(hrp: str, data: bytes) -> str:
-    """Encode a byte string (e.g. a 20-byte account hash) as a bech32 address."""
+def _encode(hrp: str, data: bytes, variant: int) -> str:
     values = convertbits(data, 8, 5, pad=True)
     checksum_input = _hrp_expand(hrp) + values + [0, 0, 0, 0, 0, 0]
-    polymod = _polymod(checksum_input) ^ BECH32
+    polymod = _polymod(checksum_input) ^ variant
     checksum = [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
     return hrp + "1" + "".join(CHARSET[d] for d in values + checksum)
+
+
+def _decode(address: str, variant: int) -> tuple[str, bytes]:
+    hrp, values, got = split(address)
+    if got != variant:
+        other = "bech32m" if got == BECH32M else "bech32"
+        raise ValueError(f"bad checksum in {address!r} (it is {other})")
+    return hrp, bytes(convertbits(values[:-6], 5, 8, pad=False))
+
+
+def bech32_encode(hrp: str, data: bytes) -> str:
+    """Encode a byte string (e.g. a 20-byte account hash) as a bech32 address."""
+    return _encode(hrp, data, BECH32)
 
 
 def bech32_decode(address: str) -> tuple[str, bytes]:
@@ -93,10 +107,17 @@ def bech32_decode(address: str) -> tuple[str, bytes]:
     Plain bech32 only — a bech32m string is rejected, since the two encode
     different things and silently accepting either would defeat the point.
     """
-    hrp, values, variant = split(address)
-    if variant != BECH32:
-        raise ValueError(f"bad bech32 checksum in {address!r} (it is bech32m)")
-    return hrp, bytes(convertbits(values[:-6], 5, 8, pad=False))
+    return _decode(address, BECH32)
+
+
+def bech32m_encode(hrp: str, data: bytes) -> str:
+    """Encode raw bytes as bech32m, no witness version (e.g. a ZIP-320 ``tex1…``)."""
+    return _encode(hrp, data, BECH32M)
+
+
+def bech32m_decode(address: str) -> tuple[str, bytes]:
+    """Inverse of :func:`bech32m_encode`; a plain-bech32 string is rejected."""
+    return _decode(address, BECH32M)
 
 
 def segwit_ok(address: str, hrp: str) -> bool:

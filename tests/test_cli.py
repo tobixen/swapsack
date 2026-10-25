@@ -2078,24 +2078,34 @@ def test_swap_routes_zec_to_the_utxo_handler(monkeypatch):
     assert routed["factory"] is cli._zec_adapter
 
 
-def test_add_liquidity_zec_requires_maya_backend(monkeypatch, capsys):
-    # Same Maya-only guard as DASH, via the shared _lp_backend_refused helper.
+def test_add_liquidity_zec_runs_on_thorchain_and_maya(monkeypatch):
+    # ZEC.ZEC pools exist on both networks since THORChain 3.21: neither
+    # backend may be refused up front (the runtime pause/mimir checks remain).
     import swapsack.cli as cli
 
     called = []
     monkeypatch.setattr(cli, "_liquidity_utxo", lambda *a, **kw: called.append(1) or 0)
-    args = build_parser().parse_args(
-        ["add-liquidity", "--asset", "ZEC", "--amount", "1"]
-    )  # --backend defaults to thorchain
-    assert cli.cmd_add_liquidity(args) == 2
-    assert not called
-    assert "maya" in capsys.readouterr().err.lower()
+    for extra in ([], ["--backend", "thorchain"], ["--backend", "maya"]):
+        args = build_parser().parse_args(
+            ["add-liquidity", "--asset", "ZEC", "--amount", "1", *extra]
+        )
+        assert cli.cmd_add_liquidity(args) == 0
+    assert len(called) == 3
 
+
+def test_add_liquidity_zec_symmetric_refusal_names_the_utxo_reason(capsys, monkeypatch):
+    # --symmetric on ZEC must fail on the real reason (a UTXO tx has no single
+    # sender to pair by), not on a stale "only on maya" backend refusal.
+    import swapsack.cli as cli
+
+    _wire_symmetric(monkeypatch)
     args = build_parser().parse_args(
-        ["add-liquidity", "--asset", "ZEC", "--amount", "1", "--backend", "maya"]
+        ["add-liquidity", "--asset", "ZEC", "--symmetric", "--amount", "0.337"]
     )
-    assert cli.cmd_add_liquidity(args) == 0
-    assert called
+    assert cli.cmd_add_liquidity(args) == 2
+    err = capsys.readouterr().err
+    assert "only on" not in err
+    assert "single sender" in err and "single-sided" in err
 
 
 def test_swap_and_send_route_ada_to_the_utxo_handlers(monkeypatch):

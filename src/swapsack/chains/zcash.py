@@ -4,9 +4,11 @@ Zcash's transparent addresses are legacy P2PKH with a two-byte base58 prefix;
 derivation shares :mod:`swapsack.chains.p2pkh` with Dash. Everything network
 (balance / UTXOs / branch id / broadcast) speaks to a **lightwalletd** gRPC
 endpoint (the canonical Zcash light-client infra, several reputable public
-operators; configurable — see docs/zcash.md). Swaps route through Maya only
-(no ZEC pool on THORChain), and Maya's pool is transparent-only, so shielded
-(``zs1…``/``u1…``) funds are out of scope.
+operators; configurable — see docs/zcash.md). Swaps and LP route through
+THORChain or Maya (both run a ZEC.ZEC pool; THORChain's since 3.21), and both
+take transparent deposits only, so shielded (``zs1…``/``u1…``) funds are out of
+scope. THORChain's vault is a ZIP-320 ``tex1…`` address — an ordinary P2PKH
+output to the builder, see :mod:`swapsack.chains.zcash_tx`.
 
 The gRPC messages here are tiny, so the wire format is hand-rolled from the
 ``service.proto`` definitions (reusing the cosmos_tx protobuf primitives)
@@ -19,7 +21,7 @@ the bespoke v4/ZIP-243 builder+signer lives in
 tests. Fees follow ZIP-317 (action-based, see ``coins.zip317_fee``), and the
 consensus branch id is fetched live per spend — never hardcoded — because a
 stale id after a network upgrade would invalidate every signature. Swap-from
-and LP deposits carry the Maya memo as an OP_RETURN output, priced into the
+and LP deposits carry the THORChain/Maya memo as an OP_RETURN output, priced into the
 ZIP-317 fee.
 """
 
@@ -51,11 +53,14 @@ from swapsack.chains.zcash_tx import (
     TxIn,
     TxOut,
     TxV4,
+    ZcashTxError,
     address_to_script,
+    canonical_address,
     parse_v4,
     script_to_address,
     serialize_v4,
     sign_transparent,
+    t1_to_tex,
 )
 from swapsack.chains.zcash_tx import (
     txid as compute_txid,
@@ -172,9 +177,10 @@ class ZecAdapter(GatedTxBuilder):
     default_derivation = DEFAULT_DERIVATION
     account = ACCOUNT
     change_path = CHANGE_PATH
-    # The ZEC.ZEC pool exists only on Maya — and THORChain answers an LP probe
-    # for a pool it doesn't run with a 500, not a clean "no position" 404.
-    lp_backends = ("maya",)
+    # ZEC.ZEC pools run on both networks (THORChain's opened in 3.21; it was
+    # Maya-only before). Whether LP deposits are open is a runtime question,
+    # answered by prepare_liquidity's halt and mimir checks.
+    lp_backends = ("thorchain", "maya")
     fee_basis = "(ZIP-317 conventional fee)"
 
     def __init__(
@@ -369,6 +375,16 @@ class ZecAdapter(GatedTxBuilder):
             change_address=change_address,
             branch_id=self.branch_id(),
         )
+
+    def canonical_address(self, address: str) -> str:
+        return canonical_address(address)  # tex1… -> the t1… paying the same
+
+    def display_address(self, address: str) -> str:
+        # The gate holds the t1… form; THORNode publishes the vault as tex1….
+        try:
+            return f"{address} (tex1… form: {t1_to_tex(address)})"
+        except ZcashTxError:
+            return address  # a t3… has no TEX form
 
     def sign(self, built: ZecBuilt) -> list[str]:
         signed = sign_transparent(

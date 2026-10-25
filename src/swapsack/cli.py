@@ -88,7 +88,7 @@ ASSET = {
     "USDT-ETH": "ETH.USDT-0XDAC17F958D2EE523A2206206994597C13D831EC7",
     "USDC-ETH": "ETH.USDC-0XA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48",
     "DASH": "DASH.DASH",  # Maya-only pool; hold/bal/send/sweep; see docs/dash.md
-    "ZEC": "ZEC.ZEC",  # Maya-only; t-addr hold/bal/send/sweep; see docs/zcash.md
+    "ZEC": "ZEC.ZEC",  # THOR + Maya; t-addr hold/bal/send/sweep; see docs/zcash.md
     # Destination-only (no source/hold yet): pay an external --dest address.
     "LTC": "LTC.LTC",
     "DOGE": "DOGE.DOGE",
@@ -1483,8 +1483,8 @@ def cmd_quote(args: argparse.Namespace) -> int:
 
 def cmd_swap(args: argparse.Namespace) -> int:
     chain = ASSET[args.from_].split(".", 1)[0]
-    utxo = _UTXO_ADAPTERS.get(chain)  # BTC / DASH / ZEC (Maya-only pools route
-    if utxo is not None:  # via _select_backend; ZEC uses the bespoke v4 signer)
+    utxo = _UTXO_ADAPTERS.get(chain)  # BTC / DASH / ZEC (pools route via
+    if utxo is not None:  # _select_backend; ZEC uses the bespoke v4 signer)
         return _swap_from_utxo(args, utxo)
     evm = _EVM_ADAPTERS.get(chain)  # native coin and ERC-20 tokens
     if evm is not None:
@@ -3193,7 +3193,7 @@ def _liquidity_utxo(
             # not a raw traceback.
             print(f"ABORTED: {exc}", file=sys.stderr)
             return 1
-        vault = prepared.plan.inbound_address
+        vault = adapter.display_address(prepared.plan.inbound_address)
         print(
             f"send:    {prepared.plan.amount} base units (1e-8 {adapter.chain}) "
             f"to {vault}"
@@ -4686,7 +4686,7 @@ def _add_liquidity_backend_arg(sub: argparse.ArgumentParser) -> None:
         choices=["thorchain", "maya"],
         default="thorchain",
         help="network to LP on (maya pairs with CACAO and is the only one "
-        "with a DASH pool; maya has no TRON pool)",
+        "with a DASH or ADA pool; maya has no TRON pool)",
     )
 
 

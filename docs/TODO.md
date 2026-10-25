@@ -648,7 +648,10 @@ and released.
     `SWAPSACK_DASH_MNEMONIC` / `SWAPSACK_ZEC_MNEMONIC` (seeds in
     `docs/testnet.md`). Otherwise feature-complete (hold/balance/send/sweep/
     swap-from/LP); proving the broadcasts is all that remains. See
-    `docs/dash.md`, `docs/zcash.md`.
+    `docs/dash.md`, `docs/zcash.md`. ZEC on **THORChain** (pool since 3.21)
+    adds one more unproven step on top: paying its ZIP-320 `tex1…` vault as
+    P2PKH. A tiny `add-liquidity --asset ZEC` (default backend) then a
+    `withdraw-liquidity` would prove the vault decode and both LP memos there.
   - **ARB** — nothing has been broadcast on Arbitrum at all (*Next up* item 1).
   - **CACAO-only LP and the CACAO Pool** — `add-liquidity --protocol-only`
     and `cacao-pool-withdraw` reuse the proven `MsgDeposit` signer, but their
