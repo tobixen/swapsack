@@ -5,7 +5,8 @@ Balance, send/sweep, swap-**from** and single-sided LP (THORChain or Maya,
 pairing with RUNE or CACAO) — the spend side via a bespoke v4/ZIP-243 signer (`chains/zcash_tx.py`,
 see below; bitcoinlib cannot sign Zcash). Everything network rides
 **lightwalletd** (gRPC, default `zec.rocks`, override `--zec-lwd` /
-`$SWAPSACK_ZEC_LWD`). Every spend path ships **unproven on mainnet** (no
+`$SWAPSACK_ZEC_LWD`). A single-sided LP add was proven on mainnet on 2026-10-25 (THORChain and Maya);
+every other spend path ships **unproven on mainnet** (no
 Zcash testnet path; an opt-in mainnet self-sweep test exists — see
 `docs/testnet.md`) — test with a tiny amount first. This note records the
 scoping so the risky parts are decided deliberately, not mid-way through a
@@ -19,8 +20,9 @@ legacy-UTXO issues.
   its own in 3.21 (checked 2026-10-25: `Available`, ~22 ZEC deep — shallow,
   so mind the slip). `--backend auto` quotes both and takes the better swap
   price; LP defaults to `--backend thorchain`, `--backend maya` pairs with
-  CACAO instead. **The THORChain path is mainnet-unproven**: no ZEC has been
-  swapped or added there by this wallet yet.
+  CACAO instead. **A single-sided add was proven on mainnet on 2026-10-25, on
+  both networks** (including the `tex1…` vault on THORChain); swap-from and
+  the withdraw are still unproven.
 - **THORChain's ZEC vault is a ZIP-320 TEX address** (`tex1…`: bech32m over
   a P2PKH hash, "accept funds from transparent inputs only"). The builder
   decodes it to the 20-byte hash and pays an ordinary P2PKH output, which is

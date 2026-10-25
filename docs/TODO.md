@@ -649,9 +649,10 @@ and released.
     `docs/testnet.md`). Otherwise feature-complete (hold/balance/send/sweep/
     swap-from/LP); proving the broadcasts is all that remains. See
     `docs/dash.md`, `docs/zcash.md`. ZEC on **THORChain** (pool since 3.21)
-    adds one more unproven step on top: paying its ZIP-320 `tex1…` vault as
-    P2PKH. A tiny `add-liquidity --asset ZEC` (default backend) then a
-    `withdraw-liquidity` would prove the vault decode and both LP memos there.
+    has had its ZIP-320 `tex1…` vault paid as P2PKH: a single-sided
+    `add-liquidity --asset ZEC` was proven on mainnet on both THORChain and
+    Maya on 2026-10-25. Still open for ZEC: the withdraw trigger, send/sweep
+    and swap-from.
   - **ARB** — nothing has been broadcast on Arbitrum at all (*Next up* item 1).
   - **CACAO-only LP and the CACAO Pool** — `add-liquidity --protocol-only`
     and `cacao-pool-withdraw` reuse the proven `MsgDeposit` signer, but their

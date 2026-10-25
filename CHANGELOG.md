@@ -154,8 +154,9 @@ automatically from git tags (PEP 440 / SemVer).
   THORChain backend pairs your ZEC with RUNE, and `--backend auto` swaps
   compare THORChain's price with Maya's. THORChain's ZEC deposit address is a
   `tex1…` (ZIP-320) address, which swapsack now pays (as a vault only: `send`
-  and `--dest` still take `t1…`/`t3…`). Nothing has been sent
-  to THORChain's ZEC vault from swapsack yet, so start small. Two-sided
+  and `--dest` still take `t1…`/`t3…`). Adding ZEC liquidity has been done
+  with real funds on both THORChain and Maya; withdrawing, sending and
+  swapping from ZEC have not yet, so start small. Two-sided
   (`--symmetric`) ZEC liquidity stays unsupported, as for every UTXO coin.
 
 ### Fixed
