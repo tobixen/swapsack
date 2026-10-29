@@ -161,6 +161,14 @@ automatically from git tags (PEP 440 / SemVer).
 
 ### Fixed
 
+- **DASH keeps working when insight.dash.org is down.** Reads and broadcasts
+  now fall over to a second explorer (a Blockbook run by Atomic Wallet) when
+  insight.dash.org does not answer or answers with a server error, as it did
+  on 2026-10-29. A note on stderr names the host that is used instead, since
+  it then sees your addresses. `--dash-api` (or `$SWAPSACK_DASH_API`) accepts
+  a Blockbook URL ending in `/api/v2` too, and naming one turns the fallback
+  off.
+
 - **A BTC swap whose memo is exactly 62 bytes is no longer refused.**
   bitcoinlib misreads an OP_RETURN of that length, so the safety gate saw no
   memo and a change output to an empty address, and stopped the swap. A

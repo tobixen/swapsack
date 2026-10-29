@@ -4770,6 +4770,20 @@ def test_a_chosen_esplora_is_the_only_one_used(monkeypatch, via):
     assert cli._btc_adapter(args)._candidates == ("https://my-own.example/api",)
 
 
+def test_dash_adapter_uses_both_default_endpoints(monkeypatch):
+    # Nothing chosen: Insight, then a Blockbook, so insight.dash.org going
+    # down (as it did on 2026-10-29) does not take DASH with it.
+    monkeypatch.delenv("SWAPSACK_DASH_API", raising=False)
+    args = build_parser().parse_args(["balance"])
+    assert len(cli._dash_adapter(args)._candidates) == 2
+
+
+def test_a_chosen_dash_api_is_the_only_one_used(monkeypatch):
+    monkeypatch.setenv("SWAPSACK_DASH_API", "https://my-own.example/api/v2")
+    args = build_parser().parse_args(["balance"])
+    assert cli._dash_adapter(args)._candidates == ("https://my-own.example/api/v2",)
+
+
 # --- bump: fee-replacing a stuck BTC transaction (BIP125 RBF) ---------------
 
 

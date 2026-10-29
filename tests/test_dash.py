@@ -740,3 +740,510 @@ def test_an_insight_fork_without_totalitems_still_walks():
     result = a.address_txs("XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5")
     assert result.truncated is False
     assert [t.txid for t in result.transactions] == ["a1" * 32, "a2" * 32]
+
+
+# --- Blockbook, and falling over to it when Insight is down ------------------
+
+BLOCKBOOK = "https://bb.example.com/api/v2"
+INSIGHT = "https://insight.example.com/insight-api"
+
+# Trimmed real responses from dash.atomicwallet.io/api/v2 for the golden 0/0
+# address (fetched 2026-10-29, while insight.dash.org answered 502).
+BLOCKBOOK_USED_EMPTY = {
+    "address": "XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5",
+    "balance": "0",
+    "totalReceived": "1122000",
+    "totalSent": "1122000",
+    "unconfirmedTxs": 0,
+    "txs": 4,
+}
+BLOCKBOOK_TX = {
+    "txid": "359445e0908226dea508794eb8e5dee16a778ccfe7a9a7f90b868a91b670c485",
+    "vin": [
+        {
+            # Blockbook omits zero-valued fields: no "vout" key means vout 0.
+            "txid": "77dc9192a4176903fde535c7dc38432ce2089a47d461d3da7d38d2c5f43db3f7",
+            "sequence": 4294967295,
+            "n": 0,
+            "addresses": ["XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5"],
+            "isAddress": True,
+            "value": "122000",
+        }
+    ],
+    "vout": [
+        {
+            "value": "117200",
+            "n": 0,
+            "hex": "76a914f7428a48ad30725069624a35874523e5157c19c188ac",
+            "addresses": ["XyEESvmAig9ypH3yuHXLTuJZsAU9fKxj4W"],
+            "isAddress": True,
+        }
+    ],
+    "blockHeight": 1988337,
+    "confirmations": 574752,
+    "blockTime": 1702665932,
+    "size": 191,
+    "value": "117200",
+    "valueIn": "122000",
+    "fees": "4800",
+}
+
+
+class _Resp:
+    """A response with a status code, raising like niquests does on >= 400."""
+
+    def __init__(self, payload=None, status=200):
+        self.payload = payload
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import niquests
+
+            raise niquests.exceptions.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self.payload
+
+
+def test_parse_blockbook_used_but_empty_counts_as_history():
+    from swapsack.chains.dash import parse_blockbook_addr
+
+    info = parse_blockbook_addr(BLOCKBOOK_USED_EMPTY)
+    assert info.has_history
+    assert (info.confirmed, info.pending) == (0, 0)
+
+
+def test_parse_blockbook_fresh_address_has_no_history():
+    from swapsack.chains.dash import parse_blockbook_addr
+
+    info = parse_blockbook_addr(
+        {"address": "X", "balance": "0", "totalReceived": "0", "txs": 0}
+    )
+    assert not info.has_history
+
+
+def test_parse_blockbook_pending_spend_alone_counts_as_history():
+    from swapsack.chains.dash import parse_blockbook_addr
+
+    info = parse_blockbook_addr(
+        {"balance": "5000", "unconfirmedBalance": "-5000", "txs": 0}
+    )
+    assert info.has_history
+    assert (info.confirmed, info.pending) == (5000, -5000)
+
+
+def test_parse_blockbook_tx_reads_a_real_transaction():
+    from swapsack.chains.dash import parse_blockbook_tx
+
+    tx = parse_blockbook_tx(BLOCKBOOK_TX)
+    assert tx.txid == BLOCKBOOK_TX["txid"]
+    assert (tx.confirmed, tx.block_height, tx.block_time) == (
+        True,
+        1988337,
+        1702665932,
+    )
+    assert (tx.fee, tx.vsize) == (4800, 191)
+    (spend,) = tx.inputs
+    assert (spend.txid, spend.vout, spend.value, spend.address) == (
+        "77dc9192a4176903fde535c7dc38432ce2089a47d461d3da7d38d2c5f43db3f7",
+        0,
+        122000,
+        "XoJA8qE3N2Y3jMLEtZ3vcN42qseZ8LvFf5",
+    )
+    assert spend.sequence == 4294967295
+    assert [(o.value, o.address) for o in tx.outputs] == [
+        (117200, "XyEESvmAig9ypH3yuHXLTuJZsAU9fKxj4W")
+    ]
+
+
+def test_parse_blockbook_tx_keeps_the_memo_and_survives_a_coinbase():
+    from swapsack.chains.dash import parse_blockbook_tx
+
+    memo = b"=:ETH.ETH:0xabc"
+    script = "6a" + f"{len(memo):02x}" + memo.hex()
+    tx = parse_blockbook_tx(
+        {
+            "txid": "cb" * 32,
+            "vin": [{"n": 0, "coinbase": "03aa", "isAddress": False}],
+            "vout": [
+                {
+                    "value": "0",
+                    "n": 0,
+                    "hex": script,
+                    "isAddress": False,
+                    "addresses": [f"OP_RETURN {memo.hex()}"],
+                },
+                {
+                    "value": "10",
+                    "n": 1,
+                    "hex": "76a9",
+                    "isAddress": True,
+                    "addresses": ["Xout"],
+                    "spentTxId": "dd" * 32,
+                },
+            ],
+            "blockHeight": -1,
+            "confirmations": 0,
+            "blockTime": 1700000000,  # first-seen time, not a block's
+            "fees": "0",
+            "size": 100,
+        }
+    )
+    (coinbase,) = tx.inputs
+    assert (coinbase.address, coinbase.value, coinbase.txid) == (None, 0, None)
+    data, paid = tx.outputs
+    assert (data.op_return, data.address, data.op_return_data) == (True, None, memo)
+    assert (paid.address, paid.spent_by) == ("Xout", "dd" * 32)
+    assert (tx.confirmed, tx.block_height, tx.block_time) == (False, None, None)
+
+
+def test_blockbook_endpoint_reads_balance_and_utxos():
+    a = DashAdapter(BLOCKBOOK)
+    urls = []
+
+    def fake_get(url, **kwargs):
+        urls.append(url)
+        if "/utxo/" in url:
+            return _Resp(
+                [
+                    {
+                        "txid": "cc" * 32,
+                        "vout": 1,
+                        "value": "150000",
+                        "confirmations": 3,
+                    },
+                    {"txid": "dd" * 32, "value": "9", "confirmations": 0},
+                ]
+            )
+        return _Resp(BLOCKBOOK_USED_EMPTY)
+
+    a._get = fake_get
+    assert a.address_info("Xa").has_history
+    assert [(u.txid, u.vout, u.value) for u in a.fetch_utxos("Xa")] == [
+        ("cc" * 32, 1, 150000)
+    ]
+    # An unconfirmed output with Blockbook's omitted vout 0.
+    unconf = a.fetch_utxos("Xa", include_unconfirmed=True)[1]
+    assert (unconf.vout, unconf.confirmed) == (0, False)
+    assert urls[:2] == [f"{BLOCKBOOK}/address/Xa", f"{BLOCKBOOK}/utxo/Xa"]
+
+
+def test_blockbook_walk_pages_by_number_and_rewalks_on_drift():
+    a = DashAdapter(BLOCKBOOK)
+
+    def page(n, total, *txids, pages=2):
+        return {
+            "page": n,
+            "totalPages": pages,
+            "txs": total,
+            "transactions": [{**BLOCKBOOK_TX, "txid": t} for t in txids],
+        }
+
+    script = [
+        page(1, 2, "a1" * 32),
+        page(2, 3, "a2" * 32),  # a transaction arrived mid-walk
+        page(1, 3, "b1" * 32),
+        page(2, 3, "b2" * 32),  # the last page: no third request
+    ]
+    asked = []
+
+    def fake_get(url, **kwargs):
+        asked.append(kwargs["params"]["page"])
+        return _Resp(script[len(asked) - 1])
+
+    a._get = fake_get
+    result = a.address_txs("Xa")
+    assert [t.txid for t in result.transactions] == ["b1" * 32, "b2" * 32]
+    assert result.truncated is False
+    assert asked == [1, 2, 1, 2]
+
+
+def test_blockbook_broadcast_posts_the_raw_hex():
+    a = DashAdapter(BLOCKBOOK)
+    sent = {}
+
+    def fake_post(url, **kwargs):
+        sent.update(url=url, data=kwargs.get("data"))
+        return _Resp({"result": "ee" * 32})
+
+    a._post = fake_post
+    assert a.broadcast(["deadbeef"]) == "ee" * 32
+    assert sent == {"url": f"{BLOCKBOOK}/sendtx/", "data": "deadbeef"}
+
+
+def test_a_down_insight_falls_over_to_blockbook_and_stays_there(capsys):
+    """insight.dash.org answered every request with a Cloudflare 502 on
+    2026-10-29. A 5xx is the host saying it is broken, not an answer about the
+    address, so the next endpoint is asked — and pinned, so a 60-address scan
+    does not knock on the dead one 60 times."""
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+    urls = []
+
+    def fake_get(url, **kwargs):
+        urls.append(url)
+        return (
+            _Resp(status=502)
+            if url.startswith(INSIGHT)
+            else _Resp(BLOCKBOOK_USED_EMPTY)
+        )
+
+    a._get = fake_get
+    assert a.address_info("Xa").has_history
+    assert a.address_info("Xb").has_history
+    assert urls == [
+        f"{INSIGHT}/addr/Xa",
+        f"{BLOCKBOOK}/address/Xa",
+        f"{BLOCKBOOK}/address/Xb",
+    ]
+    err = capsys.readouterr().err
+    assert "insight.example.com" in err and "bb.example.com" in err
+    assert "Xa" not in err  # host, never the path: it is the user's address
+
+
+def test_an_unreachable_insight_falls_over_too():
+    from swapsack.net import HostUnreachable
+
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+
+    def fake_get(url, **kwargs):
+        if url.startswith(INSIGHT):
+            raise HostUnreachable("insight.example.com: timed out")
+        return _Resp(BLOCKBOOK_USED_EMPTY)
+
+    a._get = fake_get
+    assert a.address_info("Xa").has_history
+
+
+def test_a_real_error_answer_does_not_fall_over():
+    """A 4xx is the endpoint answering — a bad address, say. Asking a second
+    operator would only hand them the address for the same answer."""
+    import niquests
+
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+    urls = []
+
+    def fake_get(url, **kwargs):
+        urls.append(url)
+        return _Resp(status=400)
+
+    a._get = fake_get
+    with pytest.raises(niquests.exceptions.HTTPError):
+        a.address_info("Xa")
+    assert urls == [f"{INSIGHT}/addr/Xa"]
+
+
+def test_every_endpoint_down_raises_host_unreachable():
+    from swapsack.net import HostUnreachable
+
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+    a._get = lambda url, **kwargs: _Resp(status=503)
+    with pytest.raises(HostUnreachable):
+        a.address_info("Xa")
+
+
+def test_broadcast_falls_over_when_insight_is_down():
+    """Safe to repeat: a signed transaction has one txid wherever it is sent."""
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+
+    def fake_post(url, **kwargs):
+        if url.startswith(INSIGHT):
+            return _Resp(status=502)
+        return _Resp({"result": "ee" * 32})
+
+    a._post = fake_post
+    assert a.broadcast(["deadbeef"]) == "ee" * 32
+
+
+def test_default_endpoints_are_insight_then_blockbook():
+    from swapsack.chains.dash import DEFAULT_DASH_API, DEFAULT_DASH_NODES, is_blockbook
+
+    assert DEFAULT_DASH_NODES[0] == DEFAULT_DASH_API
+    assert [is_blockbook(u) for u in DEFAULT_DASH_NODES] == [False, True]
+    assert DashAdapter().api_url == DEFAULT_DASH_API
+
+
+@pytest.mark.network
+def test_live_blockbook_sees_golden_address_history():
+    from swapsack.chains.dash import DEFAULT_DASH_BLOCKBOOK
+
+    with DashAdapter(DEFAULT_DASH_BLOCKBOOK) as a:
+        info = a.address_info(GOLDEN["m/44'/5'/0'/0/0"])
+        txs = a.address_txs(GOLDEN["m/44'/5'/0'/0/0"])
+    assert info.has_history
+    assert info.confirmed == 0
+    assert len(txs.transactions) == 4
+
+
+# The signed raw of BLOCKBOOK_TX (a real mainnet transaction), for the txid.
+BLOCKBOOK_TX_RAW = (
+    "0100000001f7b33df4c5d2387ddad361d4479a08e22c4338dcc735e5fd036917a49291dc77"
+    "000000006a473044022062dba38f906387add7a13588e33742c02c181cf1bfdd124a9d4fad"
+    "4401c88a9c02202d4fb714decc6d12c666e6e7d6a558d2fc2473be1eff0a35fe746b085df7"
+    "726e0121026fa9a6f213b6ba86447965f6b4821264aaadd7521f049f00db9c43a770ea7405"
+    "ffffffff01d0c90100000000001976a914f7428a48ad30725069624a35874523e5157c19c1"
+    "88ac00000000"
+)
+
+
+class _TextResp(_Resp):
+    def __init__(self, text, status):
+        super().__init__(None, status)
+        self.text = text
+
+
+def test_a_tx_the_network_already_has_counts_as_broadcast():
+    """Insight relays the transaction, then its proxy times out with a 502. The
+    resend to Blockbook is refused as already known — which means it went out.
+    Calling that a failure invites a re-run that pays a second time from other
+    outputs."""
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+
+    def fake_post(url, **kwargs):
+        if url.startswith(INSIGHT):
+            return _Resp(status=502)
+        return _TextResp('{"error":"-26: txn-already-in-mempool"}', status=400)
+
+    a._post = fake_post
+    assert a.broadcast([BLOCKBOOK_TX_RAW]) == BLOCKBOOK_TX["txid"]
+
+
+def test_a_broadcast_that_may_have_gone_out_says_so():
+    """Every endpoint failed, but one of them only after it may have relayed the
+    transaction: the user needs the txid to check before trying again."""
+    from swapsack.swap import BroadcastError
+
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+
+    def fake_post(url, **kwargs):
+        if url.startswith(INSIGHT):
+            return _Resp(status=502)
+        return _TextResp('{"error":"-25: bad-txns-inputs-missingorspent"}', 400)
+
+    a._post = fake_post
+    with pytest.raises(BroadcastError) as caught:
+        a.broadcast([BLOCKBOOK_TX_RAW])
+    assert BLOCKBOOK_TX["txid"] in str(caught.value)
+    assert "before retrying" in str(caught.value)
+
+
+def test_a_plain_rejection_is_not_reported_as_maybe_sent():
+    """A node that refused the transaction outright, with nothing transient
+    before it, did not send it: no "may already be in flight" scare."""
+    import niquests
+
+    a = DashAdapter(BLOCKBOOK)
+    a._post = lambda url, **kwargs: _TextResp('{"error":"-26: dust"}', 400)
+    with pytest.raises(niquests.exceptions.HTTPError):
+        a.broadcast([BLOCKBOOK_TX_RAW])
+
+
+def test_a_blockbook_error_body_is_a_broadcast_error_not_a_keyerror():
+    from swapsack.swap import BroadcastError
+
+    a = DashAdapter(BLOCKBOOK)
+    a._post = lambda url, **kwargs: _Resp({"error": {"message": "rejected"}})
+    with pytest.raises(BroadcastError, match="rejected"):
+        a.broadcast([BLOCKBOOK_TX_RAW])
+
+
+def test_blockbook_without_totalpages_walks_until_nothing_new():
+    """``totalPages`` steers the walk, but a fork that omits it must fall back to
+    the nothing-new stop, not end after page one with a hole in the history."""
+    a = DashAdapter(BLOCKBOOK)
+    script = [
+        {"txs": 2, "transactions": [{**BLOCKBOOK_TX, "txid": "a1" * 32}]},
+        {"txs": 2, "transactions": [{**BLOCKBOOK_TX, "txid": "a2" * 32}]},
+        {"txs": 2},
+    ]
+    asked = []
+
+    def fake_get(url, **kwargs):
+        asked.append(kwargs["params"]["page"])
+        return _Resp(script[len(asked) - 1])
+
+    a._get = fake_get
+    result = a.address_txs("Xa")
+    assert [t.txid for t in result.transactions] == ["a1" * 32, "a2" * 32]
+    assert asked == [1, 2, 3]
+
+
+def test_blockbook_rewalks_when_only_the_mempool_count_moved():
+    a = DashAdapter(BLOCKBOOK)
+
+    def page(n, unconfirmed, txid):
+        return {
+            "page": n,
+            "totalPages": 2,
+            "txs": 2,
+            "unconfirmedTxs": unconfirmed,
+            "transactions": [{**BLOCKBOOK_TX, "txid": txid}],
+        }
+
+    script = [page(1, 1, "a1" * 32), page(2, 0, "a2" * 32)]
+    script += [page(1, 0, "b1" * 32), page(2, 0, "b2" * 32)]
+    asked = []
+
+    def fake_get(url, **kwargs):
+        asked.append(kwargs["params"]["page"])
+        return _Resp(script[len(asked) - 1])
+
+    a._get = fake_get
+    result = a.address_txs("Xa")
+    assert [t.txid for t in result.transactions] == ["b1" * 32, "b2" * 32]
+
+
+def test_a_walk_that_fails_midway_restarts_from_page_one_elsewhere():
+    """Insight dies on page 2: the history comes wholly from Blockbook, never a
+    first page from one explorer glued to a second page from the other."""
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+    insight_pages = [{"totalItems": 2, "items": [{**INSIGHT_TX, "txid": "1a" * 32}]}]
+    bb = {
+        "page": 1,
+        "totalPages": 1,
+        "txs": 2,
+        "transactions": [
+            {**BLOCKBOOK_TX, "txid": "b1" * 32},
+            {**BLOCKBOOK_TX, "txid": "b2" * 32},
+        ],
+    }
+
+    def fake_get(url, **kwargs):
+        if url.startswith(INSIGHT):
+            return _Resp(insight_pages.pop(0)) if insight_pages else _Resp(status=502)
+        return _Resp(bb)
+
+    a._get = fake_get
+    result = a.address_txs("Xa")
+    assert [t.txid for t in result.transactions] == ["b1" * 32, "b2" * 32]
+
+
+def test_the_failover_wraps_back_to_the_first_endpoint():
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+    a.api_url = BLOCKBOOK  # pinned there by an earlier failure
+    urls = []
+
+    def fake_get(url, **kwargs):
+        urls.append(url)
+        if url.startswith(BLOCKBOOK):
+            return _Resp(status=503)
+        return _Resp(INSIGHT_USED_EMPTY)
+
+    a._get = fake_get
+    assert a.address_info("Xa").has_history
+    assert urls == [f"{BLOCKBOOK}/address/Xa", f"{INSIGHT}/addr/Xa"]
+    assert a.api_url == INSIGHT
+
+
+def test_a_throttled_insight_falls_over():
+    from swapsack.net import RateLimited
+
+    a = DashAdapter((INSIGHT, BLOCKBOOK))
+
+    def fake_get(url, **kwargs):
+        if url.startswith(INSIGHT):
+            raise RateLimited("insight.example.com: HTTP 429")
+        return _Resp(BLOCKBOOK_USED_EMPTY)
+
+    a._get = fake_get
+    assert a.address_info("Xa").has_history

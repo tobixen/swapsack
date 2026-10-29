@@ -542,6 +542,15 @@ is the cheaper half of the problem:
   is an open question; naming an endpoint is also a privacy choice, so the
   answer is *not* to quietly re-add a second operator.
 
+## Dash failover: parallel workers each find the dead endpoint
+
+`DashAdapter` pins whichever endpoint answered, but the account scan and the
+history walk call it from a thread pool. While Insight is down, every worker
+already in flight tries it on its own before the pin moves, so up to
+`max_workers` addresses still reach the dead host and the "is down" note is
+printed once per worker. Funds are unaffected. A lock around the pin, or
+having the first failure decide for the rest, would fix it.
+
 ## Upstream: the lychee pre-commit hook misreads `rev` under `git push`
 
 `.pre-commit-config.yaml` pins `rev: lychee-v0.24.2` and *also* passes

@@ -288,13 +288,20 @@ def _tron_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN2
     return TronAdapter(url, bip39_passphrase=passphrase, history_url=history_url)
 
 
-def _dash_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
-    from swapsack.chains.dash import DEFAULT_DASH_API, DashAdapter
+DASH_API_HELP = (
+    "Dash Insight API URL, or a Blockbook one ending in /api/v2; used alone "
+    "instead of the default pair ($SWAPSACK_DASH_API)"
+)
 
+
+def _dash_adapter(args: argparse.Namespace, passphrase: str = ""):  # noqa: ANN202
+    from swapsack.chains.dash import DEFAULT_DASH_NODES, DashAdapter
+
+    # A named endpoint is used alone, as for --esplora (see DEFAULT_DASH_NODES).
     url = (
         getattr(args, "dash_api", None)
         or os.environ.get("SWAPSACK_DASH_API")
-        or DEFAULT_DASH_API
+        or DEFAULT_DASH_NODES
     )
     return DashAdapter(url, bip39_passphrase=passphrase)
 
@@ -4746,7 +4753,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--avax-rpc", help="Avalanche JSON-RPC URL ($SWAPSACK_AVAX_RPC)")
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
     s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($SWAPSACK_BSC_RPC)")
-    s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
+    s.add_argument("--dash-api", help=DASH_API_HELP)
     s.add_argument("--zec-lwd", help="Zcash lightwalletd host:port ($SWAPSACK_ZEC_LWD)")
     s.add_argument("--ada-api", help="Cardano Koios API URL ($SWAPSACK_ADA_API)")
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
@@ -4807,7 +4814,7 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument(
             "--json", action="store_true", help="emit JSON instead of a table"
         )
-        s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
+        s.add_argument("--dash-api", help=DASH_API_HELP)
         s.add_argument(
             "--zec-lwd", help="Zcash lightwalletd host:port ($SWAPSACK_ZEC_LWD)"
         )
@@ -4981,7 +4988,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--bsc-rpc", help="BSC JSON-RPC URL ($SWAPSACK_BSC_RPC)")
     _add_unconfirmed_arg(s)
     s.add_argument("--tron-api", help="TRON API base URL ($SWAPSACK_TRON_API)")
-    s.add_argument("--dash-api", help="Dash Insight API URL ($SWAPSACK_DASH_API)")
+    s.add_argument("--dash-api", help=DASH_API_HELP)
     s.add_argument("--maya-api", help="MayaChain REST URL ($SWAPSACK_MAYA_API)")
     s.add_argument("--thornode", help="THORChain REST URL ($SWAPSACK_THORNODE)")
     _add_price_check_args(s)

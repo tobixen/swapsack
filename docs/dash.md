@@ -89,6 +89,18 @@ longer resolve in DNS; Blockchair works keyless but transiently blacklists IPs.
 Unioning a second source stays a TODO for the spend side, where a lying/stale
 explorer does the most damage.
 
+**Update (2026-10-29):** insight.dash.org (and explorer.dash.org) answered
+every request with a 502, and no other public Insight instance for Dash was
+left (`insight.dashevo.org`, `dash.insight.blockexplorer.com` and the others
+no longer answer); `dashN.trezor.io` did not respond either. A Blockbook at
+`dash.atomicwallet.io/api/v2` was up and in sync, so the adapter now speaks
+both APIs and defaults to Insight, then that Blockbook. An unreachable
+endpoint or a 5xx moves to the next one, which is then pinned; a 4xx is an
+answer and does not. A history walk restarts on the new endpoint rather than
+mixing two explorers' cursors. A URL ending in `/api/v2` is taken as
+Blockbook. This is failover, not the union above: a stale explorer that
+answers can still under-report.
+
 ## Testability caveat
 
 Like the rest of the project's spending paths, the Dash spend side would ship
