@@ -16,9 +16,9 @@ code it needs, with what each one is actually worth stated next to it.
 2. **BASE, the same shape one step further out.** Its halt has lifted too, but
    there is no adapter yet — so it is a `chains/avax.py`-shaped subclass plus a
    `_RULES` line and an `_EVM_CHAINS` entry, on top of the same CLI wiring as
-   BSC. **`BASE.ETH` held ~2.6 ETH on 2026-09-02**, which is too thin to swap
-   against at any size. Same
-   bullet's neighbours in *Swap backends*.
+   BSC. **`BASE.ETH` held ~11 ETH on 2026-11-11** (~2.6 on 2026-09-02), still
+   too thin to swap ETH against at size; `BASE.USDC` grew to ~85k, which is
+   comparable to `BSC.USDT`. See the matching bullet in *Swap backends*.
 3. **The three address forms the *shape* rules refuse** (uppercase bech32,
    uppercase cashaddr, BCH CashTokens `z…`). A `.lower()` in the right place,
    but see *Other known gaps* — a bare `.lower()` would wrongly start accepting
@@ -384,9 +384,10 @@ labels, not lookups.
     with `trading_halted: false` and `inbound_addresses` reports BASE
     `halted: false`, `chain_trading_paused: false`. So the block is gone and
     what remains is one `_RULES` line, an `_EVM_CHAINS` entry and a
-    `chains/avax.py`-shaped adapter. **Mind the depth before bothering**:
-    `BASE.ETH` held ~2.6 ETH on 2026-09-02, which is far too thin to swap
-    against at any size worth the work; `BASE.USDC` held ~31k. Re-measure.
+    `chains/avax.py`-shaped adapter. **Depth on 2026-11-11**: `BASE.USDC`
+    ~85k, on par with `BSC.USDT`; `BASE.ETH` ~11 ETH, still too thin to
+    swap ETH against at size. Both `Available`, with no halt mimir set.
+    (2026-09-02: ~2.6 ETH, ~31k USDC.)
 - **BasicSwap backend** (trustless P2P / privacy / XMR): orchestrate its daemon
   via API; needs full nodes (heavy) and a different custody seam. Future.
 - **Monero (XMR) hold/balance/send**: plan and effort estimate (~19–27 h)
